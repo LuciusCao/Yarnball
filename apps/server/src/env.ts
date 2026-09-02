@@ -14,14 +14,14 @@ export const env = {
     return required("DATABASE_URL");
   },
   get serverPort() {
-    return Number(process.env.SERVER_PORT ?? 8787);
+    return Number(process.env.SERVER_PORT ?? 18787);
   },
   /** agent 子进程访问 MCP 端点的基址。agent 与服务端同机，默认 loopback。 */
   get serverBaseUrl() {
     return process.env.SERVER_BASE_URL ?? `http://127.0.0.1:${this.serverPort}`;
   },
   get webOrigin() {
-    return process.env.WEB_ORIGIN ?? "http://localhost:5173";
+    return process.env.WEB_ORIGIN ?? "http://localhost:15173";
   },
   get amapServerKey() {
     return process.env.AMAP_SERVER_KEY ?? "";
