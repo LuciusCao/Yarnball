@@ -181,7 +181,24 @@ export function registerOdesseyTools(server: McpServer, ctx: ToolContext) {
       ctx.markMcpObserved();
       const { trip, provider, bias } = await tripGeoInfo(ctx);
       const cityUsed = city ?? trip?.destinationCity ?? "";
-      const candidates = await provider.searchPoi(keyword, cityUsed, bias);
+      let candidates;
+      try {
+        candidates = await provider.searchPoi(keyword, cityUsed, bias);
+      } catch (err) {
+        const message = (err as Error).message ?? "";
+        if (provider.name === "amap" && message.includes("AMAP_SERVER_KEY")) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text" as const,
+                text: "错误: 国内行程的地点搜索需要高德引擎，但服务端未配置 AMAP_SERVER_KEY。请告知用户在 .env 中配置（高德开放平台免费申请）。",
+              },
+            ],
+          };
+        }
+        throw err;
+      }
       const overseas = provider.name === "osm";
       return json({
         keyword,

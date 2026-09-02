@@ -60,30 +60,35 @@ export class TripService {
 
   /**
    * 目的地解析 + provider 判定（创建与自愈共用）：
-   * 高德可用时先试（country=中国 → amap，GCJ-02）；否则走 OSM 栈
-   * （Nominatim 优先，中文城市名如「悉尼」也能正确命中）。
-   * 都失败 → provider osm、center null（前端触发自愈重试）。
+   * 1. 高德可用时优先（country=中国 → amap，GCJ-02）
+   * 2. 否则走 OSM 栈（Nominatim 优先），按返回的国家判定：
+   *    中国目的地 → amap（即使未配 key——数据模型必须正确，否则中文 POI 搜索
+   *    会错到别的城市；未配 key 时搜索/路线给出明确配置提示，路线降级直线估算）
+   * 判定不出国家（网络失败）→ osm、center null（前端触发自愈重试）。
    */
   private async resolveDestination(
     city: string,
     forced?: GeoProviderName,
   ): Promise<{ provider: GeoProviderName; adcode: string | null; center: LngLat | null }> {
-    if (!forced || forced === "amap") {
-      if (env.amapConfigured) {
-        try {
-          const geo = await amap.resolveCity(city);
-          if (geo?.country === "中国") {
-            return { provider: "amap", adcode: geo.adcode, center: geo.center };
-          }
-        } catch (err) {
-          console.warn("[trip] amap resolveCity failed:", (err as Error).message);
+    if (forced === "amap" || (!forced && env.amapConfigured)) {
+      try {
+        const geo = await amap.resolveCity(city);
+        if (geo?.country === "中国") {
+          return { provider: "amap", adcode: geo.adcode, center: geo.center };
         }
+      } catch (err) {
+        console.warn("[trip] amap resolveCity failed:", (err as Error).message);
       }
       if (forced === "amap") return { provider: "amap", adcode: null, center: null };
     }
     try {
       const geo = await osm.resolveCity(city);
-      if (geo) return { provider: "osm", adcode: null, center: geo.center };
+      if (geo) {
+        if (geo.country === "中国" || geo.country === "China") {
+          return { provider: "amap", adcode: null, center: geo.center };
+        }
+        return { provider: "osm", adcode: null, center: geo.center };
+      }
     } catch (err) {
       console.warn("[trip] osm resolveCity failed:", (err as Error).message);
     }
@@ -118,37 +123,27 @@ export class TripService {
   }
 
   /**
-   * 重新解析目的城市（自愈：创建时网络失败 / 旧数据定位错误）。
-   * 坐标系安全：行程已有地点时禁止切换 provider（WGS84/GCJ-02 混用会整体错位），
-   * 只更新与当前 provider 一致的解析结果。
+   * 重新解析目的城市（自愈：创建时网络失败 / 引擎误判——如国内行程被标成海外）。
+   * 允许纠正 provider：错引擎的中文 POI 搜索会错到别的城市（如「西湖」→福建），
+   * 危害远大于两坐标系 ~500m 的偏移；切换后用新引擎重算全部天的交通段。
    */
   async reResolveCity(tripId: string) {
     const trip = await this.getTrip(tripId);
     const resolved = await this.resolveDestination(trip.destinationCity);
-    const hasPlaces =
-      (
-        await this.db
-          .select({ id: schema.places.id })
-          .from(schema.places)
-          .where(eq(schema.places.tripId, tripId))
-          .limit(1)
-      ).length > 0;
-    const currentProvider = trip.geoProvider as GeoProviderName;
-    const provider = hasPlaces ? currentProvider : resolved.provider;
-    // 解析来源与（保持的）provider 不一致时不动 center，避免坐标系污染
-    if (hasPlaces && resolved.provider !== provider) {
-      return toTripDto(trip);
-    }
+    const providerChanged = resolved.provider !== trip.geoProvider;
     await this.db
       .update(schema.trips)
       .set({
-        geoProvider: provider,
-        cityAdcode: provider === "amap" ? resolved.adcode : null,
+        geoProvider: resolved.provider,
+        cityAdcode: resolved.provider === "amap" ? resolved.adcode : null,
         cityCenterLng: resolved.center ? String(resolved.center.lng) : null,
         cityCenterLat: resolved.center ? String(resolved.center.lat) : null,
         updatedAt: new Date(),
       })
       .where(eq(schema.trips.id, tripId));
+    if (providerChanged) {
+      await this.recalcAllDayLegs(tripId);
+    }
     await this.publishBundle(tripId);
     const row = await this.getTrip(tripId);
     return toTripDto(row);

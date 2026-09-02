@@ -129,7 +129,12 @@ export function createApi(
       const candidates = await provider.searchPoi(keyword, trip?.destinationCity ?? "", bias);
       return c.json({ candidates });
     } catch (err) {
-      return c.json({ candidates: [], error: (err as Error).message }, 200);
+      const message = (err as Error).message ?? "";
+      const hint =
+        trip?.geoProvider === "amap" && message.includes("AMAP_SERVER_KEY")
+          ? "国内行程使用高德引擎，需要在 .env 配置 AMAP_SERVER_KEY（高德开放平台免费申请，见 .env.example）"
+          : message;
+      return c.json({ candidates: [], error: hint }, 200);
     }
   });
 

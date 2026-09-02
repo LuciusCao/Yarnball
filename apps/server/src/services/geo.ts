@@ -396,6 +396,7 @@ export const osm: GeoProvider = {
       url.searchParams.set("format", "jsonv2");
       url.searchParams.set("limit", "5");
       url.searchParams.set("dedupe", "1");
+      url.searchParams.set("addressdetails", "1"); // 没有它 jsonv2 不返回 address 对象
       url.searchParams.set("accept-language", "zh,en");
       const res = await fetch(url, {
         headers: { "User-Agent": OSM_UA },
@@ -414,7 +415,11 @@ export const osm: GeoProvider = {
         const hits = body.filter((r) => r.name && CITY_TYPES.has(r.addresstype ?? ""));
         const out: CitySuggestion[] = hits.map((r) => ({
           name: r.name!,
-          country: r.address?.country ?? null,
+          // address.country 需要 addressdetails=1；后备从 display_name 末段取
+          country:
+            r.address?.country ??
+            r.display_name?.split(",").map((s) => s.trim()).filter(Boolean).at(-1) ??
+            null,
           center: { lng: Number(r.lon), lat: Number(r.lat) },
         }));
         if (out.length > 0) return out;
