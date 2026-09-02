@@ -108,6 +108,32 @@ export const api = {
       `/trips/${tripId}/analyze-detour?placeId=${placeId}&dayIndex=${dayIndex}`,
     ),
 
+  // 预算
+  getBudget: (tripId: string) =>
+    request<{
+      summary: {
+        currency: string;
+        budgetCny: number | null;
+        travelerCount: number;
+        nights: number;
+        hotelSelected: boolean;
+        hotelCny: number | null;
+        diningCny: number;
+        ticketsCny: number;
+        totalCny: number;
+        remainingCny: number | null;
+        unpricedCount: number;
+      };
+    }>(`/trips/${tripId}/budget`),
+  updateBudget: (
+    tripId: string,
+    input: { budgetCny?: number | null; travelerCount?: number; currency?: string },
+  ) =>
+    request<{ ok: true }>(`/trips/${tripId}/budget`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+
   agents: () => request<{ agents: { id: string; label: string }[] }>("/agents"),
   chatSessions: (tripId: string) =>
     request<{ sessions: ChatSessionDto[] }>(`/trips/${tripId}/chat-sessions`),

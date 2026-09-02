@@ -34,6 +34,9 @@ export function toTripDto(row: TripRow): TripDto {
     startDate: row.startDate,
     endDate: row.endDate,
     selectedHotelCandidateId: row.selectedHotelCandidateId,
+    budgetCny: row.budgetCny,
+    travelerCount: row.travelerCount,
+    currency: row.currency,
     shareToken: row.shareToken,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
@@ -54,6 +57,7 @@ export function toPlaceDto(row: PlaceRow): PlaceDto {
     notes: row.notes,
     durationMin: row.durationMin,
     priceCny: row.priceCny,
+    bookingInfo: row.bookingInfo,
     createdBy: row.createdBy as PlaceDto["createdBy"],
     createdAt: iso(row.createdAt),
   };

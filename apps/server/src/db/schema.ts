@@ -27,6 +27,10 @@ export const trips = pgTable("trips", {
   startDate: text("start_date"), // YYYY-MM-DD
   endDate: text("end_date"),
   selectedHotelCandidateId: text("selected_hotel_candidate_id"),
+  /** 总预算（币种为 currency） */
+  budgetCny: integer("budget_cny"),
+  travelerCount: integer("traveler_count").notNull().default(1),
+  currency: text("currency").notNull().default("CNY"),
   shareToken: text("share_token").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -50,6 +54,7 @@ export const places = pgTable(
     notes: text("notes"),
     durationMin: integer("duration_min"),
     priceCny: integer("price_cny"),
+    bookingInfo: text("booking_info"),
     createdBy: text("created_by").notNull().default("human"), // human | agent
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

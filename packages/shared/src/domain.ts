@@ -78,6 +78,30 @@ export const PoiCandidateSchema = z.object({
 });
 export type PoiCandidate = z.infer<typeof PoiCandidateSchema>;
 
+// ---------- 币种与金额 ----------
+
+export const CURRENCY_SYMBOLS: Record<string, string> = {
+  CNY: "¥",
+  AUD: "A$",
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+  JPY: "¥",
+  NZD: "NZ$",
+  SGD: "S$",
+  HKD: "HK$",
+  THB: "฿",
+  KRW: "₩",
+};
+
+/** 行程常用币种（预算面板选择用） */
+export const TRIP_CURRENCIES = Object.keys(CURRENCY_SYMBOLS);
+
+export function formatMoney(amount: number | null | undefined, currency = "CNY"): string {
+  if (amount == null) return "";
+  return `${CURRENCY_SYMBOLS[currency] ?? currency} ${amount.toLocaleString("zh-CN")}`;
+}
+
 // ---------- 实体 DTO（API 返回形状） ----------
 
 export const TripDtoSchema = z.object({
@@ -90,6 +114,10 @@ export const TripDtoSchema = z.object({
   startDate: z.string().nullable(),
   endDate: z.string().nullable(),
   selectedHotelCandidateId: z.string().nullable(),
+  /** 总预算（币种为 currency） */
+  budgetCny: z.number().nullable(),
+  travelerCount: z.number(),
+  currency: z.string(),
   shareToken: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -108,7 +136,10 @@ export const PlaceDtoSchema = z.object({
   sourceUrl: z.string().nullable(),
   notes: z.string().nullable(),
   durationMin: z.number().nullable(),
+  /** 价格：餐厅=人均 / 景点=门票 / 酒店=每晚，币种为行程 currency */
   priceCny: z.number().nullable(),
+  /** 预约方式（平台/电话/网站 + 提前天数建议） */
+  bookingInfo: z.string().nullable(),
   createdBy: z.enum(ACTORS),
   createdAt: z.string(),
 });
@@ -195,6 +226,7 @@ export const CreatePlaceInputSchema = z.object({
   notes: z.string().max(4000).nullable().optional(),
   durationMin: z.number().int().min(0).max(24 * 60).nullable().optional(),
   priceCny: z.number().min(0).nullable().optional(),
+  bookingInfo: z.string().max(2000).nullable().optional(),
 });
 export type CreatePlaceInput = z.infer<typeof CreatePlaceInputSchema>;
 
@@ -275,6 +307,23 @@ export const ChatMessageDtoSchema = z.object({
   createdAt: z.string(),
 });
 export type ChatMessageDto = z.infer<typeof ChatMessageDtoSchema>;
+
+/** 预算汇总（服务端按地点价格计算） */
+export const BudgetSummarySchema = z.object({
+  currency: z.string(),
+  budgetCny: z.number().nullable(),
+  travelerCount: z.number(),
+  nights: z.number(),
+  hotelSelected: z.boolean(),
+  hotelCny: z.number().nullable(),
+  diningCny: z.number(),
+  ticketsCny: z.number(),
+  totalCny: z.number(),
+  remainingCny: z.number().nullable(),
+  /** 还没填价格的餐厅/景点数（预算低估提醒） */
+  unpricedCount: z.number(),
+});
+export type BudgetSummary = z.infer<typeof BudgetSummarySchema>;
 
 // ---------- 工具函数 ----------
 

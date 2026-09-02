@@ -27,7 +27,7 @@ import {
   toPlaceDto,
   toTripDto,
 } from "./mappers.js";
-import { amap, fallbackRoute, getProvider, haversineM, osm } from "./geo.js";
+import { amap, currencyForCountry, fallbackRoute, getProvider, haversineM, osm } from "./geo.js";
 import { insertionIncrements, optimizeLoopOrder, optimizeOrder, orderTotalDuration } from "./routing.js";
 import { env } from "../env.js";
 
@@ -69,30 +69,40 @@ export class TripService {
   private async resolveDestination(
     city: string,
     forced?: GeoProviderName,
-  ): Promise<{ provider: GeoProviderName; adcode: string | null; center: LngLat | null }> {
+  ): Promise<{
+    provider: GeoProviderName;
+    adcode: string | null;
+    center: LngLat | null;
+    currency: string;
+  }> {
     if (forced === "amap" || (!forced && env.amapConfigured)) {
       try {
         const geo = await amap.resolveCity(city);
         if (geo?.country === "中国") {
-          return { provider: "amap", adcode: geo.adcode, center: geo.center };
+          return { provider: "amap", adcode: geo.adcode, center: geo.center, currency: "CNY" };
         }
       } catch (err) {
         console.warn("[trip] amap resolveCity failed:", (err as Error).message);
       }
-      if (forced === "amap") return { provider: "amap", adcode: null, center: null };
+      if (forced === "amap") return { provider: "amap", adcode: null, center: null, currency: "CNY" };
     }
     try {
       const geo = await osm.resolveCity(city);
       if (geo) {
         if (geo.country === "中国" || geo.country === "China") {
-          return { provider: "amap", adcode: null, center: geo.center };
+          return { provider: "amap", adcode: null, center: geo.center, currency: "CNY" };
         }
-        return { provider: "osm", adcode: null, center: geo.center };
+        return {
+          provider: "osm",
+          adcode: null,
+          center: geo.center,
+          currency: currencyForCountry(geo.countryCode),
+        };
       }
     } catch (err) {
       console.warn("[trip] osm resolveCity failed:", (err as Error).message);
     }
-    return { provider: "osm", adcode: null, center: null };
+    return { provider: "osm", adcode: null, center: null, currency: "USD" };
   }
 
   async createTrip(input: CreateTripInput) {
@@ -112,6 +122,7 @@ export class TripService {
         geoProvider: resolved.provider,
         cityCenterLng: resolved.center ? String(resolved.center.lng) : null,
         cityCenterLat: resolved.center ? String(resolved.center.lat) : null,
+        currency: resolved.currency,
         startDate: input.startDate ?? null,
         endDate: input.endDate ?? null,
         shareToken,
@@ -138,6 +149,7 @@ export class TripService {
         cityAdcode: resolved.provider === "amap" ? resolved.adcode : null,
         cityCenterLng: resolved.center ? String(resolved.center.lng) : null,
         cityCenterLat: resolved.center ? String(resolved.center.lat) : null,
+        currency: resolved.currency,
         updatedAt: new Date(),
       })
       .where(eq(schema.trips.id, tripId));
@@ -239,6 +251,7 @@ export class TripService {
         notes: input.notes ?? null,
         durationMin: input.durationMin ?? null,
         priceCny: input.priceCny != null ? Math.round(input.priceCny) : null,
+        bookingInfo: input.bookingInfo ?? null,
         createdBy: actor,
       })
       .returning();
@@ -264,6 +277,7 @@ export class TripService {
     if (input.durationMin !== undefined) patch.durationMin = input.durationMin ?? null;
     if (input.priceCny !== undefined)
       patch.priceCny = input.priceCny != null ? Math.round(input.priceCny) : null;
+    if (input.bookingInfo !== undefined) patch.bookingInfo = input.bookingInfo ?? null;
     const [row] = await this.db.update(schema.places).set(patch).where(eq(schema.places.id, placeId)).returning();
     await this.touchTrip(existing.tripId);
     await this.publishBundle(existing.tripId);
@@ -729,9 +743,97 @@ export class TripService {
     await this.publishBundle(tripId);
   }
 
-  /** 推荐住宿区域：各天 POI 质心的中位数（前端画圈） */
-  async recommendHotelArea(tripId: string): Promise<{ center: LngLat; radiusM: number } | null> {
+  // ---------- 预算 ----------
+
+  /** 设置总预算 / 人数 / 币种 */
+  async updateBudget(
+    tripId: string,
+    input: { budgetCny?: number | null; travelerCount?: number; currency?: string },
+  ) {
+    await this.getTrip(tripId);
+    const patch: Partial<typeof schema.trips.$inferInsert> = { updatedAt: new Date() };
+    if (input.budgetCny !== undefined) {
+      patch.budgetCny = input.budgetCny != null ? Math.max(0, Math.round(input.budgetCny)) : null;
+    }
+    if (input.travelerCount !== undefined) {
+      patch.travelerCount = Math.max(1, Math.min(20, Math.round(input.travelerCount)));
+    }
+    if (input.currency !== undefined && /^[A-Z]{3}$/.test(input.currency)) {
+      patch.currency = input.currency;
+    }
+    await this.db.update(schema.trips).set(patch).where(eq(schema.trips.id, tripId));
+    await this.publishBundle(tripId);
+  }
+
+  /**
+   * 预算汇总：住宿（选定酒店 × 晚数）+ 餐饮（餐厅人均 × 人数）+ 门票（景点 × 人数）。
+   * 交通费不自动计入（打车/公交成本因人而异，提示用户自行预留）。
+   */
+  async getBudgetSummary(tripId: string) {
+    const trip = await this.getTrip(tripId);
+    const travelerCount = trip.travelerCount ?? 1;
+    const dayRows = await this.db
+      .select({ id: schema.days.id })
+      .from(schema.days)
+      .where(eq(schema.days.tripId, tripId));
     const places = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
+
+    // 晚数：日期范围优先，退回天数，至少 1
+    let nights = Math.max(dayRows.length, 1);
+    if (trip.startDate && trip.endDate) {
+      const diff = Math.round(
+        (new Date(trip.endDate).getTime() - new Date(trip.startDate).getTime()) / 86_400_000,
+      );
+      if (Number.isFinite(diff) && diff > 0) nights = diff;
+    }
+
+    let hotelCny: number | null = null;
+    let hotelSelected = false;
+    if (trip.selectedHotelCandidateId) {
+      const [cand] = await this.db
+        .select()
+        .from(schema.hotelCandidates)
+        .where(eq(schema.hotelCandidates.id, trip.selectedHotelCandidateId));
+      if (cand?.pricePerNight != null) {
+        hotelSelected = true;
+        hotelCny = cand.pricePerNight * nights;
+      }
+    }
+
+    let diningCny = 0;
+    let ticketsCny = 0;
+    let unpricedCount = 0;
+    for (const p of places) {
+      if (p.category === "hotel") continue;
+      if (p.priceCny == null) {
+        if (p.category === "restaurant" || p.category === "attraction" || p.category === "activity") {
+          unpricedCount += 1;
+        }
+        continue;
+      }
+      if (p.category === "restaurant") diningCny += p.priceCny * travelerCount;
+      else if (p.category === "attraction" || p.category === "activity") ticketsCny += p.priceCny * travelerCount;
+    }
+
+    const totalCny = (hotelCny ?? 0) + diningCny + ticketsCny;
+    const budgetCny = trip.budgetCny ?? null;
+    return {
+      currency: trip.currency ?? "CNY",
+      budgetCny,
+      travelerCount,
+      nights,
+      hotelSelected,
+      hotelCny,
+      diningCny,
+      ticketsCny,
+      totalCny,
+      remainingCny: budgetCny != null ? budgetCny - totalCny : null,
+      unpricedCount,
+    };
+  }
+
+  /** 推荐住宿区域：各天 POI 质心的中位数（前端画圈） */
+  async recommendHotelArea(tripId: string): Promise<{ center: LngLat; radiusM: number } | null> {    const places = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
     const coords = places
       .filter((p) => p.category !== "hotel")
       .map((p) => ({ lng: Number(p.lng), lat: Number(p.lat) }));

@@ -201,6 +201,24 @@ export function createApi(
     c.json({ suggestion: await tripService.suggestDayOrder(c.req.param("tripId"), Number(c.req.query("dayIndex"))) }),
   );
 
+  // ---------- 预算 ----------
+
+  api.patch("/trips/:tripId/budget", async (c) => {
+    const input = z
+      .object({
+        budgetCny: z.number().nullable().optional(),
+        travelerCount: z.number().int().min(1).max(20).optional(),
+        currency: z.string().regex(/^[A-Z]{3}$/).optional(),
+      })
+      .parse(await c.req.json());
+    await tripService.updateBudget(c.req.param("tripId"), input);
+    return c.json({ ok: true });
+  });
+
+  api.get("/trips/:tripId/budget", async (c) =>
+    c.json({ summary: await tripService.getBudgetSummary(c.req.param("tripId")) }),
+  );
+
   // ---------- share（只读） ----------
 
   api.get("/share/:token", async (c) => {

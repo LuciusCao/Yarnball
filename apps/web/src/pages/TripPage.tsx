@@ -10,21 +10,20 @@ import { ItineraryPanel } from "../features/itinerary/ItineraryPanel";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import { HotelPanel } from "../features/hotel/HotelPanel";
 import { SearchAddPanel } from "../features/map/SearchAddPanel";
+import { DiningBudgetPanel } from "../features/dining/DiningBudgetPanel";
+import { formatMoney } from "@odessey/shared";
 
 /**
  * 行程页 —— mac 毛玻璃布局：地图全屏打底，一切 UI 都是浮层。
- * - 左上：行程信息玻璃条 + Day 筛选 chips
- * - 右侧：主面板（对话/行程/酒店/添加），mac 窗口风格：
- *   traffic lights（红=关闭隐藏，黄=收成竖条，绿=展开）
- * - 层级：地图 z-0 < chips/hint z-10 < 主面板 z-20
  */
 
-type Tab = "chat" | "itinerary" | "hotel" | "search";
+type Tab = "chat" | "itinerary" | "hotel" | "dining" | "search";
 
 const TAB_META: Record<Tab, { label: string; icon: string }> = {
   chat: { label: "对话", icon: "💬" },
   itinerary: { label: "行程", icon: "🗓" },
   hotel: { label: "酒店", icon: "🏨" },
+  dining: { label: "美食·预算", icon: "🍽" },
   search: { label: "添加", icon: "🔎" },
 };
 
@@ -118,6 +117,10 @@ export function TripPage() {
   }
 
   const { trip } = bundle;
+  const selectedPlace =
+    selectedPlaceId != null
+      ? bundle.places.find((p) => p.id === selectedPlaceId) ?? null
+      : null;
   const days = [...bundle.days].sort((a, b) => a.dayIndex - b.dayIndex);
   const tabs = Object.entries(TAB_META) as [Tab, { label: string; icon: string }][];
 
@@ -195,11 +198,48 @@ export function TripPage() {
         </div>
       )}
 
+      {/* 左下：选中地点信息卡 */}
+      {selectedPlace && (
+        <div className="glass panel-in absolute bottom-4 left-4 z-10 max-w-xs rounded-2xl p-3.5">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-slate-900">
+                {selectedPlace.category === "restaurant" ? "🍽 " : selectedPlace.category === "hotel" ? "🏨 " : ""}
+                {selectedPlace.name}
+              </p>
+              <p className="truncate text-[11px] text-slate-400">{selectedPlace.address ?? ""}</p>
+            </div>
+            <button
+              onClick={() => setSelectedPlaceId(null)}
+              className="shrink-0 rounded-full p-1 text-slate-400 hover:bg-slate-900/8 hover:text-slate-600"
+            >
+              ✕
+            </button>
+          </div>
+          {selectedPlace.priceCny != null && (
+            <p className="mt-1.5 text-sm font-semibold text-orange-600">
+              {formatMoney(selectedPlace.priceCny, trip.currency)}
+              {selectedPlace.category === "restaurant" ? " /人" : selectedPlace.category === "hotel" ? " /晚" : ""}
+            </p>
+          )}
+          {selectedPlace.bookingInfo && (
+            <p className="mt-1.5 flex items-start gap-1 rounded-lg bg-blue-500/10 px-2 py-1 text-[11px] text-blue-700">
+              📅 {selectedPlace.bookingInfo}
+            </p>
+          )}
+          {selectedPlace.notes && (
+            <p className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-slate-500">{selectedPlace.notes}</p>
+          )}
+        </div>
+      )}
+
       {/* 左下：只读分享入口（低调） */}
       <Link
         to={`/share/${trip.shareToken}`}
         target="_blank"
-        className="glass glass-text panel-in absolute bottom-4 left-4 z-10 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
+        className={`glass glass-text panel-in absolute z-10 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium text-slate-600 transition-transform hover:scale-105 ${
+          selectedPlace ? "bottom-4 left-[calc(1rem+min(20rem,60vw))]" : "bottom-4 left-4"
+        }`}
       >
         <Link2 className="size-3.5" />
         只读分享
@@ -292,6 +332,9 @@ export function TripPage() {
             )}
             {tab === "hotel" && (
               <HotelPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
+            )}
+            {tab === "dining" && (
+              <DiningBudgetPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
             )}
             {tab === "search" && (
               <SearchAddPanel

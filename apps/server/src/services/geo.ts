@@ -20,6 +20,8 @@ export interface ResolvedCity {
   adcode: string | null;
   center: LngLat;
   country: string | null;
+  /** ISO 3166-1 alpha-2（Nominatim 提供，用于币种判定） */
+  countryCode: string | null;
 }
 
 export interface GeoProvider {
@@ -39,7 +41,21 @@ export interface GeoProvider {
 export interface CitySuggestion {
   name: string;
   country: string | null;
+  countryCode: string | null;
   center: LngLat;
+}
+
+/** 国家代码 → 行程默认币种 */
+const COUNTRY_CURRENCIES: Record<string, string> = {
+  cn: "CNY", au: "AUD", nz: "NZD", jp: "JPY", kr: "KRW", us: "USD",
+  gb: "GBP", sg: "SGD", my: "MYR", th: "THB", id: "IDR", vn: "VND",
+  ca: "CAD", de: "EUR", fr: "EUR", it: "EUR", es: "EUR", nl: "EUR",
+  ch: "CHF", hk: "HKD", mo: "MOP", tw: "TWD",
+};
+
+export function currencyForCountry(countryCode: string | null | undefined): string {
+  if (!countryCode) return "USD";
+  return COUNTRY_CURRENCIES[countryCode.toLowerCase()] ?? "USD";
 }
 
 export function getProvider(name: string): GeoProvider {
@@ -165,7 +181,7 @@ export const amap: GeoProvider = {
     const center = geo.location ? parseLngLat(geo.location) : null;
     if (!center) return null;
     const country = Array.isArray(geo.country) ? geo.country[0] : geo.country;
-    return { adcode: geo.adcode, center, country: country ?? null };
+    return { adcode: geo.adcode, center, country: country ?? null, countryCode: "cn" };
   },
 
   async suggestCities(q) {
@@ -187,7 +203,7 @@ export const amap: GeoProvider = {
       const center = g.location ? parseLngLat(g.location) : null;
       if (!center) continue;
       seen.add(name);
-      out.push({ name, country: pick(g.country), center });
+      out.push({ name, country: pick(g.country), countryCode: "cn", center });
       if (out.length >= 5) break;
     }
     return out;
@@ -380,7 +396,9 @@ export const osm: GeoProvider = {
   async resolveCity(city) {
     const suggestions = await this.suggestCities(city);
     const first = suggestions[0];
-    return first ? { adcode: null, center: first.center, country: first.country } : null;
+    return first
+      ? { adcode: null, center: first.center, country: first.country, countryCode: first.countryCode }
+      : null;
   },
 
   /**
@@ -409,7 +427,7 @@ export const osm: GeoProvider = {
           lat: string;
           lon: string;
           addresstype?: string;
-          address?: { country?: string };
+          address?: { country?: string; country_code?: string };
         }>;
         const CITY_TYPES = new Set(["city", "municipality", "town"]);
         const hits = body.filter((r) => r.name && CITY_TYPES.has(r.addresstype ?? ""));
@@ -420,6 +438,7 @@ export const osm: GeoProvider = {
             r.address?.country ??
             r.display_name?.split(",").map((s) => s.trim()).filter(Boolean).at(-1) ??
             null,
+          countryCode: r.address?.country_code ?? null,
           center: { lng: Number(r.lon), lat: Number(r.lat) },
         }));
         if (out.length > 0) return out;
@@ -441,6 +460,7 @@ export const osm: GeoProvider = {
       .map((f) => ({
         name: f.properties.name!,
         country: f.properties.country ?? null,
+        countryCode: null,
         center: { lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] },
       }));
   },

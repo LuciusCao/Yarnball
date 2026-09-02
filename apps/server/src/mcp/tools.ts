@@ -111,6 +111,12 @@ const UpdatePlaceWithIdSchema = UpdatePlaceInputSchema.extend({ placeId: z.strin
 
 const RemovePlaceInput = z.object({ placeId: z.string() });
 
+const SetBudgetInput = z.object({
+  total: z.number().min(0).nullable().optional(),
+  travelerCount: z.number().int().min(1).max(20).optional(),
+  currency: z.string().regex(/^[A-Z]{3}$/).optional(),
+});
+
 // ---------- 注册 ----------
 
 export interface ToolContext {
@@ -160,6 +166,7 @@ export function registerOdesseyTools(server: McpServer, ctx: ToolContext) {
         entries: bundle.entries,
         legs: bundle.legs,
         hotelCandidates: bundle.hotelCandidates,
+        budget: await tripService.getBudgetSummary(tripId),
         userUiContext: uiContext,
         hint:
           `字段含义：entries[].position 为天内顺序（0 起）；dayIndex 从 1 开始。` +
@@ -220,7 +227,7 @@ export function registerOdesseyTools(server: McpServer, ctx: ToolContext) {
     "add_place",
     {
       description:
-        "添加地点（景点/餐厅/活动）到行程的地点库。location 必须来自 search_poi 的返回。amapPoiId 一并填入可提升匹配质量。",
+        "添加地点（景点/餐厅/活动）到行程的地点库。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）和 durationMin（建议游玩时长）。金额单位为行程币种。",
       inputSchema: CreatePlaceInputSchema.shape,
     },
     async (input) => {
@@ -426,6 +433,31 @@ export function registerOdesseyTools(server: McpServer, ctx: ToolContext) {
       try {
         await tripService.selectHotel(tripId, candidateId);
         return json({ ok: true });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "set_budget",
+    {
+      description:
+        "设置行程总预算、出行人数和币种（如 AUD/USD/CNY）。预算面板会自动按酒店每晚×晚数、餐厅人均×人数、门票×人数汇总对比。用户提到预算时调这个。",
+      inputSchema: SetBudgetInput.shape,
+    },
+    async (input) => {
+      ctx.markMcpObserved();
+      try {
+        await tripService.updateBudget(tripId, {
+          budgetCny: input.total,
+          travelerCount: input.travelerCount,
+          currency: input.currency,
+        });
+        return json({
+          ok: true,
+          summary: await tripService.getBudgetSummary(tripId),
+        });
       } catch (err) {
         return toolError(err);
       }
