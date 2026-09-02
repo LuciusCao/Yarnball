@@ -129,8 +129,13 @@ export const TransportLegDtoSchema = z.object({
   id: z.string(),
   dayId: z.string(),
   tripId: z.string(),
-  fromEntryId: z.string(),
-  toEntryId: z.string(),
+  /** entry 端点（二选一：entryId 或 placeId） */
+  fromEntryId: z.string().nullable(),
+  toEntryId: z.string().nullable(),
+  /** place 端点（酒店往返段用） */
+  fromPlaceId: z.string().nullable(),
+  toPlaceId: z.string().nullable(),
+  seq: z.number(),
   mode: z.enum(TRANSPORT_MODES),
   distanceM: z.number().nullable(),
   durationS: z.number().nullable(),

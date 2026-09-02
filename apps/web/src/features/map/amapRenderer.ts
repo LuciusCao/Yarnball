@@ -62,7 +62,8 @@ export class AMapRenderer implements MapRenderer {
         strokeColor: line.color,
         strokeWeight: 4,
         strokeOpacity: 0.8,
-        showDir: true,
+        showDir: !line.dashed,
+        ...(line.dashed ? { strokeStyle: "dashed" } : {}),
       });
       this.map.add(poly);
       this.overlays.push(poly);
@@ -87,6 +88,10 @@ export class AMapRenderer implements MapRenderer {
     if (!this.map) return;
     const markers = this.overlays.filter((o) => o.CLASS_NAME?.includes("Marker"));
     if (markers.length > 0) this.map.setFitView(markers, false, [60, 60, 60, 60]);
+  }
+
+  flyTo(center: LngLat, zoom = 12): void {
+    this.map?.setZoomAndCenter(zoom, [center.lng, center.lat]);
   }
 
   destroy(): void {

@@ -15,6 +15,13 @@
       "when": 1788356787497,
       "tag": "0001_curly_captain_britain",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788358875331,
+      "tag": "0002_many_gressill",
+      "breakpoints": true
     }
   ]
 }

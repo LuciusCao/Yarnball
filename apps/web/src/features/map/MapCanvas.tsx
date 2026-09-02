@@ -21,6 +21,8 @@ export interface MapRenderer {
   render(specs: ReturnType<typeof buildOverlaySpecs>, selectedPlaceId: string | null): void;
   /** fitView 到标记集合 */
   fit(specs: ReturnType<typeof buildOverlaySpecs>): void;
+  /** 飞到指定坐标（城市定位/自愈重定位用） */
+  flyTo(center: LngLat, zoom?: number): void;
   destroy(): void;
 }
 
@@ -51,6 +53,13 @@ export function MapCanvas({
 
   const provider = bundle?.trip.geoProvider ?? "osm";
   const center = bundle?.trip.location ?? null;
+
+  // 城市定位：无地点时飞到城市中心（有地点时 fit 到标记更有用）
+  useEffect(() => {
+    if (!center || !bundle) return;
+    if (bundle.places.length > 0) return;
+    rendererRef.current?.flyTo(center, 12);
+  }, [center, bundle?.places.length]);
 
   // 引擎初始化（provider 变化时重建 —— 一个页面只会有一份行程，切换行程=卸载组件）
   useEffect(() => {

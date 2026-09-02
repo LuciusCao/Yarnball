@@ -102,12 +102,13 @@ export const transportLegs = pgTable(
     dayId: text("day_id")
       .notNull()
       .references(() => days.id, { onDelete: "cascade" }),
-    fromEntryId: text("from_entry_id")
-      .notNull()
-      .references(() => entries.id, { onDelete: "cascade" }),
-    toEntryId: text("to_entry_id")
-      .notNull()
-      .references(() => entries.id, { onDelete: "cascade" }),
+    /** 出发端点：行程内地点（entry）或酒店（place），fromEntryId/fromPlaceId 二选一 */
+    fromEntryId: text("from_entry_id").references(() => entries.id, { onDelete: "cascade" }),
+    toEntryId: text("to_entry_id").references(() => entries.id, { onDelete: "cascade" }),
+    fromPlaceId: text("from_place_id").references(() => places.id, { onDelete: "cascade" }),
+    toPlaceId: text("to_place_id").references(() => places.id, { onDelete: "cascade" }),
+    /** 天内的段序号（含酒店往返段） */
+    seq: integer("seq").notNull().default(0),
     mode: text("mode").notNull(), // TransportMode
     distanceM: integer("distance_m"),
     durationS: integer("duration_s"),

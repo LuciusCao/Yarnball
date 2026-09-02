@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Globe2, MapPin, MoreHorizontal, Plus, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -31,6 +31,36 @@ export function TripListPage() {
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TripDto | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // 城市联想
+  const [suggestions, setSuggestions] = useState<
+    { name: string; country: string | null; center: { lng: number; lat: number } }[]
+  >([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const cityDirtyRef = useRef(false); // 用户从联想里选过就不再自动触发
+
+  useEffect(() => {
+    if (!city.trim() || cityDirtyRef.current || city.length < 1) {
+      setSuggestions([]);
+      setSuggestOpen(false);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const { suggestions } = await api.citySuggest(city.trim());
+        setSuggestions(suggestions);
+        setSuggestOpen(suggestions.length > 0);
+      } catch {
+        /* 静默 */
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [city]);
+
+  function pickSuggestion(s: { name: string }) {
+    cityDirtyRef.current = true;
+    setCity(s.name);
+    setSuggestOpen(false);
+  }
 
   async function refresh() {
     const { trips } = await api.listTrips();
@@ -98,11 +128,33 @@ export function TripListPage() {
               <MapPin className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
               <Input
                 value={city}
-                onChange={(e) => setCity(e.target.value)}
+                onChange={(e) => {
+                  cityDirtyRef.current = false;
+                  setCity(e.target.value);
+                }}
                 onKeyDown={(e) => e.key === "Enter" && void create()}
+                onFocus={() => suggestions.length > 0 && setSuggestOpen(true)}
                 placeholder="目的地（Sydney / 杭州…）"
                 className="h-10 w-56 pl-9"
+                autoComplete="off"
               />
+              {suggestOpen && suggestions.length > 0 && (
+                <div className="absolute left-0 top-full z-20 mt-1.5 w-72 overflow-hidden rounded-xl border border-white/60 bg-white/95 p-1.5 shadow-xl backdrop-blur-2xl">
+                  {suggestions.map((s, i) => (
+                    <button
+                      key={`${s.name}-${i}`}
+                      type="button"
+                      onClick={() => pickSuggestion(s)}
+                      className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-sm text-slate-700 transition-colors hover:bg-blue-50"
+                    >
+                      <span className="font-medium">{s.name}</span>
+                      {s.country && (
+                        <span className="text-xs text-slate-400">{s.country}</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <Button
               variant="primary"

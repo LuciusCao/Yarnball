@@ -28,10 +28,18 @@ export interface GeoProvider {
   searchPoi(keyword: string, city: string, bias?: LngLat | null): Promise<PoiCandidate[]>;
   /** 城市名 → { adcode, 中心坐标, 国家 } */
   resolveCity(city: string): Promise<ResolvedCity | null>;
+  /** 城市名联想（创建表单自动补全用），返回带国家的规范候选 */
+  suggestCities(q: string): Promise<CitySuggestion[]>;
   /** 两点路线。osm 的 transit 返回估算值（免费公交路由不存在） */
   route(from: LngLat, to: LngLat, mode: TransportMode, city?: string): Promise<RouteResult>;
   /** 驾车时长矩阵（顺路度/重排优化用），n<=10；不可用时返回 null 由调用方降级 */
   drivingMatrix(points: LngLat[]): Promise<number[][] | null>;
+}
+
+export interface CitySuggestion {
+  name: string;
+  country: string | null;
+  center: LngLat;
 }
 
 export function getProvider(name: string): GeoProvider {
@@ -160,6 +168,31 @@ export const amap: GeoProvider = {
     return { adcode: geo.adcode, center, country: country ?? null };
   },
 
+  async suggestCities(q) {
+    const body = await amapGet<{
+      geocodes: Array<{
+        city: string | string[];
+        province: string | string[];
+        country: string | string[];
+        location: string;
+      }>;
+    }>("/geocode/geo", { address: q });
+    const seen = new Set<string>();
+    const out: CitySuggestion[] = [];
+    for (const g of body.geocodes ?? []) {
+      const pick = (v: string | string[] | undefined) =>
+        Array.isArray(v) ? v[0] : v ?? null;
+      const name = pick(g.city) ?? pick(g.province) ?? q;
+      if (seen.has(name)) continue;
+      const center = g.location ? parseLngLat(g.location) : null;
+      if (!center) continue;
+      seen.add(name);
+      out.push({ name, country: pick(g.country), center });
+      if (out.length >= 5) break;
+    }
+    return out;
+  },
+
   async route(from, to, mode) {
     const cacheKey = `${mode}|${loc(from)}|${loc(to)}`;
     const cached = amapRouteCache.get(cacheKey);
@@ -254,6 +287,7 @@ export const amap: GeoProvider = {
  */
 
 const PHOTON_BASE = "https://photon.komoot.io/api";
+const NOMINATIM_BASE = "https://nominatim.openstreetmap.org";
 const OSRM_CAR = "https://routing.openstreetmap.de/routed-car";
 const OSRM_FOOT = "https://routing.openstreetmap.de/routed-foot";
 const OSM_UA = "Odessey/0.1 (self-hosted travel planner)";
@@ -263,6 +297,8 @@ interface PhotonFeature {
   properties: {
     osm_id?: number;
     osm_type?: string;
+    osm_key?: string;
+    osm_value?: string;
     name?: string;
     street?: string;
     housenumber?: string;
@@ -342,15 +378,66 @@ export const osm: GeoProvider = {
   },
 
   async resolveCity(city) {
-    const features = await photonGet({ q: city, limit: "1", lang: "en" });
-    const f = features[0];
-    if (!f) return null;
-    const [lng, lat] = f.geometry.coordinates;
-    return {
-      adcode: null,
-      center: { lng, lat },
-      country: f.properties.country ?? null,
-    };
+    const suggestions = await this.suggestCities(city);
+    const first = suggestions[0];
+    return first ? { adcode: null, center: first.center, country: first.country } : null;
+  },
+
+  /**
+   * 城市联想：Nominatim 优先（importance 排序 + addresstype 过滤，
+   * 中文城市名如「悉尼」能正确命中澳大利亚悉尼，而不是 Photon 里的上海「悉尼园」），
+   * Photon 后备（英文输入时快）。两者都只认 city/municipality/town 级别结果。
+   */
+  async suggestCities(q): Promise<CitySuggestion[]> {
+    // --- Nominatim ---
+    try {
+      const url = new URL(`${NOMINATIM_BASE}/search`);
+      url.searchParams.set("q", q);
+      url.searchParams.set("format", "jsonv2");
+      url.searchParams.set("limit", "5");
+      url.searchParams.set("dedupe", "1");
+      url.searchParams.set("accept-language", "zh,en");
+      const res = await fetch(url, {
+        headers: { "User-Agent": OSM_UA },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (res.ok) {
+        const body = (await res.json()) as Array<{
+          name?: string;
+          display_name?: string;
+          lat: string;
+          lon: string;
+          addresstype?: string;
+          address?: { country?: string };
+        }>;
+        const CITY_TYPES = new Set(["city", "municipality", "town"]);
+        const hits = body.filter((r) => r.name && CITY_TYPES.has(r.addresstype ?? ""));
+        const out: CitySuggestion[] = hits.map((r) => ({
+          name: r.name!,
+          country: r.address?.country ?? null,
+          center: { lng: Number(r.lon), lat: Number(r.lat) },
+        }));
+        if (out.length > 0) return out;
+      }
+    } catch (err) {
+      console.warn("[geo] nominatim city search failed:", (err as Error).message);
+    }
+
+    // --- Photon 后备 ---
+    const features = await photonGet({ q, limit: "5", lang: "en" });
+    const CITY_VALUES = new Set(["city", "town", "municipality"]);
+    return features
+      .filter(
+        (f) =>
+          f.properties.name != null &&
+          f.properties.osm_key === "place" &&
+          CITY_VALUES.has(f.properties.osm_value ?? f.properties.type ?? ""),
+      )
+      .map((f) => ({
+        name: f.properties.name!,
+        country: f.properties.country ?? null,
+        center: { lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] },
+      }));
   },
 
   async route(from, to, mode) {

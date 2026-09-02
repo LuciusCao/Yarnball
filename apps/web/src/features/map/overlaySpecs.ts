@@ -20,6 +20,8 @@ export interface LineSpec {
   id: string; // legId
   path: LngLat[];
   color: string;
+  /** 酒店往返段（虚线）vs 景点间移动（实线） */
+  dashed: boolean;
 }
 
 export interface CircleSpec {
@@ -85,7 +87,7 @@ export function buildOverlaySpecs(
   const markers: MarkerSpec[] = [];
   const lines: LineSpec[] = [];
 
-  const legByPair = new Map(bundle.legs.map((l) => [`${l.fromEntryId}->${l.toEntryId}`, l]));
+  const legByPair = new Map(bundle.legs.map((l) => [l.id, l]));
 
   for (const day of bundle.days) {
     if (visibleDayIndex != null && day.dayIndex !== visibleDayIndex) continue;
@@ -104,17 +106,30 @@ export function buildOverlaySpecs(
       });
     });
 
-    for (let i = 0; i + 1 < entries.length; i++) {
-      const leg = legByPair.get(`${entries[i].id}->${entries[i + 1].id}`);
-      if (!leg) continue;
-      const from = placeById.get(entries[i].placeId);
-      const to = placeById.get(entries[i + 1].placeId);
+    // 交通段：按 seq 排序（含酒店往返段），酒店端点的段画虚线
+    const dayLegs = bundle.legs
+      .filter((l) => l.dayId === day.id)
+      .sort((a, b) => a.seq - b.seq);
+    for (const leg of dayLegs) {
+      const fromPlaceId = leg.fromEntryId
+        ? entries.find((e) => e.id === leg.fromEntryId)?.placeId
+        : leg.fromPlaceId;
+      const toPlaceId = leg.toEntryId
+        ? entries.find((e) => e.id === leg.toEntryId)?.placeId
+        : leg.toPlaceId;
+      const from = fromPlaceId ? placeById.get(fromPlaceId) : undefined;
+      const to = toPlaceId ? placeById.get(toPlaceId) : undefined;
       if (!from || !to) continue;
       const path =
         leg.polyline && leg.polyline.length > 1
           ? leg.polyline
           : [from.location, to.location];
-      lines.push({ id: leg.id, path, color });
+      lines.push({
+        id: leg.id,
+        path,
+        color,
+        dashed: !leg.fromEntryId || !leg.toEntryId,
+      });
     }
   }
 

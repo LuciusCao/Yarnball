@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Link2 } from "lucide-react";
+import { Crosshair, Link2 } from "lucide-react";
+import { toast } from "sonner";
 import type { ChatSessionDto } from "@odessey/shared";
 import { api } from "../api/client";
 import { useTripStore } from "../stores/tripStore";
@@ -60,6 +61,45 @@ export function TripPage() {
     void api.hotelArea(tripId).then(({ area }) => setHotelArea(area));
   }, [tripId, bundle?.places.length]);
 
+  // 城市定位自愈：行程没有中心坐标（创建时解析失败）→ 自动重解析一次
+  const cityUnresolved = bundle != null && bundle.trip.location == null;
+  useEffect(() => {
+    if (!tripId || !cityUnresolved) return;
+    let cancelled = false;
+    void api
+      .resolveCity(tripId)
+      .then(({ trip }) => {
+        if (!cancelled && trip.location == null) {
+          toast.warning("城市定位失败", {
+            description: `无法解析「${trip.destinationCity}」，试试英文名（如 Sydney）或点右上角定位按钮重试。`,
+            duration: 6000,
+          });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [tripId, cityUnresolved]);
+
+  // 手动重定位按钮
+  async function relocate() {
+    if (!tripId) return;
+    try {
+      const { trip } = await api.resolveCity(tripId);
+      if (trip.location) {
+        toast.success(`已定位到 ${trip.destinationCity}`);
+        await load(tripId);
+      } else {
+        toast.error("定位失败", {
+          description: "无法解析这个城市名，试试更通用的写法（如 Sydney、Melbourne）。",
+        });
+      }
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
   const refreshSessions = useCallback(async () => {
     if (!tripId) return;
     const { sessions } = await api.chatSessions(tripId);
@@ -114,6 +154,13 @@ export function TripPage() {
             海外
           </span>
         )}
+        <button
+          onClick={() => void relocate()}
+          title="重新定位到目的城市"
+          className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-blue-600"
+        >
+          <Crosshair className="size-3.5" />
+        </button>
       </header>
 
       {/* 左上第二行：Day 筛选 chips */}

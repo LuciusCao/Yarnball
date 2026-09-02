@@ -36,6 +36,14 @@ export const api = {
     request<{ trip: TripDto }>("/trips", { method: "POST", body: JSON.stringify(input) }),
   deleteTrip: (tripId: string) => request<{ ok: true }>(`/trips/${tripId}`, { method: "DELETE" }),
   getBundle: (tripId: string) => request<{ bundle: TripBundle }>(`/trips/${tripId}`),
+  /** 目的地自愈：重新解析城市中心（创建时网络失败/旧数据定位错误） */
+  resolveCity: (tripId: string) =>
+    request<{ trip: TripDto }>(`/trips/${tripId}/resolve-city`, { method: "POST" }),
+  /** 城市联想（创建表单自动补全） */
+  citySuggest: (q: string) =>
+    request<{
+      suggestions: { name: string; country: string | null; center: { lng: number; lat: number } }[];
+    }>(`/city-suggest?q=${encodeURIComponent(q)}`),
 
   searchPoi: (tripId: string, keyword: string) =>
     request<{ candidates: PoiCandidate[]; error?: string }>(

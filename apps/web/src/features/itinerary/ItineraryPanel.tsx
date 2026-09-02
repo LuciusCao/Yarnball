@@ -26,7 +26,6 @@ export function ItineraryPanel({
 }: ItineraryPanelProps) {
   const [busy, setBusy] = useState(false);
   const placeById = new Map(bundle.places.map((p) => [p.id, p]));
-  const legByPair = new Map(bundle.legs.map((l) => [`${l.fromEntryId}->${l.toEntryId}`, l]));
 
   const sortedDays = [...bundle.days].sort((a, b) => a.dayIndex - b.dayIndex);
   const dayEntries = new Map<string, TripBundle["entries"]>();
@@ -34,6 +33,20 @@ export function ItineraryPanel({
   for (const entry of [...bundle.entries].sort((a, b) => a.position - b.position)) {
     dayEntries.get(entry.dayId)?.push(entry);
   }
+  /** entryId → 其后紧邻的交通段（按 seq：entry→entry 或 entry→酒店） */
+  const legAfter = new Map<string, TripBundle["legs"][number]>();
+  for (const day of bundle.days) {
+    const legs = bundle.legs.filter((l) => l.dayId === day.id).sort((a, b) => a.seq - b.seq);
+    for (const leg of legs) {
+      if (leg.fromEntryId) legAfter.set(leg.fromEntryId, leg);
+    }
+  }
+  /** 选定酒店（往返段标注用） */
+  const selectedHotel =
+    bundle.trip.selectedHotelCandidateId != null
+      ? bundle.hotelCandidates.find((h) => h.id === bundle.trip.selectedHotelCandidateId)
+      : undefined;
+  const hotelPlace = selectedHotel ? placeById.get(selectedHotel.placeId) : undefined;
 
   async function move(entryId: string, dayIndex: number, position: number) {
     setBusy(true);
@@ -119,12 +132,16 @@ export function ItineraryPanel({
             </header>
 
             <ol className="space-y-0">
+              {entries.length === 0 && (
+                <li className="px-2 py-1.5 text-xs text-slate-400">
+                  {hotelPlace ? `当天暂无行程（酒店：${hotelPlace.name}）` : "当天暂无行程"}
+                </li>
+              )}
               {entries.map((entry, i) => {
                 const place = placeById.get(entry.placeId);
                 if (!place) return null;
-                const leg = i + 1 < entries.length
-                  ? legByPair.get(`${entries[i].id}->${entries[i + 1].id}`)
-                  : null;
+                const leg = legAfter.get(entry.id);
+                const toHotel = leg != null && leg.toPlaceId != null;
                 const selected = place.id === selectedPlaceId;
                 return (
                   <li key={entry.id}>
@@ -184,8 +201,11 @@ export function ItineraryPanel({
                     </div>
                     {leg && (
                       <div className="flex items-center gap-1 py-0.5 pl-9 text-[11px] text-slate-400">
-                        <span>{leg.mode === "walk" ? "🚶" : leg.mode === "transit" ? "🚌" : "🚗"}</span>
                         <span>
+                          {toHotel ? "🏨" : leg.mode === "walk" ? "🚶" : leg.mode === "transit" ? "🚌" : "🚗"}
+                        </span>
+                        <span>
+                          {toHotel ? `返回 ${hotelPlace?.name ?? "酒店"} · ` : ""}
                           {formatDuration(leg.durationS)}
                           {leg.distanceM != null ? ` · ${formatDistance(leg.distanceM)}` : ""}
                         </span>

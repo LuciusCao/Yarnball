@@ -96,6 +96,9 @@ export class MapLibreRenderer implements MapRenderer {
           "line-color": line.color,
           "line-width": 3.5,
           "line-opacity": 0.85,
+          ...(line.dashed
+            ? { "line-dasharray": [2, 2] }
+            : {}),
         },
       });
       this.routeLayerIds.push(layerId);
@@ -168,6 +171,10 @@ export class MapLibreRenderer implements MapRenderer {
       ],
       { padding: 70, maxZoom: 14, duration: 600 },
     );
+  }
+
+  flyTo(center: LngLat, zoom = 12): void {
+    this.map?.flyTo({ center: [center.lng, center.lat], zoom, duration: 900 });
   }
 
   destroy(): void {

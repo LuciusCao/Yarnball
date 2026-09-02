@@ -52,6 +52,33 @@ export function createApi(
     }),
   );
 
+  // ---------- 城市联想（创建表单自动补全） ----------
+
+  api.get("/city-suggest", async (c) => {
+    const q = (c.req.query("q") ?? "").trim();
+    if (q.length < 1) return c.json({ suggestions: [] });
+    // 高德可用时国内城市优先走高德（中文名更准），否则 OSM 栈（Nominatim 优先）
+    const useAmap = env.amapConfigured && /[\u4e00-\u9fff]/.test(q) === false ? false : env.amapConfigured;
+    try {
+      const suggestions = useAmap
+        ? await getProvider("amap").suggestCities(q)
+        : await getProvider("osm").suggestCities(q);
+      return c.json({ suggestions: suggestions.slice(0, 5) });
+    } catch {
+      try {
+        return c.json({ suggestions: (await getProvider("osm").suggestCities(q)).slice(0, 5) });
+      } catch {
+        return c.json({ suggestions: [] });
+      }
+    }
+  });
+
+  // ---------- 行程目的地自愈重定位 ----------
+
+  api.post("/trips/:tripId/resolve-city", async (c) =>
+    c.json({ trip: await tripService.reResolveCity(c.req.param("tripId")) }),
+  );
+
   // ---------- trips ----------
 
   api.get("/trips", async (c) => c.json({ trips: await tripService.listTrips() }));

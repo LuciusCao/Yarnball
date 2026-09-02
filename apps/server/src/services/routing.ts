@@ -96,20 +96,84 @@ export function optimizeOrder(matrix: number[][]): number[] {
 }
 
 /**
+ * 环路优化：下标 0 为锚点（酒店），途经其余点后返回锚点。
+ * 返回 [0, ...途经顺序, 0]（首尾都是锚点）。
+ */
+export function optimizeLoopOrder(matrix: number[][]): number[] {
+  const n = matrix.length;
+  if (n <= 1) return [0];
+  if (n === 2) return [0, 1, 0];
+
+  // 最近邻（从锚点出发）
+  const order: number[] = [0];
+  const remaining = new Set<number>();
+  for (let i = 1; i < n; i++) remaining.add(i);
+  while (remaining.size > 0) {
+    const last = order[order.length - 1];
+    let best = -1;
+    let bestCost = Infinity;
+    for (const j of remaining) {
+      const cost = matrix[last][j];
+      if (Number.isFinite(cost) && cost < bestCost) {
+        bestCost = cost;
+        best = j;
+      }
+    }
+    if (best === -1) best = [...remaining][0];
+    order.push(best);
+    remaining.delete(best);
+  }
+  order.push(0); // 闭环
+
+  // 2-opt：中间段可反转，首尾锚点固定
+  const cost = (o: number[]): number => {
+    let sum = 0;
+    for (let i = 0; i + 1 < o.length; i++) sum += matrix[o[i]][o[i + 1]];
+    return sum;
+  };
+  let best = [...order];
+  let bestCost = cost(best);
+  let improved = true;
+  let guard = 0;
+  while (improved && guard++ < 100) {
+    improved = false;
+    for (let i = 1; i < best.length - 2; i++) {
+      for (let k = i + 1; k < best.length - 1; k++) {
+        const candidate = [
+          ...best.slice(0, i),
+          ...best.slice(i, k + 1).reverse(),
+          ...best.slice(k + 1),
+        ];
+        const c = cost(candidate);
+        if (c < bestCost) {
+          best = candidate;
+          bestCost = c;
+          improved = true;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/**
  * 插入分析：在长度为 n 的链路里，把新点插到每个位置的开销增量。
  * 返回 increment[k] = duration[prev→new] + duration[new→next] - duration[prev→next]
  * k=0 表示插在最前（没有 prev），k=n 表示插在最后。
+ * anchorIdx 提供时（酒店锚点）：链路首尾视为从锚点出发/返回，
+ * 即 k=0 的 prev 和 k=n 的 next 都是锚点——形成往返闭环的增量。
  */
 export function insertionIncrements(
   chain: number[],
   newIdx: number,
   matrix: number[][],
+  anchorIdx?: number,
 ): { position: number; incrementS: number }[] {
   const results: { position: number; incrementS: number }[] = [];
   const n = chain.length;
   for (let k = 0; k <= n; k++) {
-    const prev = k > 0 ? chain[k - 1] : null;
-    const next = k < n ? chain[k] : null;
+    const prev = k > 0 ? chain[k - 1] : (anchorIdx ?? null);
+    const next = k < n ? chain[k] : (anchorIdx ?? null);
     let inc = 0;
     if (prev !== null) inc += matrix[prev][newIdx];
     if (next !== null) inc += matrix[newIdx][next];
