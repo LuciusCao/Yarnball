@@ -1,6 +1,9 @@
 import { useState } from "react";
 import type { PoiCandidate, TripBundle } from "@odessey/shared";
+import { toast } from "sonner";
 import { api } from "../../api/client";
+import { Button } from "../../components/ui/button";
+import { Input, Select } from "../../components/ui/input";
 
 /** 搜索添加地点（人类直接编辑路径，与 agent 并行） */
 export function SearchAddPanel({

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { formatDistance, formatDuration, type TripBundle } from "@odessey/shared";
+import { toast } from "sonner";
 import { api } from "../../api/client";
 import { DAY_COLORS } from "../map/MapCanvas";
 
@@ -39,7 +40,7 @@ export function ItineraryPanel({
     try {
       await api.moveEntry(entryId, dayIndex, position);
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -50,7 +51,7 @@ export function ItineraryPanel({
     try {
       await api.removeEntry(entryId);
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -68,7 +69,7 @@ export function ItineraryPanel({
         entryIds: string[];
       };
       if (s.alreadyOptimal) {
-        alert(`Day ${dayIndex} 的顺序已经是最优，无需调整`);
+        toast.info(`Day ${dayIndex} 的顺序已经是最优，无需调整`);
         return;
       }
       const names = s.afterOrder.map((o) => o.name).join(" → ");
@@ -77,7 +78,7 @@ export function ItineraryPanel({
         await api.reorderDay(tripId, dayIndex, s.entryIds);
       }
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     } finally {
       setBusy(false);
     }

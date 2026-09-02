@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
+import { Link2 } from "lucide-react";
 import type { ChatSessionDto } from "@odessey/shared";
 import { api } from "../api/client";
 import { useTripStore } from "../stores/tripStore";
@@ -97,9 +98,13 @@ export function TripPage() {
 
       {/* 左上：行程信息玻璃条 */}
       <header className="glass panel-in pointer-events-auto absolute left-4 top-4 z-10 flex items-center gap-2.5 rounded-2xl px-4 py-2">
-        <a href="/" className="text-slate-400 transition-colors hover:text-slate-700" title="返回行程列表">
+        <Link
+          to="/"
+          className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-700"
+          title="返回行程列表"
+        >
           ‹
-        </a>
+        </Link>
         <h1 className="glass-text text-sm font-semibold">{trip.title}</h1>
         <span className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500">
           {trip.destinationCity}
@@ -144,14 +149,14 @@ export function TripPage() {
       )}
 
       {/* 左下：只读分享入口（低调） */}
-      <a
-        href={`/share/${trip.shareToken}`}
+      <Link
+        to={`/share/${trip.shareToken}`}
         target="_blank"
-        rel="noreferrer"
-        className="glass glass-text panel-in absolute bottom-4 left-4 z-10 rounded-full px-3 py-1.5 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
+        className="glass glass-text panel-in absolute bottom-4 left-4 z-10 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
       >
-        🔗 只读分享
-      </a>
+        <Link2 className="size-3.5" />
+        只读分享
+      </Link>
 
       {/* ===== 右侧主面板（mac 窗口） ===== */}
       {panelMode === "hidden" ? (

@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
 import type { ChatMessageDto, ChatSessionDto, TripDto } from "@odessey/shared";
+import { toast } from "sonner";
 import { api } from "../../api/client";
+import { Button } from "../../components/ui/button";
+import { Textarea, Select } from "../../components/ui/input";
 import { useChatStore } from "../../stores/tripStore";
 
 /**
@@ -68,7 +71,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
       await api.createChatSession(trip.id, agentId);
       onSessionsChanged();
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     } finally {
       setStarting(false);
     }
@@ -81,7 +84,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
     try {
       await api.sendPrompt(activeSession.id, text);
     } catch (err) {
-      alert((err as Error).message);
+      toast.error((err as Error).message);
     }
   }
 
@@ -101,24 +104,20 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
           粘贴攻略 / 酒店候选，解析、定位、编排。
         </p>
         <div className="flex gap-2">
-          <select
+          <Select
             value={agentId}
             onChange={(e) => setAgentId(e.target.value)}
-            className="rounded-lg border border-slate-300/60 bg-white/70 px-3 py-2 text-sm"
+            className="h-10 px-3"
           >
             {agents.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.label}
               </option>
             ))}
-          </select>
-          <button
-            onClick={startSession}
-            disabled={starting || !agentId}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow hover:bg-blue-700 disabled:opacity-50"
-          >
+          </Select>
+          <Button variant="primary" size="lg" onClick={startSession} disabled={starting || !agentId}>
             {starting ? "启动中…" : "连接 agent"}
-          </button>
+          </Button>
         </div>
         {starting && <p className="text-xs text-slate-400">正在启动 agent 子进程…</p>}
       </div>
@@ -149,12 +148,9 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
           />
           允许全部权限
         </label>
-        <button
-          onClick={closeSession}
-          className="rounded border border-slate-300/60 px-2 py-0.5 text-xs text-slate-500 hover:bg-white/60"
-        >
+        <Button variant="outline" size="sm" onClick={closeSession}>
           断开
-        </button>
+        </Button>
       </div>
 
       {activeSession.lastError && (
@@ -181,7 +177,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
       {/* 输入 */}
       <div className="border-t border-slate-900/8 p-3">
         <div className="flex gap-2">
-          <textarea
+          <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -195,15 +191,16 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
               running ? "agent 处理中…" : "粘贴攻略文本，或直接说：把 Bondi Beach 安排到 Day 2"
             }
             disabled={running}
-            className="flex-1 resize-none rounded-xl border border-slate-300/60 bg-white/70 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none disabled:bg-slate-100/50"
+            className="flex-1 resize-none"
           />
-          <button
+          <Button
+            variant="primary"
             onClick={send}
             disabled={running || !input.trim()}
-            className="shrink-0 self-end rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow hover:bg-blue-700 disabled:opacity-50"
+            className="shrink-0 self-end"
           >
             发送
-          </button>
+          </Button>
         </div>
         <p className="mt-1 text-[11px] text-slate-400">
           agent 的每次操作会实时反映在地图上 · {messages.length} 条消息

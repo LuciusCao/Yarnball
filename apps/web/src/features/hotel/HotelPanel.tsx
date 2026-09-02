@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { TripBundle } from "@odessey/shared";
+import { toast } from "sonner";
 import { api } from "../../api/client";
 
 /** 酒店面板：候选卡 + 选择 + 推荐区域 */
@@ -20,7 +21,7 @@ export function HotelPanel({
   }, [tripId, bundle.places.length]);
 
   async function select(candidateId: string | null) {
-    await api.selectHotel(tripId, candidateId);
+    await api.selectHotel(tripId, candidateId).catch((err) => toast.error((err as Error).message));
     onDataChanged();
   }
 
