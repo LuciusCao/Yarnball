@@ -11,7 +11,7 @@ import {
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { ServiceError, type TripService } from "../services/tripService.js";
-import { amap } from "../services/geo.js";
+import { amap, getProvider } from "../services/geo.js";
 
 /**
  * MCP 工具面：暴露 Odessey 行程数据结构给用户 agent。
@@ -122,6 +122,17 @@ export interface ToolContext {
   markMcpObserved: () => void;
 }
 
+/** 行程的 geo provider + 城市中心（搜索偏置用） */
+async function tripGeoInfo(ctx: ToolContext) {
+  const [trip] = await ctx.db.select().from(schema.trips).where(eq(schema.trips.id, ctx.tripId));
+  const provider = getProvider(trip?.geoProvider ?? "osm");
+  const bias =
+    trip?.cityCenterLng != null && trip?.cityCenterLat != null
+      ? { lng: Number(trip.cityCenterLng), lat: Number(trip.cityCenterLat) }
+      : null;
+  return { trip, provider, bias };
+}
+
 export function registerOdesseyTools(server: McpServer, ctx: ToolContext) {
   const { tripService, tripId } = ctx;
 
@@ -141,6 +152,7 @@ export function registerOdesseyTools(server: McpServer, ctx: ToolContext) {
         .from(schema.chatSessions)
         .where(eq(schema.chatSessions.id, ctx.chatSessionId));
       if (session?.uiContext) uiContext = session.uiContext;
+      const overseas = bundle.trip.geoProvider === "osm";
       return json({
         trip: bundle.trip,
         days: bundle.days,
@@ -149,7 +161,11 @@ export function registerOdesseyTools(server: McpServer, ctx: ToolContext) {
         legs: bundle.legs,
         hotelCandidates: bundle.hotelCandidates,
         userUiContext: uiContext,
-        hint: "字段含义：entries[].position 为天内顺序（0 起）；dayIndex 从 1 开始。",
+        hint:
+          `字段含义：entries[].position 为天内顺序（0 起）；dayIndex 从 1 开始。` +
+          (overseas
+            ? ` 本行程是海外目的地（${bundle.trip.destinationCity}，${bundle.trip.geoProvider} provider）：search_poi 时用英文或当地语言名称（如 "Sydney Opera House"）效果最好。`
+            : ""),
       });
     },
   );
@@ -163,20 +179,22 @@ export function registerOdesseyTools(server: McpServer, ctx: ToolContext) {
     },
     async ({ keyword, city }) => {
       ctx.markMcpObserved();
-      let cityUsed = city;
-      if (!cityUsed) {
-        const [trip] = await ctx.db.select().from(schema.trips).where(eq(schema.trips.id, tripId));
-        cityUsed = trip?.destinationCity ?? "";
-      }
-      const candidates = await amap.searchPoi(keyword, cityUsed);
+      const { trip, provider, bias } = await tripGeoInfo(ctx);
+      const cityUsed = city ?? trip?.destinationCity ?? "";
+      const candidates = await provider.searchPoi(keyword, cityUsed, bias);
+      const overseas = provider.name === "osm";
       return json({
         keyword,
         city: cityUsed,
         candidates,
         note:
           candidates.length === 0
-            ? "没有找到结果，试试更通用的关键词（如去掉门店名/商场名）。"
-            : undefined,
+            ? overseas
+              ? "没有找到结果。海外地点请用英文或当地语言搜索（如 'Sydney Opera House'），也可尝试更通用的关键词。"
+              : "没有找到结果，试试更通用的关键词（如去掉门店名/商场名）。"
+            : overseas
+              ? "海外行程：请确认候选确实在目的地城市附近再使用。"
+              : undefined,
       });
     },
   );
@@ -310,9 +328,16 @@ export function registerOdesseyTools(server: McpServer, ctx: ToolContext) {
     async ({ from, to, mode }) => {
       ctx.markMcpObserved();
       try {
-        const [trip] = await ctx.db.select().from(schema.trips).where(eq(schema.trips.id, tripId));
-        const route = await amap.route(from, to, mode, trip?.destinationCity);
-        return json({ ok: true, route });
+        const { trip, provider } = await tripGeoInfo(ctx);
+        const route = await provider.route(from, to, mode, trip?.destinationCity);
+        return json({
+          ok: true,
+          route,
+          note:
+            provider.name === "osm" && mode === "transit"
+              ? "海外公交查询暂不可用，返回的是估算值（驾车时长 × 1.25 + 换乘时间）。"
+              : undefined,
+        });
       } catch (err) {
         return toolError(err);
       }

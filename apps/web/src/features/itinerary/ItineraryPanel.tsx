@@ -94,7 +94,7 @@ export function ItineraryPanel({
         const color = DAY_COLORS[(day.dayIndex - 1) % DAY_COLORS.length];
         const entries = dayEntries.get(day.id) ?? [];
         return (
-          <section key={day.id} className="border-b border-slate-100 p-3">
+          <section key={day.id} className="border-b border-slate-900/8 p-3">
             <header className="mb-2 flex items-center gap-2">
               <span
                 className="rounded px-2 py-0.5 text-xs font-semibold text-white"
@@ -110,7 +110,7 @@ export function ItineraryPanel({
                 <button
                   onClick={() => suggestOrder(day.dayIndex)}
                   disabled={busy}
-                  className="ml-auto rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                  className="ml-auto rounded border border-slate-300/60 bg-white/60 px-2 py-0.5 text-xs text-slate-600 hover:bg-white disabled:opacity-50"
                 >
                   ⚡ 优化顺序
                 </button>
@@ -129,7 +129,7 @@ export function ItineraryPanel({
                   <li key={entry.id}>
                     <div
                       className={`group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 ${
-                        selected ? "bg-blue-50 ring-1 ring-blue-200" : "hover:bg-slate-50"
+                        selected ? "bg-blue-500/12 ring-1 ring-blue-300/60" : "hover:bg-slate-50"
                       }`}
                       onClick={() => onSelectPlace(place.id)}
                     >
@@ -153,7 +153,7 @@ export function ItineraryPanel({
                             e.stopPropagation();
                             void move(entry.id, day.dayIndex, entry.position - 1);
                           }}
-                          className="rounded px-1 text-xs text-slate-400 hover:bg-slate-200 disabled:opacity-30"
+                          className="rounded px-1 text-xs text-slate-400 hover:bg-white/80 disabled:opacity-30"
                         >
                           ↑
                         </button>
@@ -164,7 +164,7 @@ export function ItineraryPanel({
                             e.stopPropagation();
                             void move(entry.id, day.dayIndex, entry.position + 1);
                           }}
-                          className="rounded px-1 text-xs text-slate-400 hover:bg-slate-200 disabled:opacity-30"
+                          className="rounded px-1 text-xs text-slate-400 hover:bg-white/80 disabled:opacity-30"
                         >
                           ↓
                         </button>
@@ -175,7 +175,7 @@ export function ItineraryPanel({
                             e.stopPropagation();
                             void removeEntry(entry.id);
                           }}
-                          className="rounded px-1 text-xs text-slate-400 hover:bg-red-100 hover:text-red-500 disabled:opacity-30"
+                          className="rounded px-1 text-xs text-slate-400 hover:bg-red-100/80 hover:text-red-500 disabled:opacity-30"
                         >
                           ✕
                         </button>

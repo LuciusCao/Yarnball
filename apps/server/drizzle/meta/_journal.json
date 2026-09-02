@@ -8,6 +8,13 @@
       "when": 1788355674894,
       "tag": "0000_public_morgan_stark",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788356787497,
+      "tag": "0001_curly_captain_britain",
+      "breakpoints": true
     }
   ]
 }

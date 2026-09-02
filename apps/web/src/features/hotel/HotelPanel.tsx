@@ -29,7 +29,7 @@ export function HotelPanel({
   return (
     <div className="h-full overflow-y-auto p-3">
       {area && (
-        <div className="mb-3 rounded-lg border border-red-100 bg-red-50/50 px-3 py-2 text-xs text-slate-600">
+        <div className="mb-3 rounded-lg border border-red-200/60 bg-red-100/50 px-3 py-2 text-xs text-slate-600">
           🎯 建议住宿区域：行程地点中位数中心附近（半径 {Math.round(area.radiusM / 1000)} 公里，
           地图上红圈所示）。把这条发给 agent：
           <button
@@ -59,8 +59,8 @@ export function HotelPanel({
           return (
             <div
               key={cand.id}
-              className={`rounded-xl border p-3 ${
-                isSel ? "border-red-300 bg-red-50/30 ring-1 ring-red-200" : "border-slate-200"
+              className={`rounded-xl border p-3 shadow-sm ${
+                isSel ? "border-red-300 bg-red-100/40 ring-1 ring-red-200" : "border-slate-900/10 bg-white/60"
               }`}
             >
               <div className="flex items-start gap-2">

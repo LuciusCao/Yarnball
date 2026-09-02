@@ -2,8 +2,11 @@ import type { LngLat, PoiCandidate, TransportMode } from "@odessey/shared";
 import { env } from "../env.js";
 
 /**
- * GeoProvider —— 地理服务抽象。v1 用高德 Web 服务 API；
- * v2 接其他 provider（出境游）时保持此接口不变。
+ * GeoProvider —— 地理服务抽象。
+ * - amap：国内。高德 Web 服务 API（需 key），POI/路径规划/距离矩阵，坐标 GCJ-02。
+ * - osm：海外。Photon 搜索 + FOSSGIS OSRM 路线/矩阵（全部零 key），坐标 WGS84。
+ * 行程创建时按目的地定死 provider，之后搜索/路线/地图渲染/矩阵全部走同一 provider，
+ * 绝不混用（GCJ-02 与 WGS84 偏移约几百米，混用会把点画进海里）。
  */
 
 export interface RouteResult {
@@ -13,18 +16,74 @@ export interface RouteResult {
   polyline: LngLat[] | null;
 }
 
+export interface ResolvedCity {
+  adcode: string | null;
+  center: LngLat;
+  country: string | null;
+}
+
 export interface GeoProvider {
-  /** 地点关键词搜索（agent 解析攻略文本的核心依赖） */
-  searchPoi(keyword: string, city: string): Promise<PoiCandidate[]>;
-  /** 城市名 → { adcode, 中心坐标 }，建行程时解析一次 */
-  resolveCity(city: string): Promise<{ adcode: string; center: LngLat } | null>;
-  /** 两点路线（步行/驾车/公交） */
+  name: "amap" | "osm";
+  /** 地点关键词搜索（agent 解析攻略文本的核心依赖）；bias 为行程城市中心，用于相关性偏置 */
+  searchPoi(keyword: string, city: string, bias?: LngLat | null): Promise<PoiCandidate[]>;
+  /** 城市名 → { adcode, 中心坐标, 国家 } */
+  resolveCity(city: string): Promise<ResolvedCity | null>;
+  /** 两点路线。osm 的 transit 返回估算值（免费公交路由不存在） */
   route(from: LngLat, to: LngLat, mode: TransportMode, city?: string): Promise<RouteResult>;
-  /** 驾车距离矩阵（顺路度/重排优化用），n<=10 */
+  /** 驾车时长矩阵（顺路度/重排优化用），n<=10；不可用时返回 null 由调用方降级 */
   drivingMatrix(points: LngLat[]): Promise<number[][] | null>;
 }
 
-// ---------- 高德实现 ----------
+export function getProvider(name: string): GeoProvider {
+  return name === "amap" ? amap : osm;
+}
+
+// ---------- 公共工具 ----------
+
+const loc = (p: LngLat) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`;
+
+/** 路线结果缓存：agent 反复调整行程时避免打爆上游配额。按 provider 隔离（坐标系不同）。 */
+class RouteCache {
+  private map = new Map<string, RouteResult>();
+  get(key: string) {
+    return this.map.get(key);
+  }
+  set(key: string, value: RouteResult) {
+    if (this.map.size >= 2000) {
+      const oldest = this.map.keys().next().value;
+      if (oldest !== undefined) this.map.delete(oldest);
+    }
+    this.map.set(key, value);
+  }
+}
+const amapRouteCache = new RouteCache();
+const osmRouteCache = new RouteCache();
+
+/** 直线距离（米） */
+export function haversineM(a: LngLat, b: LngLat): number {
+  const R = 6371000;
+  const rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad;
+  const dLng = (b.lng - a.lng) * rad;
+  const s =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+/** 路线估算降级：无 key / API 失败时用直线距离 + 模式速度估算 */
+export function fallbackRoute(from: LngLat, to: LngLat, mode: TransportMode): RouteResult {
+  const distanceM = Math.round(haversineM(from, to));
+  const speedMps = mode === "walk" ? 1.3 : mode === "transit" ? 6 : 8.5;
+  return {
+    mode,
+    distanceM,
+    durationS: Math.round((distanceM / speedMps) * 1.3), // 1.3 非直线系数
+    polyline: null,
+  };
+}
+
+// ---------- 高德（国内） ----------
 
 const AMAP_BASE = "https://restapi.amap.com/v3";
 
@@ -57,31 +116,17 @@ function parsePolyline(s: string): LngLat[] {
     .filter((p): p is LngLat => p !== null);
 }
 
-/** 路线结果缓存：agent 反复调整行程时避免打爆配额 */
-const routeCache = new Map<string, RouteResult>();
-const ROUTE_CACHE_MAX = 2000;
-
-function cacheGet(key: string): RouteResult | undefined {
-  const hit = routeCache.get(key);
-  return hit;
-}
-
-function cacheSet(key: string, value: RouteResult) {
-  if (routeCache.size >= ROUTE_CACHE_MAX) {
-    const oldest = routeCache.keys().next().value;
-    if (oldest !== undefined) routeCache.delete(oldest);
-  }
-  routeCache.set(key, value);
-}
-
-const loc = (p: LngLat) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`;
-
 export const amap: GeoProvider = {
+  name: "amap",
+
   async searchPoi(keyword, city) {
-    const body = await amapGet<{ pois: Array<Record<string, string>> }>(
-      "/place/text",
-      { keywords: keyword, city, citylimit: "false", offset: "10", page: "1" },
-    );
+    const body = await amapGet<{ pois: Array<Record<string, string>> }>("/place/text", {
+      keywords: keyword,
+      city,
+      citylimit: "false",
+      offset: "10",
+      page: "1",
+    });
     const candidates: PoiCandidate[] = [];
     for (const poi of body.pois ?? []) {
       const location = poi.location ? parseLngLat(poi.location) : null;
@@ -101,18 +146,23 @@ export const amap: GeoProvider = {
 
   async resolveCity(city) {
     const body = await amapGet<{
-      geocodes: Array<{ adcode: string; location: string; city: string }>;
+      geocodes: Array<{
+        adcode: string;
+        location: string;
+        country: string | string[];
+      }>;
     }>("/geocode/geo", { address: city });
     const geo = body.geocodes?.[0];
     if (!geo) return null;
     const center = geo.location ? parseLngLat(geo.location) : null;
     if (!center) return null;
-    return { adcode: geo.adcode, center };
+    const country = Array.isArray(geo.country) ? geo.country[0] : geo.country;
+    return { adcode: geo.adcode, center, country: country ?? null };
   },
 
-  async route(from, to, mode, city) {
-    const key = `${mode}|${loc(from)}|${loc(to)}`;
-    const cached = cacheGet(key);
+  async route(from, to, mode) {
+    const cacheKey = `${mode}|${loc(from)}|${loc(to)}`;
+    const cached = amapRouteCache.get(cacheKey);
     if (cached) return cached;
 
     let result: RouteResult;
@@ -139,21 +189,16 @@ export const amap: GeoProvider = {
         polyline: path ? path.steps.flatMap((s) => parsePolyline(s.polyline)) : null,
       };
     } else {
-      // transit: city 参数必填
+      // transit
       const body = await amapGet<{
         route: {
           transit: {
             distance: string;
             duration: string;
-            segments: Array<{ walking?: { distance: string; steps: Array<{ polyline: string }> }; bus?: { buslines: Array<{ via_stops?: string; departure_stop?: { location: string } }> } }>;
+            segments: Array<{ walking?: { steps: Array<{ polyline: string }> } }>;
           };
         } | null;
-      }>("/direction/transit/integrated", {
-        origin: loc(from),
-        destination: loc(to),
-        city: city ?? "",
-        cityd: city ?? "",
-      });
+      }>("/direction/transit/integrated", { origin: loc(from), destination: loc(to), city: "", cityd: "" });
       const transit = body.route?.transit;
       const polyline: LngLat[] = [];
       for (const seg of transit?.segments ?? []) {
@@ -168,7 +213,7 @@ export const amap: GeoProvider = {
         polyline: polyline.length > 0 ? polyline : null,
       };
     }
-    cacheSet(key, result);
+    amapRouteCache.set(cacheKey, result);
     return result;
   },
 
@@ -181,7 +226,6 @@ export const amap: GeoProvider = {
       destination: points.map(loc).join("|"),
       type: "1",
     });
-    // 高德 distance API：origins × destination（这里两者相同集合）
     const n = points.length;
     const matrix: number[][] = [];
     let i = 0;
@@ -201,26 +245,151 @@ export const amap: GeoProvider = {
   },
 };
 
-/** 直线距离（米），用于未配 key 的降级和步行/驾车模式选择 */
-export function haversineM(a: LngLat, b: LngLat): number {
-  const R = 6371000;
-  const rad = Math.PI / 180;
-  const dLat = (b.lat - a.lat) * rad;
-  const dLng = (b.lng - a.lng) * rad;
-  const s =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(s));
-}
+// ---------- OSM 生态（海外，零 key） ----------
 
-/** 路线估算的降级实现：无 key / API 失败时用直线距离 + 模式速度估算 */
-export function fallbackRoute(from: LngLat, to: LngLat, mode: TransportMode): RouteResult {
-  const distanceM = Math.round(haversineM(from, to));
-  const speedMps = mode === "walk" ? 1.3 : mode === "transit" ? 6 : 8.5;
-  return {
-    mode,
-    distanceM,
-    durationS: Math.round((distanceM / speedMps) * 1.3), // 1.3 非直线系数
-    polyline: null,
+/**
+ * Photon（komoot，基于 OSM 数据）：地点搜索 + 地理编码，无需 key。
+ * OSRM（FOSSGIS 社区实例）：路径规划 + 距离表，无需 key。
+ * 两者都要求带识别性 User-Agent（OSM 服务使用政策），单机自用流量完全在礼貌范围内。
+ */
+
+const PHOTON_BASE = "https://photon.komoot.io/api";
+const OSRM_CAR = "https://routing.openstreetmap.de/routed-car";
+const OSRM_FOOT = "https://routing.openstreetmap.de/routed-foot";
+const OSM_UA = "Odessey/0.1 (self-hosted travel planner)";
+
+interface PhotonFeature {
+  geometry: { coordinates: [number, number] };
+  properties: {
+    osm_id?: number;
+    osm_type?: string;
+    name?: string;
+    street?: string;
+    housenumber?: string;
+    postcode?: string;
+    city?: string;
+    country?: string;
+    type?: string;
   };
 }
+
+async function photonGet(params: Record<string, string>): Promise<PhotonFeature[]> {
+  const url = new URL(PHOTON_BASE);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const res = await fetch(url, {
+    headers: { "User-Agent": OSM_UA },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`photon http ${res.status}`);
+  const body = (await res.json()) as { features: PhotonFeature[] };
+  return body.features ?? [];
+}
+
+interface OsrmRoute {
+  distance: number;
+  duration: number;
+  geometry: { coordinates: [number, number][] };
+}
+
+async function osrmRouteRequest(base: string, path: string, from: LngLat, to: LngLat): Promise<OsrmRoute> {
+  const url = `${base}/route/v1/${path}/${loc(from)};${loc(to)}?overview=full&geometries=geojson`;
+  const res = await fetch(url, {
+    headers: { "User-Agent": OSM_UA },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`osrm http ${res.status}`);
+  const body = (await res.json()) as { code: string; routes?: OsrmRoute[] };
+  if (body.code !== "Ok" || !body.routes?.[0]) throw new Error(`osrm ${body.code}`);
+  return body.routes[0];
+}
+
+export const osm: GeoProvider = {
+  name: "osm",
+
+  async searchPoi(keyword, _city, bias) {
+    const params: Record<string, string> = { q: keyword, limit: "10", lang: "en" };
+    if (bias) {
+      params.lat = String(bias.lat);
+      params.lon = String(bias.lng);
+    }
+    const features = await photonGet(params);
+    const candidates: PoiCandidate[] = [];
+    for (const f of features) {
+      const [lng, lat] = f.geometry.coordinates;
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
+      const p = f.properties;
+      const address = [p.housenumber, p.street, p.postcode, p.city].filter(Boolean).join(" ");
+      candidates.push({
+        poiId: `${p.osm_type ?? "X"}${p.osm_id ?? ""}`,
+        name: p.name ?? address ?? "Unnamed place",
+        address: address || null,
+        location: { lng, lat },
+        cityName: p.city ?? p.country ?? null,
+        type: p.type ?? null,
+        tel: null,
+      });
+    }
+    // bias 场景下过滤全球同名地点（如科罗拉多的 "Sydney Opera House"）：
+    // 保留 150km 内候选；若不足 3 个再放宽保留全部，避免小镇 POI 被误滤光。
+    if (bias) {
+      const near = candidates.filter(
+        (c) => haversineM(bias, c.location) <= 150_000,
+      );
+      if (near.length >= 3) return near;
+      if (near.length > 0) return [...near, ...candidates.filter((c) => !near.includes(c))];
+    }
+    return candidates;
+  },
+
+  async resolveCity(city) {
+    const features = await photonGet({ q: city, limit: "1", lang: "en" });
+    const f = features[0];
+    if (!f) return null;
+    const [lng, lat] = f.geometry.coordinates;
+    return {
+      adcode: null,
+      center: { lng, lat },
+      country: f.properties.country ?? null,
+    };
+  },
+
+  async route(from, to, mode) {
+    if (mode === "transit") {
+      // 免费公交路由不存在：car 时长 × 1.25 + 6 分钟换乘惩罚，作为估算
+      const est = fallbackRoute(from, to, "drive");
+      return { ...est, mode: "transit", durationS: Math.round((est.durationS ?? 0) * 1.25 + 360) };
+    }
+    const cacheKey = `${mode}|${loc(from)}|${loc(to)}`;
+    const cached = osmRouteCache.get(cacheKey);
+    if (cached) return cached;
+
+    const isWalk = mode === "walk";
+    const route = await osrmRouteRequest(
+      isWalk ? OSRM_FOOT : OSRM_CAR,
+      isWalk ? "foot" : "driving",
+      from,
+      to,
+    );
+    const result: RouteResult = {
+      mode: isWalk ? "walk" : "drive",
+      distanceM: Math.round(route.distance),
+      durationS: Math.round(route.duration),
+      polyline: route.geometry.coordinates.map(([lng, lat]) => ({ lng, lat })),
+    };
+    osmRouteCache.set(cacheKey, result);
+    return result;
+  },
+
+  async drivingMatrix(points) {
+    if (points.length < 2 || points.length > 10) return null;
+    const url = `${OSRM_CAR}/table/v1/driving/${points.map(loc).join(";")}?annotations=duration`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": OSM_UA },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) throw new Error(`osrm table http ${res.status}`);
+    const body = (await res.json()) as { code: string; durations?: number[][] };
+    if (body.code !== "Ok" || !body.durations) throw new Error(`osrm table ${body.code}`);
+    return body.durations;
+  },
+};

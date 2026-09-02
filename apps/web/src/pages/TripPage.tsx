@@ -3,13 +3,28 @@ import { useParams } from "react-router-dom";
 import type { ChatSessionDto } from "@odessey/shared";
 import { api } from "../api/client";
 import { useTripStore } from "../stores/tripStore";
-import { MapCanvas, DAY_COLORS } from "../features/map/MapCanvas";
+import { MapCanvas, dayColor } from "../features/map/MapCanvas";
 import { ItineraryPanel } from "../features/itinerary/ItineraryPanel";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import { HotelPanel } from "../features/hotel/HotelPanel";
 import { SearchAddPanel } from "../features/map/SearchAddPanel";
 
+/**
+ * 行程页 —— mac 毛玻璃布局：地图全屏打底，一切 UI 都是浮层。
+ * - 左上：行程信息玻璃条 + Day 筛选 chips
+ * - 右侧：主面板（对话/行程/酒店/添加），mac 窗口风格：
+ *   traffic lights（红=关闭隐藏，黄=收成竖条，绿=展开）
+ * - 层级：地图 z-0 < chips/hint z-10 < 主面板 z-20
+ */
+
 type Tab = "chat" | "itinerary" | "hotel" | "search";
+
+const TAB_META: Record<Tab, { label: string; icon: string }> = {
+  chat: { label: "对话", icon: "💬" },
+  itinerary: { label: "行程", icon: "🗓" },
+  hotel: { label: "酒店", icon: "🏨" },
+  search: { label: "添加", icon: "🔎" },
+};
 
 export function TripPage() {
   const { tripId } = useParams<{ tripId: string }>();
@@ -21,6 +36,8 @@ export function TripPage() {
   const [visibleDay, setVisibleDay] = useState<number | null>(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [hotelArea, setHotelArea] = useState<{ center: { lng: number; lat: number }; radiusM: number } | null>(null);
+  /** 面板形态：expanded（完整）/ collapsed（收成竖条）/ hidden（隐藏，只剩呼出按钮） */
+  const [panelMode, setPanelMode] = useState<"expanded" | "collapsed" | "hidden">("expanded");
 
   useEffect(() => {
     if (!tripId) return;
@@ -29,18 +46,18 @@ export function TripPage() {
     return unsubscribe;
   }, [tripId, load, subscribe]);
 
-  // 推荐住宿区域：地点数变化时重拉
-  useEffect(() => {
-    if (!tripId || !bundle) return;
-    void api.hotelArea(tripId).then(({ area }) => setHotelArea(area));
-  }, [tripId, bundle?.places.length]);
-
   useEffect(() => {
     void api.config().then((c) => {
       setAmapJsKey(c.amapJsKey);
       setAmapJsSecret(c.amapJsSecret);
     });
   }, []);
+
+  // 推荐住宿区域：地点数变化时重拉
+  useEffect(() => {
+    if (!tripId || !bundle) return;
+    void api.hotelArea(tripId).then(({ area }) => setHotelArea(area));
+  }, [tripId, bundle?.places.length]);
 
   const refreshSessions = useCallback(async () => {
     if (!tripId) return;
@@ -56,105 +73,154 @@ export function TripPage() {
     return <div className="flex h-full items-center justify-center text-sm text-red-500">{error}</div>;
   }
   if (!bundle) {
-    return <div className="flex h-full items-center justify-center text-sm text-slate-400">加载中…</div>;
+    return <div className="flex h-full items-center justify-center bg-slate-100 text-sm text-slate-400">加载中…</div>;
   }
 
   const { trip } = bundle;
   const days = [...bundle.days].sort((a, b) => a.dayIndex - b.dayIndex);
-
-  const tabs: { key: Tab; label: string }[] = [
-    { key: "chat", label: "💬 对话" },
-    { key: "itinerary", label: "🗓 行程" },
-    { key: "hotel", label: "🏨 酒店" },
-    { key: "search", label: "🔎 添加" },
-  ];
+  const tabs = Object.entries(TAB_META) as [Tab, { label: string; icon: string }][];
 
   return (
-    <div className="flex h-full flex-col">
-      {/* 顶栏 */}
-      <header className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-2">
-        <a href="/" className="text-sm text-slate-400 hover:text-slate-600">
-          ←
+    <div className="relative h-full overflow-hidden">
+      {/* 地图全屏打底 */}
+      <div className="absolute inset-0">
+        <MapCanvas
+          bundle={bundle}
+          amapJsKey={amapJsKey}
+          amapJsSecret={amapJsSecret}
+          visibleDayIndex={visibleDay}
+          hotelArea={hotelArea}
+          selectedPlaceId={selectedPlaceId}
+          onSelectPlace={(id) => setSelectedPlaceId(id)}
+        />
+      </div>
+
+      {/* 左上：行程信息玻璃条 */}
+      <header className="glass panel-in pointer-events-auto absolute left-4 top-4 z-10 flex items-center gap-2.5 rounded-2xl px-4 py-2">
+        <a href="/" className="text-slate-400 transition-colors hover:text-slate-700" title="返回行程列表">
+          ‹
         </a>
-        <h1 className="text-base font-semibold">{trip.title}</h1>
-        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">
+        <h1 className="glass-text text-sm font-semibold">{trip.title}</h1>
+        <span className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500">
           {trip.destinationCity}
         </span>
-        <div className="ml-auto flex items-center gap-2">
-          <a
-            href={`/share/${trip.shareToken}`}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-lg border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-50"
-          >
-            只读分享
-          </a>
-        </div>
+        {trip.geoProvider === "osm" && (
+          <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+            海外
+          </span>
+        )}
       </header>
 
-      <div className="flex min-h-0 flex-1">
-        {/* 地图 2/3 */}
-        <div className="relative min-w-0 flex-[2]">
-          <MapCanvas
-            bundle={bundle}
-            amapJsKey={amapJsKey}
-            amapJsSecret={amapJsSecret}
-            visibleDayIndex={visibleDay}
-            hotelArea={hotelArea}
-            selectedPlaceId={selectedPlaceId}
-            onSelectPlace={(id) => setSelectedPlaceId(id)}
-          />
-          {/* Day 筛选 chips */}
-          {days.length > 0 && (
-            <div className="absolute left-3 top-3 z-10 flex gap-1.5">
+      {/* 左上第二行：Day 筛选 chips */}
+      {days.length > 0 && (
+        <div className="panel-in absolute left-4 top-[60px] z-10 flex flex-wrap gap-1.5 pr-4">
+          <button
+            onClick={() => setVisibleDay(null)}
+            className={`glass rounded-full px-3 py-1 text-xs font-medium transition-all hover:scale-105 ${
+              visibleDay == null ? "!bg-slate-900/80 !border-transparent text-white" : "glass-text"
+            }`}
+          >
+            全部
+          </button>
+          {days.map((d) => {
+            const color = dayColor(d.dayIndex);
+            const active = visibleDay === d.dayIndex;
+            return (
               <button
-                onClick={() => setVisibleDay(null)}
-                className={`rounded-full px-3 py-1 text-xs font-medium shadow ${
-                  visibleDay == null ? "bg-slate-800 text-white" : "bg-white/90 text-slate-600"
-                }`}
+                key={d.id}
+                onClick={() => setVisibleDay(active ? null : d.dayIndex)}
+                className="glass rounded-full px-3 py-1 text-xs font-medium shadow transition-all hover:scale-105"
+                style={
+                  active
+                    ? { background: color, color: "#fff", borderColor: "transparent" }
+                    : { color }
+                }
               >
-                全部
+                D{d.dayIndex}
               </button>
-              {days.map((d) => {
-                const color = DAY_COLORS[(d.dayIndex - 1) % DAY_COLORS.length];
-                const active = visibleDay === d.dayIndex;
-                return (
-                  <button
-                    key={d.id}
-                    onClick={() => setVisibleDay(active ? null : d.dayIndex)}
-                    className="rounded-full px-3 py-1 text-xs font-medium shadow"
-                    style={
-                      active
-                        ? { background: color, color: "#fff" }
-                        : { background: "rgba(255,255,255,0.9)", color }
-                    }
-                  >
-                    D{d.dayIndex}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+            );
+          })}
         </div>
+      )}
 
-        {/* 右侧 1/3 面板 */}
-        <div className="flex min-w-0 flex-1 flex-col border-l border-slate-200 bg-white">
-          <nav className="flex border-b border-slate-100">
-            {tabs.map((t) => (
+      {/* 左下：只读分享入口（低调） */}
+      <a
+        href={`/share/${trip.shareToken}`}
+        target="_blank"
+        rel="noreferrer"
+        className="glass glass-text panel-in absolute bottom-4 left-4 z-10 rounded-full px-3 py-1.5 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
+      >
+        🔗 只读分享
+      </a>
+
+      {/* ===== 右侧主面板（mac 窗口） ===== */}
+      {panelMode === "hidden" ? (
+        <button
+          onClick={() => setPanelMode("expanded")}
+          className="glass panel-in absolute right-4 top-4 z-20 flex items-center gap-1.5 rounded-2xl px-3.5 py-2 text-xs font-medium text-slate-600 shadow-lg transition-transform hover:scale-105"
+        >
+          <span>{TAB_META[tab].icon}</span>
+          <span>显示{TAB_META[tab].label}面板</span>
+        </button>
+      ) : panelMode === "collapsed" ? (
+        <div className="glass panel-in absolute right-4 top-4 z-20 flex flex-col items-center gap-1 rounded-2xl p-2">
+          {/* mini traffic lights */}
+          <div className="flex gap-1.5 pb-1">
+            <TrafficLight color="#ff5f57" title="隐藏面板" onClick={() => setPanelMode("hidden")} />
+            <TrafficLight color="#febc2e" active title="已收起，点击展开" onClick={() => setPanelMode("expanded")} />
+            <TrafficLight color="#28c840" title="展开面板" onClick={() => setPanelMode("expanded")} />
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {tabs.map(([key, meta]) => (
               <button
-                key={t.key}
-                onClick={() => setTab(t.key)}
-                className={`flex-1 px-3 py-2 text-sm ${
-                  tab === t.key
-                    ? "border-b-2 border-blue-600 font-medium text-blue-600"
-                    : "text-slate-500 hover:text-slate-700"
+                key={key}
+                onClick={() => {
+                  setTab(key);
+                  setPanelMode("expanded");
+                }}
+                title={meta.label}
+                className={`rounded-lg px-2.5 py-2 text-base transition-colors ${
+                  tab === key ? "bg-slate-900/10" : "hover:bg-slate-900/5"
                 }`}
               >
-                {t.label}
+                {meta.icon}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl">
+          {/* traffic lights 标题栏 */}
+          <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
+            <div className="group flex gap-1.5">
+              <TrafficLight color="#ff5f57" title="隐藏面板" onClick={() => setPanelMode("hidden")} />
+              <TrafficLight color="#febc2e" title="收成竖条" onClick={() => setPanelMode("collapsed")} />
+              <TrafficLight color="#28c840" title="展开中" active onClick={() => {}} />
+            </div>
+            <span className="glass-text ml-1 truncate text-xs font-semibold">
+              {TAB_META[tab].icon} {TAB_META[tab].label}
+            </span>
+          </div>
+
+          {/* tabs */}
+          <nav className="flex border-b border-white/40 px-1">
+            {tabs.map(([key, meta]) => (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`flex-1 px-2 py-2 text-xs transition-colors ${
+                  tab === key
+                    ? "border-b-2 border-slate-700 font-semibold text-slate-900"
+                    : "text-slate-500 hover:text-slate-800"
+                }`}
+              >
+                {meta.icon} {meta.label}
               </button>
             ))}
           </nav>
-          <div className="min-h-0 flex-1">
+
+          {/* 内容区（玻璃上再垫一层更实的底，保证长列表可读性） */}
+          <div className="glass-text min-h-0 flex-1 bg-white/45">
             {tab === "chat" && (
               <ChatPanel
                 trip={trip}
@@ -183,8 +249,30 @@ export function TripPage() {
               />
             )}
           </div>
-        </div>
-      </div>
+        </aside>
+      )}
     </div>
+  );
+}
+
+/** mac traffic light 按钮 */
+function TrafficLight({
+  color,
+  title,
+  onClick,
+  active = false,
+}: {
+  color: string;
+  title: string;
+  onClick: () => void;
+  active?: boolean;
+}) {
+  return (
+    <button
+      title={title}
+      onClick={onClick}
+      className="h-3 w-3 rounded-full border border-black/10 transition-transform hover:scale-110"
+      style={{ background: color, opacity: active ? 1 : 0.85, boxShadow: active ? `0 0 6px ${color}66` : undefined }}
+    />
   );
 }

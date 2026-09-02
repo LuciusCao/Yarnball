@@ -11,6 +11,7 @@ import type {
   CreateHotelCandidateInput,
   CreatePlaceInput,
   CreateTripInput,
+  GeoProviderName,
   LngLat,
   TripBundle,
   UpdatePlaceInput,
@@ -26,7 +27,7 @@ import {
   toPlaceDto,
   toTripDto,
 } from "./mappers.js";
-import { amap, fallbackRoute, haversineM } from "./geo.js";
+import { amap, fallbackRoute, getProvider, haversineM, osm } from "./geo.js";
 import { insertionIncrements, optimizeOrder, orderTotalDuration } from "./routing.js";
 
 const uuid = () => randomUUID();
@@ -42,8 +43,11 @@ export class ServiceError extends Error {
   }
 }
 
-/** agent 建点的防编造校验：距城市中心不超过这个半径（千米） */
-const AGENT_PLACE_MAX_CITY_DIST_KM = 150;
+/** agent 建点的防编造校验：距城市中心的最大半径（千米），按 provider 放宽 */
+const AGENT_PLACE_MAX_CITY_DIST_KM: Record<GeoProviderName, number> = {
+  amap: 150,
+  osm: 300, // 海外城市间距大（悉尼→蓝山 ~110km，墨尔本→大洋路 ~230km）
+};
 
 export class TripService {
   constructor(
@@ -56,17 +60,43 @@ export class TripService {
   async createTrip(input: CreateTripInput) {
     const id = uuid();
     const shareToken = randomBytes(16).toString("hex");
+
+    // provider 判定：高德 geocode 返回 country=中国 → amap（GCJ-02）；
+    // 其余（含高德未配置/查询失败）→ osm（WGS84，零 key 可用）。显式指定时跳过判定。
+    let provider: GeoProviderName = "osm";
     let adcode: string | null = null;
     let center: LngLat | null = null;
-    try {
-      const city = await amap.resolveCity(input.destinationCity);
-      if (city) {
-        adcode = city.adcode;
-        center = city.center;
+    if (!input.geoProvider) {
+      try {
+        const geo = await amap.resolveCity(input.destinationCity);
+        if (geo && geo.country === "中国") {
+          provider = "amap";
+          adcode = geo.adcode;
+          center = geo.center;
+        }
+      } catch (err) {
+        console.warn("[trip] amap resolveCity failed:", (err as Error).message);
       }
-    } catch (err) {
-      console.warn("[trip] resolveCity failed (amap not configured?):", (err as Error).message);
+    } else {
+      provider = input.geoProvider;
     }
+    if (provider === "osm" && !center) {
+      try {
+        const geo = await osm.resolveCity(input.destinationCity);
+        if (geo) center = geo.center;
+      } catch (err) {
+        console.warn("[trip] osm resolveCity failed:", (err as Error).message);
+      }
+    }
+    if (provider === "amap" && !center && !input.geoProvider) {
+      // 判定走了 amap 但拿不到中心（异常网络）：降级 osm，保证零 key 也能用
+      provider = "osm";
+      try {
+        const geo = await osm.resolveCity(input.destinationCity);
+        if (geo) center = geo.center;
+      } catch {}
+    }
+
     const [row] = await this.db
       .insert(schema.trips)
       .values({
@@ -74,6 +104,7 @@ export class TripService {
         title: input.title,
         destinationCity: input.destinationCity,
         cityAdcode: adcode,
+        geoProvider: provider,
         cityCenterLng: center ? String(center.lng) : null,
         cityCenterLat: center ? String(center.lat) : null,
         startDate: input.startDate ?? null,
@@ -151,10 +182,11 @@ export class TripService {
     if (actor === "agent" && trip.cityCenterLng && trip.cityCenterLat) {
       const center = { lng: Number(trip.cityCenterLng), lat: Number(trip.cityCenterLat) };
       const distKm = haversineM(center, input.location) / 1000;
-      if (distKm > AGENT_PLACE_MAX_CITY_DIST_KM) {
+      const maxKm = AGENT_PLACE_MAX_CITY_DIST_KM[trip.geoProvider as GeoProviderName] ?? 300;
+      if (distKm > maxKm) {
         throw new ServiceError(
           422,
-          `坐标距 ${trip.destinationCity} 市中心 ${Math.round(distKm)} 公里，超出合理范围。` +
+          `坐标距 ${trip.destinationCity} 市中心 ${Math.round(distKm)} 公里，超出合理范围（${maxKm}km）。` +
             `请先调用 search_poi 查询真实地点，使用返回的 location，不要自行填写或编造经纬度。`,
         );
       }
@@ -374,6 +406,7 @@ export class TripService {
   /** 变更某天 entry 后重算该天连续点对的交通段 */
   async recalcDayLegs(tripId: string, dayId: string) {
     const [trip] = await this.db.select().from(schema.trips).where(eq(schema.trips.id, tripId));
+    const geo = getProvider(trip?.geoProvider ?? "osm");
     const entries = await this.db
       .select()
       .from(schema.entries)
@@ -395,7 +428,7 @@ export class TripService {
       const mode = haversineM(a, b) < 2000 ? ("walk" as const) : ("drive" as const);
       let result;
       try {
-        result = await amap.route(a, b, mode, trip?.destinationCity);
+        result = await geo.route(a, b, mode, trip?.destinationCity);
       } catch {
         result = fallbackRoute(a, b, mode);
       }
@@ -416,16 +449,16 @@ export class TripService {
 
   // ---------- 顺路分析（MCP / 前端共用） ----------
 
-  /** 构建时长矩阵：优先高德驾车距离矩阵，降级直线距离估算 */
-  private async buildDurationMatrix(points: LngLat[]): Promise<number[][]> {
+  /** 构建时长矩阵：优先该行程 provider 的驾车矩阵，失败降级直线距离估算 */
+  private async buildDurationMatrix(provider: string, points: LngLat[]): Promise<number[][]> {
     const n = points.length;
     if (n === 0) return [];
     let matrix: number[][] | null = null;
     if (n <= 10) {
       try {
-        matrix = await amap.drivingMatrix(points);
+        matrix = await getProvider(provider).drivingMatrix(points);
       } catch (err) {
-        console.warn("[routing] drivingMatrix failed, fallback to haversine:", (err as Error).message);
+        console.warn(`[routing] drivingMatrix failed, fallback to haversine:`, (err as Error).message);
       }
     }
     if (matrix && matrix.length === n) return matrix;
@@ -437,6 +470,7 @@ export class TripService {
 
   /** 重排建议（不落库）：返回优化后顺序与前后对比 */
   async suggestDayOrder(tripId: string, dayIndex: number) {
+    const trip = await this.getTrip(tripId);
     const day = await this.ensureDay(tripId, dayIndex);
     const entries = await this.db
       .select()
@@ -453,7 +487,7 @@ export class TripService {
       const p = placeById.get(e.placeId)!;
       return { lng: Number(p.lng), lat: Number(p.lat) };
     });
-    const matrix = await this.buildDurationMatrix(coords);
+    const matrix = await this.buildDurationMatrix(trip.geoProvider, coords);
     const optimizedIdx = optimizeOrder(matrix);
     const currentOrder = entries.map((_, i) => i);
     const before = orderTotalDuration(currentOrder, matrix);
@@ -476,6 +510,7 @@ export class TripService {
   async analyzeDetour(tripId: string, placeId: string, dayIndex: number) {
     const [place] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!place) throw new ServiceError(404, `place ${placeId} not found`);
+    const trip = await this.getTrip(tripId);
     const day = await this.ensureDay(tripId, dayIndex);
     const entries = await this.db
       .select()
@@ -497,7 +532,7 @@ export class TripService {
     const target = placeById.get(placeId)!;
     const chain = entries.map((e) => placeById.get(e.placeId)!);
     const points = [...chain, target].map((p) => ({ lng: Number(p.lng), lat: Number(p.lat) }));
-    const matrix = await this.buildDurationMatrix(points);
+    const matrix = await this.buildDurationMatrix(trip.geoProvider, points);
     const targetIdx = points.length - 1;
     const options = insertionIncrements(
       chain.map((_, i) => i),

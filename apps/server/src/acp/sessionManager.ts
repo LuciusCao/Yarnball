@@ -62,10 +62,17 @@ export class AcpSessionManager {
       .where(eq(schema.agentRegistry.id, row.agentRegistryId));
     if (!agent) throw new Error(`agent ${row.agentRegistryId} not found in registry`);
 
+    const [trip] = await this.db.select().from(schema.trips).where(eq(schema.trips.id, row.tripId));
+
     const handle = new SessionHandle(this.db, this.bus, row, {
       command: agent.command,
       args: (agent.args as string[]) ?? [],
     }, this.markMcpObserved);
+    handle.setTripInfo(
+      trip?.title ?? "",
+      trip?.destinationCity ?? "",
+      (trip?.geoProvider as "amap" | "osm") ?? "osm",
+    );
     this.handles.set(row.id, handle);
     try {
       await handle.start();
@@ -118,6 +125,7 @@ export class SessionHandle {
   private mcpHintSent = false;
   private tripTitle = "";
   private tripCity = "";
+  private tripProvider: "amap" | "osm" = "osm";
 
   constructor(
     private db: Db,
@@ -324,7 +332,7 @@ export class SessionHandle {
 
     let prefix = "";
     if (!this.firstPromptDone) {
-      prefix = bootstrapPrompt(this.tripTitle, this.tripCity);
+      prefix = bootstrapPrompt(this.tripTitle, this.tripCity, this.tripProvider);
       if (this.pendingReplay) {
         prefix += `\n\n${this.pendingReplay}`;
         this.pendingReplay = null;
@@ -694,9 +702,10 @@ export class SessionHandle {
     }));
   }
 
-  setTripInfo(title: string, city: string) {
+  setTripInfo(title: string, city: string, provider: "amap" | "osm") {
     this.tripTitle = title;
     this.tripCity = city;
+    this.tripProvider = provider;
   }
 }
 

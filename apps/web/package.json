@@ -12,6 +12,7 @@
     "@amap/amap-jsapi-loader": "^1.0.1",
     "@odessey/shared": "workspace:*",
     "@tanstack/react-query": "^5.90.2",
+    "maplibre-gl": "^6.6.0",
     "marked": "^16.4.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

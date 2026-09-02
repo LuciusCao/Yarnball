@@ -60,19 +60,19 @@ export function SearchAddPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-slate-100 p-3">
+      <div className="border-b border-slate-900/8 p-3">
         <div className="flex gap-2">
           <input
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void search()}
             placeholder="搜索地点，如「灵隐寺」"
-            className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
+            className="flex-1 rounded-lg border border-slate-300/60 bg-white/70 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
           />
           <button
             onClick={search}
             disabled={searching || !keyword.trim()}
-            className="rounded-lg bg-slate-800 px-3 py-2 text-sm text-white disabled:opacity-50"
+            className="rounded-lg bg-slate-800/90 px-3 py-2 text-sm text-white shadow disabled:opacity-50"
           >
             {searching ? "…" : "搜索"}
           </button>
@@ -82,7 +82,7 @@ export function SearchAddPanel({
           <select
             value={dayIndex}
             onChange={(e) => setDayIndex(Number(e.target.value))}
-            className="rounded border border-slate-200 px-2 py-1"
+            className="rounded border border-slate-300/60 bg-white/70 px-2 py-1"
           >
             {Array.from({ length: Math.max(maxDay, dayIndex) }, (_, i) => i + 1).map((d) => (
               <option key={d} value={d}>
@@ -99,7 +99,7 @@ export function SearchAddPanel({
         {candidates.map((poi) => (
           <div
             key={poi.poiId}
-            className="flex items-center gap-2 border-b border-slate-50 px-3 py-2 hover:bg-slate-50"
+            className="flex items-center gap-2 border-b border-slate-900/5 px-3 py-2 hover:bg-white/60"
           >
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm">{poi.name}</p>
@@ -108,14 +108,14 @@ export function SearchAddPanel({
             <button
               disabled={busyPoiId === poi.poiId}
               onClick={() => void add(poi, true)}
-              className="shrink-0 rounded-lg bg-blue-600 px-2 py-1 text-xs text-white disabled:opacity-50"
+              className="shrink-0 rounded-lg bg-blue-600 px-2 py-1 text-xs text-white shadow-sm disabled:opacity-50"
             >
               +Day{dayIndex}
             </button>
             <button
               disabled={busyPoiId === poi.poiId}
               onClick={() => void add(poi, false)}
-              className="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-xs text-slate-600 disabled:opacity-50"
+              className="shrink-0 rounded-lg border border-slate-300/60 bg-white/60 px-2 py-1 text-xs text-slate-600 disabled:opacity-50"
             >
               存地点库
             </button>

@@ -26,6 +26,11 @@ export function toTripDto(row: TripRow): TripDto {
     title: row.title,
     destinationCity: row.destinationCity,
     cityAdcode: row.cityAdcode,
+    geoProvider: row.geoProvider as TripDto["geoProvider"],
+    location:
+      row.cityCenterLng != null && row.cityCenterLat != null
+        ? { lng: Number(row.cityCenterLng), lat: Number(row.cityCenterLat) }
+        : null,
     startDate: row.startDate,
     endDate: row.endDate,
     selectedHotelCandidateId: row.selectedHotelCandidateId,

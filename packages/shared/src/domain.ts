@@ -31,6 +31,10 @@ export type TransportMode = (typeof TRANSPORT_MODES)[number];
 export const ACTORS = ["human", "agent"] as const;
 export type Actor = (typeof ACTORS)[number];
 
+/** 地理服务 provider：amap（国内，需 key）| osm（海外，零 key） */
+export const GEO_PROVIDERS = ["amap", "osm"] as const;
+export type GeoProviderName = (typeof GEO_PROVIDERS)[number];
+
 export const CHAT_SESSION_STATUSES = [
   "starting",
   "idle",
@@ -57,8 +61,8 @@ export type ChatMessageKind = (typeof CHAT_MESSAGE_KINDS)[number];
 // ---------- 基础 schema ----------
 
 export const LngLatSchema = z.object({
-  lng: z.number().min(73).max(136),
-  lat: z.number().min(3).max(54),
+  lng: z.number().min(-180).max(180),
+  lat: z.number().min(-90).max(90),
 });
 export type LngLat = z.infer<typeof LngLatSchema>;
 
@@ -81,6 +85,8 @@ export const TripDtoSchema = z.object({
   title: z.string(),
   destinationCity: z.string(),
   cityAdcode: z.string().nullable(),
+  geoProvider: z.enum(GEO_PROVIDERS),
+  location: LngLatSchema.nullable(),
   startDate: z.string().nullable(),
   endDate: z.string().nullable(),
   selectedHotelCandidateId: z.string().nullable(),
@@ -166,6 +172,8 @@ export type TripBundle = z.infer<typeof TripBundleSchema>;
 export const CreateTripInputSchema = z.object({
   title: z.string().min(1).max(120),
   destinationCity: z.string().min(1).max(60),
+  /** 显式指定地理 provider；缺省按目的地自动判定（国内→amap，海外→osm） */
+  geoProvider: z.enum(GEO_PROVIDERS).optional(),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
 });

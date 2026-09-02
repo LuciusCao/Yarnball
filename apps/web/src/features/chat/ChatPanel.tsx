@@ -95,16 +95,16 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   if (!activeSession) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-        <p className="text-sm text-slate-500">
+        <p className="text-sm text-slate-600">
           连接你自己的 agent，让它直接在这份行程上工作：
           <br />
-          粘贴小红书攻略 / 携程酒店，解析、定位、编排。
+          粘贴攻略 / 酒店候选，解析、定位、编排。
         </p>
         <div className="flex gap-2">
           <select
             value={agentId}
             onChange={(e) => setAgentId(e.target.value)}
-            className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+            className="rounded-lg border border-slate-300/60 bg-white/70 px-3 py-2 text-sm"
           >
             {agents.map((a) => (
               <option key={a.id} value={a.id}>
@@ -115,7 +115,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
           <button
             onClick={startSession}
             disabled={starting || !agentId}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow hover:bg-blue-700 disabled:opacity-50"
           >
             {starting ? "启动中…" : "连接 agent"}
           </button>
@@ -130,7 +130,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   return (
     <div className="flex h-full flex-col">
       {/* 会话头 */}
-      <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2">
+      <div className="flex items-center gap-2 border-b border-slate-900/8 px-3 py-2">
         <span className="h-2 w-2 shrink-0 rounded-full" style={{
           background:
             activeSession.status === "running" ? "#f59e0b" :
@@ -151,14 +151,14 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
         </label>
         <button
           onClick={closeSession}
-          className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-50"
+          className="rounded border border-slate-300/60 px-2 py-0.5 text-xs text-slate-500 hover:bg-white/60"
         >
           断开
         </button>
       </div>
 
       {activeSession.lastError && (
-        <div className="border-b border-red-100 bg-red-50 px-3 py-1.5 text-xs text-red-600">
+        <div className="border-b border-red-200/60 bg-red-500/10 px-3 py-1.5 text-xs text-red-600">
           {activeSession.lastError}
         </div>
       )}
@@ -172,7 +172,6 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
             running={running}
             onAnswerPermission={async (requestId, optionId) => {
               await api.answerPermission(activeSession.id, requestId, optionId);
-              // permission_result 消息会经 SSE 回来
             }}
           />
         ))}
@@ -180,7 +179,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
       </div>
 
       {/* 输入 */}
-      <div className="border-t border-slate-100 p-3">
+      <div className="border-t border-slate-900/8 p-3">
         <div className="flex gap-2">
           <textarea
             value={input}
@@ -193,15 +192,15 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
             }}
             rows={2}
             placeholder={
-              running ? "agent 处理中…" : "粘贴攻略文本，或直接说：把灵隐寺安排到 Day 1 早上"
+              running ? "agent 处理中…" : "粘贴攻略文本，或直接说：把 Bondi Beach 安排到 Day 2"
             }
             disabled={running}
-            className="flex-1 resize-none rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none disabled:bg-slate-50"
+            className="flex-1 resize-none rounded-xl border border-slate-300/60 bg-white/70 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none disabled:bg-slate-100/50"
           />
           <button
             onClick={send}
             disabled={running || !input.trim()}
-            className="shrink-0 self-end rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="shrink-0 self-end rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow hover:bg-blue-700 disabled:opacity-50"
           >
             发送
           </button>
@@ -229,18 +228,17 @@ function MessageBubble({
     case "user_text":
       return (
         <div className="flex justify-end">
-          <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-blue-600 px-3 py-2 text-sm text-white">
+          <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-blue-600 px-3 py-2 text-sm text-white shadow">
             {String(message.content.text ?? "")}
           </div>
         </div>
       );
     case "agent_text": {
       const text = String(message.content.text ?? "");
-      // 流式中纯文本（半截 markdown 渲染会抖动）；最后一帧渲染 markdown。
-      // 判定：running 时该消息可能仍在更新 → 纯文本；否则 markdown。
+      // 流式中纯文本（半截 markdown 渲染会抖动）；完成后渲染 markdown。
       return (
         <div className="flex justify-start">
-          <div className="max-w-[90%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-sm bg-slate-100 px-3 py-2 text-sm text-slate-800">
+          <div className="max-w-[90%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-sm bg-white/85 px-3 py-2 text-sm text-slate-800 shadow-sm">
             {running ? text : <Markdown text={text} />}
           </div>
         </div>
@@ -248,7 +246,7 @@ function MessageBubble({
     }
     case "agent_thought":
       return (
-        <details className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-1.5 text-xs text-slate-500">
+        <details className="rounded-lg border border-slate-900/8 bg-white/50 px-3 py-1.5 text-xs text-slate-500">
           <summary className="cursor-pointer select-none">💭 思考过程</summary>
           <div className="mt-1 whitespace-pre-wrap">{String(message.content.text ?? "")}</div>
         </details>
@@ -256,10 +254,10 @@ function MessageBubble({
     case "tool_call":
       return <ToolCallCard message={message} />;
     case "tool_call_update":
-      return null; // 卡片已由 tool_call 渲染，update 通过服务端消息序列合并显示
+      return null;
     case "plan":
       return (
-        <div className="rounded-lg border border-slate-100 bg-white px-3 py-2 text-xs">
+        <div className="rounded-lg border border-slate-900/8 bg-white/60 px-3 py-2 text-xs">
           <p className="mb-1 font-medium text-slate-600">📋 计划</p>
           <ol className="list-inside list-decimal space-y-0.5 text-slate-600">
             {(message.content.entries as { content: string; status?: string }[] | undefined)?.map(
@@ -277,17 +275,17 @@ function MessageBubble({
       const options = (message.content.options as { optionId: string; name: string; kind: string }[]) ?? [];
       const requestId = String(message.content.requestId ?? "");
       return (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm">
+        <div className="rounded-lg border border-amber-300/70 bg-amber-100/70 px-3 py-2 text-sm shadow-sm">
           <p className="font-medium text-amber-800">🔐 请求权限：{toolCall?.title ?? "工具调用"}</p>
           <div className="mt-2 flex flex-wrap gap-2">
             {options.map((o) => (
               <button
                 key={o.optionId}
                 onClick={() => void onAnswerPermission(requestId, o.optionId)}
-                className={`rounded-lg px-3 py-1 text-xs font-medium ${
+                className={`rounded-lg px-3 py-1 text-xs font-medium shadow-sm ${
                   o.kind.startsWith("allow")
                     ? "bg-amber-600 text-white hover:bg-amber-700"
-                    : "border border-amber-300 text-amber-700 hover:bg-amber-100"
+                    : "border border-amber-400/70 bg-white/60 text-amber-700 hover:bg-amber-50"
                 }`}
               >
                 {o.name}
@@ -305,13 +303,13 @@ function MessageBubble({
       );
     case "advisory":
       return (
-        <div className="rounded-lg bg-slate-50 px-3 py-1.5 text-[11px] text-slate-400">
+        <div className="rounded-lg bg-white/50 px-3 py-1.5 text-[11px] text-slate-400">
           {String(message.content.text ?? "")}
         </div>
       );
     case "error":
       return (
-        <div className="rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600">
+        <div className="rounded-lg border border-red-200/70 bg-red-100/70 px-3 py-2 text-xs text-red-600">
           ⚠️ {String(message.content.text ?? "")}
         </div>
       );
@@ -341,7 +339,7 @@ function ToolCallCard({ message }: { message: ChatMessageDto }) {
         })()
       : "";
   return (
-    <div className="rounded-lg border border-slate-100 bg-white text-xs">
+    <div className="rounded-lg border border-slate-900/8 bg-white/70 text-xs shadow-sm">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
@@ -351,7 +349,7 @@ function ToolCallCard({ message }: { message: ChatMessageDto }) {
         <span className="ml-auto truncate text-slate-400">{summary}</span>
       </button>
       {open && (
-        <pre className="max-h-40 overflow-auto border-t border-slate-100 px-3 py-2 text-[11px] text-slate-500">
+        <pre className="max-h-40 overflow-auto border-t border-slate-900/8 px-3 py-2 text-[11px] text-slate-500">
           {rawInput != null ? JSON.stringify(rawInput, null, 2) : "(无输入)"}
         </pre>
       )}

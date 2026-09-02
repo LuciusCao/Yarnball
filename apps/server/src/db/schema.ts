@@ -20,6 +20,8 @@ export const trips = pgTable("trips", {
   title: text("title").notNull(),
   destinationCity: text("destination_city").notNull(),
   cityAdcode: text("city_adcode"),
+  /** 地理 provider：amap（国内）| osm（海外） */
+  geoProvider: text("geo_provider").notNull().default("osm"),
   cityCenterLng: numeric("city_center_lng", { precision: 10, scale: 6 }),
   cityCenterLat: numeric("city_center_lat", { precision: 10, scale: 6 }),
   startDate: text("start_date"), // YYYY-MM-DD

@@ -16,7 +16,7 @@ import { chatChannel, tripChannel, TRIPS_CHANNEL, type EventBus } from "../event
 import { env } from "../env.js";
 import type { AcpSessionManager } from "../acp/sessionManager.js";
 import { ServiceError, type TripService } from "../services/tripService.js";
-import { amap } from "../services/geo.js";
+import { getProvider } from "../services/geo.js";
 import { toChatSessionDto } from "../services/mappers.js";
 import { listChatMessages } from "../services/chatStore.js";
 
@@ -93,8 +93,13 @@ export function createApi(
     const keyword = c.req.query("keyword") ?? "";
     if (!keyword.trim()) return c.json({ candidates: [] });
     const [trip] = await db.select().from(schema.trips).where(eq(schema.trips.id, c.req.param("tripId")));
+    const provider = getProvider(trip?.geoProvider ?? "osm");
+    const bias =
+      trip?.cityCenterLng != null && trip?.cityCenterLat != null
+        ? { lng: Number(trip.cityCenterLng), lat: Number(trip.cityCenterLat) }
+        : null;
     try {
-      const candidates = await amap.searchPoi(keyword, trip?.destinationCity ?? "");
+      const candidates = await provider.searchPoi(keyword, trip?.destinationCity ?? "", bias);
       return c.json({ candidates });
     } catch (err) {
       return c.json({ candidates: [], error: (err as Error).message }, 200);
