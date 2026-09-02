@@ -1,0 +1,202 @@
+import { useState } from "react";
+import { formatDistance, formatDuration, type TripBundle } from "@odessey/shared";
+import { api } from "../../api/client";
+import { DAY_COLORS } from "../map/MapCanvas";
+
+/**
+ * 行程面板：按天分组的时间轴。
+ * entry 之间显示交通段；支持上移/下移、删除、换天。
+ */
+
+interface ItineraryPanelProps {
+  tripId: string;
+  bundle: TripBundle;
+  selectedPlaceId: string | null;
+  onSelectPlace: (placeId: string) => void;
+  onDataChanged: () => void;
+}
+
+export function ItineraryPanel({
+  tripId,
+  bundle,
+  selectedPlaceId,
+  onSelectPlace,
+  onDataChanged,
+}: ItineraryPanelProps) {
+  const [busy, setBusy] = useState(false);
+  const placeById = new Map(bundle.places.map((p) => [p.id, p]));
+  const legByPair = new Map(bundle.legs.map((l) => [`${l.fromEntryId}->${l.toEntryId}`, l]));
+
+  const sortedDays = [...bundle.days].sort((a, b) => a.dayIndex - b.dayIndex);
+  const dayEntries = new Map<string, TripBundle["entries"]>();
+  for (const day of bundle.days) dayEntries.set(day.id, []);
+  for (const entry of [...bundle.entries].sort((a, b) => a.position - b.position)) {
+    dayEntries.get(entry.dayId)?.push(entry);
+  }
+
+  async function move(entryId: string, dayIndex: number, position: number) {
+    setBusy(true);
+    try {
+      await api.moveEntry(entryId, dayIndex, position);
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeEntry(entryId: string) {
+    setBusy(true);
+    try {
+      await api.removeEntry(entryId);
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function suggestOrder(dayIndex: number) {
+    setBusy(true);
+    try {
+      const { suggestion } = await api.suggestOrder(tripId, dayIndex);
+      const s = suggestion as {
+        beforeOrder: { name: string }[];
+        afterOrder: { name: string }[];
+        savedS: number;
+        alreadyOptimal: boolean;
+        entryIds: string[];
+      };
+      if (s.alreadyOptimal) {
+        alert(`Day ${dayIndex} 的顺序已经是最优，无需调整`);
+        return;
+      }
+      const names = s.afterOrder.map((o) => o.name).join(" → ");
+      const saved = Math.round(s.savedS / 60);
+      if (confirm(`优化后顺序：${names}\n\n预计节省 ${saved} 分钟交通时间。应用吗？`)) {
+        await api.reorderDay(tripId, dayIndex, s.entryIds);
+      }
+    } catch (err) {
+      alert((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col overflow-y-auto">
+      {sortedDays.length === 0 && (
+        <div className="p-6 text-center text-sm text-slate-400">
+          还没有行程。让 agent 帮你排，或在「搜索添加」里手动加地点。
+        </div>
+      )}
+      {sortedDays.map((day) => {
+        const color = DAY_COLORS[(day.dayIndex - 1) % DAY_COLORS.length];
+        const entries = dayEntries.get(day.id) ?? [];
+        return (
+          <section key={day.id} className="border-b border-slate-100 p-3">
+            <header className="mb-2 flex items-center gap-2">
+              <span
+                className="rounded px-2 py-0.5 text-xs font-semibold text-white"
+                style={{ background: color }}
+              >
+                Day {day.dayIndex}
+              </span>
+              <span className="text-xs text-slate-400">
+                {entries.length} 个地点
+                {day.date ? ` · ${day.date}` : ""}
+              </span>
+              {entries.length >= 3 && (
+                <button
+                  onClick={() => suggestOrder(day.dayIndex)}
+                  disabled={busy}
+                  className="ml-auto rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  ⚡ 优化顺序
+                </button>
+              )}
+            </header>
+
+            <ol className="space-y-0">
+              {entries.map((entry, i) => {
+                const place = placeById.get(entry.placeId);
+                if (!place) return null;
+                const leg = i + 1 < entries.length
+                  ? legByPair.get(`${entries[i].id}->${entries[i + 1].id}`)
+                  : null;
+                const selected = place.id === selectedPlaceId;
+                return (
+                  <li key={entry.id}>
+                    <div
+                      className={`group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 ${
+                        selected ? "bg-blue-50 ring-1 ring-blue-200" : "hover:bg-slate-50"
+                      }`}
+                      onClick={() => onSelectPlace(place.id)}
+                    >
+                      <span
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
+                        style={{ background: color }}
+                      >
+                        {i + 1}
+                      </span>
+                      <span className="flex-1 truncate text-sm">
+                        {place.name}
+                        {place.durationMin ? (
+                          <span className="ml-1 text-xs text-slate-400">约{place.durationMin}分钟</span>
+                        ) : null}
+                      </span>
+                      <span className="hidden shrink-0 gap-1 group-hover:flex">
+                        <button
+                          title="上移"
+                          disabled={busy || i === 0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void move(entry.id, day.dayIndex, entry.position - 1);
+                          }}
+                          className="rounded px-1 text-xs text-slate-400 hover:bg-slate-200 disabled:opacity-30"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          title="下移"
+                          disabled={busy || i === entries.length - 1}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void move(entry.id, day.dayIndex, entry.position + 1);
+                          }}
+                          className="rounded px-1 text-xs text-slate-400 hover:bg-slate-200 disabled:opacity-30"
+                        >
+                          ↓
+                        </button>
+                        <button
+                          title="从这天移除"
+                          disabled={busy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void removeEntry(entry.id);
+                          }}
+                          className="rounded px-1 text-xs text-slate-400 hover:bg-red-100 hover:text-red-500 disabled:opacity-30"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    </div>
+                    {leg && (
+                      <div className="flex items-center gap-1 py-0.5 pl-9 text-[11px] text-slate-400">
+                        <span>{leg.mode === "walk" ? "🚶" : leg.mode === "transit" ? "🚌" : "🚗"}</span>
+                        <span>
+                          {formatDuration(leg.durationS)}
+                          {leg.distanceM != null ? ` · ${formatDistance(leg.distanceM)}` : ""}
+                        </span>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+        );
+      })}
+    </div>
+  );
+}

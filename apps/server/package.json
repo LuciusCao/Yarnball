@@ -1,0 +1,33 @@
+{
+  "name": "@odessey/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "test": "vitest run",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.4.0",
+    "@hono/node-server": "^1.19.4",
+    "@modelcontextprotocol/sdk": "^1.20.1",
+    "@odessey/shared": "workspace:*",
+    "dotenv": "^17.2.3",
+    "drizzle-orm": "^0.44.7",
+    "hono": "^4.10.2",
+    "pg": "^8.16.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "@types/pg": "^8.15.6",
+    "drizzle-kit": "^0.31.5",
+    "tsx": "^4.20.0",
+    "vitest": "^3.2.4"
+  }
+}

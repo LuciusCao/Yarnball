@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: odessey-db
+    environment:
+      POSTGRES_USER: odessey
+      POSTGRES_PASSWORD: odessey
+      POSTGRES_DB: odessey
+    ports:
+      - "5433:5432"
+    volumes:
+      - odessey_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odessey"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  odessey_pgdata:
