@@ -345,14 +345,13 @@ export function TripPage() {
         </button>
       ) : (
         <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col rounded-[22px]">
-          {/* 收起把手：悬浮在面板右边框上，点击收起到右上角 */}
+          {/* 收起把手：贴在面板右上角内侧 */}
           <button
             onClick={() => setPanelMode("hidden")}
             title="收起面板"
-            className="glass absolute right-0 top-4 z-30 flex size-7 items-center justify-center rounded-full text-slate-500 shadow transition-all hover:scale-110 hover:text-slate-800"
-            style={{ transform: "translateX(50%)" }}
+            className="absolute right-2 top-2 z-30 flex size-7 items-center justify-center rounded-full text-slate-400 transition-all hover:bg-slate-900/8 hover:text-slate-700"
           >
-            <PanelRightClose className="size-3.5" />
+            <PanelRightClose className="size-4" />
           </button>
 
           <div className="glass-text min-h-0 flex-1 bg-white/40">

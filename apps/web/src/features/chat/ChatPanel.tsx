@@ -3,7 +3,7 @@ import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
 import type { ChatMessageDto, ChatSessionDto, TripDto } from "@tripmapper/shared";
 import { toast } from "sonner";
-import { AlertTriangle, Brain, Check, Clock, ListChecks, Loader2, ShieldCheck, X } from "lucide-react";
+import { AlertTriangle, Brain, Check, Clock, ListChecks, Loader2, SendHorizontal, ShieldCheck, X } from "lucide-react";
 import { api } from "../../api/client";
 import { Button } from "../../components/ui/button";
 import { Textarea, Select } from "../../components/ui/input";
@@ -177,7 +177,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
       {/* 输入 */}
       <div className="border-t border-slate-900/8 p-3">
-        <div className="flex gap-2">
+        <div className="relative">
           <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -192,16 +192,16 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
               running ? "agent 处理中…" : "粘贴攻略文本，或直接说：把 Bondi Beach 安排到 Day 2"
             }
             disabled={running}
-            className="flex-1 resize-none"
+            className="pr-14"
           />
-          <Button
-            variant="primary"
-            onClick={send}
+          <button
+            onClick={() => void send()}
             disabled={running || !input.trim()}
-            className="shrink-0 self-end"
+            title="发送"
+            className="absolute bottom-2.5 right-2 flex size-8 items-center justify-center rounded-full bg-blue-600 text-white shadow transition-all enabled:hover:bg-blue-500 disabled:opacity-40"
           >
-            发送
-          </Button>
+            <SendHorizontal className="size-4" />
+          </button>
         </div>
         <p className="mt-1 text-[11px] text-slate-400">
           agent 的每次操作会实时反映在地图上 · {messages.length} 条消息
