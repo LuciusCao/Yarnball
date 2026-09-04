@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { TripBundle } from "@odessey/shared";
 import { toast } from "sonner";
+import { BedDouble, MapPinned } from "lucide-react";
 import { api } from "../../api/client";
 
 /** 酒店面板：候选卡 + 选择 + 推荐区域 */
@@ -31,7 +32,7 @@ export function HotelPanel({
     <div className="h-full overflow-y-auto p-3">
       {area && (
         <div className="mb-3 rounded-lg border border-red-200/60 bg-red-100/50 px-3 py-2 text-xs text-slate-600">
-          🎯 建议住宿区域：行程地点中位数中心附近（半径 {Math.round(area.radiusM / 1000)} 公里，
+          建议住宿区域：行程地点中位数中心附近（半径 {Math.round(area.radiusM / 1000)} 公里，
           地图上红圈所示）。把这条发给 agent：
           <button
             className="ml-1 text-blue-600 underline"
@@ -65,7 +66,7 @@ export function HotelPanel({
               }`}
             >
               <div className="flex items-start gap-2">
-                <span className="text-lg">🏨</span>
+                <BedDouble className="size-5 shrink-0 text-red-400" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{place.name}</p>
                   <p className="truncate text-xs text-slate-400">{place.address ?? place.location.lng.toFixed(3) + "," + place.location.lat.toFixed(3)}</p>

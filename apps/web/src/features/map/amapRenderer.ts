@@ -45,9 +45,9 @@ export class AMapRenderer implements MapRenderer {
         position: [marker.position.lng, marker.position.lat],
         title: marker.label,
         label: {
-          content: `<div style="padding:1px 5px;font-size:12px;border-radius:6px;background:${marker.color};color:#fff;white-space:nowrap">${escapeHtml(marker.label)}</div>`,
+          content: `<div style="white-space:nowrap;font-size:12px;font-weight:600;padding:3px 10px;border-radius:9999px;background:linear-gradient(180deg,${marker.color}f2,${marker.color}d9);color:#fff;box-shadow:0 2px 8px rgba(15,23,42,.3),inset 0 1px 0 rgba(255,255,255,.45)">${escapeHtml(marker.label)}</div>`,
           direction: "top",
-          offset: [0, -4],
+          offset: [0, -6],
         },
         anchor: "bottom-center",
       });

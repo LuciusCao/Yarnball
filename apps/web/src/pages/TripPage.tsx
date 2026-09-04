@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Crosshair, Link2 } from "lucide-react";
+import {
+  BedDouble,
+  CalendarDays,
+  CalendarCheck,
+  Crosshair,
+  Link2,
+  MessageCircle,
+  Search,
+  UtensilsCrossed,
+  type LucideIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import type { ChatSessionDto } from "@odessey/shared";
 import { api } from "../api/client";
@@ -14,17 +24,17 @@ import { DiningBudgetPanel } from "../features/dining/DiningBudgetPanel";
 import { formatMoney } from "@odessey/shared";
 
 /**
- * 行程页 —— mac 毛玻璃布局：地图全屏打底，一切 UI 都是浮层。
+ * 行程页 —— macOS Tahoe（Liquid Glass）布局：地图全屏打底，一切 UI 都是玻璃浮层。
  */
 
 type Tab = "chat" | "itinerary" | "hotel" | "dining" | "search";
 
-const TAB_META: Record<Tab, { label: string; icon: string }> = {
-  chat: { label: "对话", icon: "💬" },
-  itinerary: { label: "行程", icon: "🗓" },
-  hotel: { label: "酒店", icon: "🏨" },
-  dining: { label: "美食·预算", icon: "🍽" },
-  search: { label: "添加", icon: "🔎" },
+const TAB_META: Record<Tab, { label: string; Icon: LucideIcon }> = {
+  chat: { label: "对话", Icon: MessageCircle },
+  itinerary: { label: "行程", Icon: CalendarDays },
+  hotel: { label: "酒店", Icon: BedDouble },
+  dining: { label: "美食·预算", Icon: UtensilsCrossed },
+  search: { label: "添加", Icon: Search },
 };
 
 export function TripPage() {
@@ -121,8 +131,9 @@ export function TripPage() {
     selectedPlaceId != null
       ? bundle.places.find((p) => p.id === selectedPlaceId) ?? null
       : null;
+  const ActiveTabIcon = TAB_META[tab].Icon;
   const days = [...bundle.days].sort((a, b) => a.dayIndex - b.dayIndex);
-  const tabs = Object.entries(TAB_META) as [Tab, { label: string; icon: string }][];
+  const tabs = Object.entries(TAB_META) as [Tab, { label: string; Icon: LucideIcon }][];
 
   return (
     <div className="relative h-full overflow-hidden">
@@ -204,7 +215,6 @@ export function TripPage() {
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-slate-900">
-                {selectedPlace.category === "restaurant" ? "🍽 " : selectedPlace.category === "hotel" ? "🏨 " : ""}
                 {selectedPlace.name}
               </p>
               <p className="truncate text-[11px] text-slate-400">{selectedPlace.address ?? ""}</p>
@@ -223,8 +233,9 @@ export function TripPage() {
             </p>
           )}
           {selectedPlace.bookingInfo && (
-            <p className="mt-1.5 flex items-start gap-1 rounded-lg bg-blue-500/10 px-2 py-1 text-[11px] text-blue-700">
-              📅 {selectedPlace.bookingInfo}
+            <p className="mt-1.5 flex items-start gap-1.5 rounded-lg bg-blue-500/10 px-2 py-1 text-[11px] text-blue-700">
+              <CalendarCheck className="mt-0.5 size-3 shrink-0" />
+              {selectedPlace.bookingInfo}
             </p>
           )}
           {selectedPlace.notes && (
@@ -245,24 +256,24 @@ export function TripPage() {
         只读分享
       </Link>
 
-      {/* ===== 右侧主面板（mac 窗口） ===== */}
+      {/* 右侧主面板（mac 窗口） ===== */}
       {panelMode === "hidden" ? (
         <button
           onClick={() => setPanelMode("expanded")}
-          className="glass panel-in absolute right-4 top-4 z-20 flex items-center gap-1.5 rounded-2xl px-3.5 py-2 text-xs font-medium text-slate-600 shadow-lg transition-transform hover:scale-105"
+          className="glass panel-in absolute right-4 top-4 z-20 flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
         >
-          <span>{TAB_META[tab].icon}</span>
+          <ActiveTabIcon className="size-3.5" />
           <span>显示{TAB_META[tab].label}面板</span>
         </button>
       ) : panelMode === "collapsed" ? (
-        <div className="glass panel-in absolute right-4 top-4 z-20 flex flex-col items-center gap-1 rounded-2xl p-2">
+        <div className="glass panel-in absolute right-4 top-4 z-20 flex flex-col items-center gap-1 rounded-3xl p-2.5">
           {/* mini traffic lights */}
-          <div className="flex gap-1.5 pb-1">
+          <div className="flex gap-2 pb-1.5">
             <TrafficLight color="#ff5f57" title="隐藏面板" onClick={() => setPanelMode("hidden")} />
-            <TrafficLight color="#febc2e" active title="已收起，点击展开" onClick={() => setPanelMode("expanded")} />
+            <TrafficLight color="#febc2e" title="已收起，点击展开" onClick={() => setPanelMode("expanded")} />
             <TrafficLight color="#28c840" title="展开面板" onClick={() => setPanelMode("expanded")} />
           </div>
-          <div className="flex flex-col gap-0.5">
+          <div className="flex flex-col gap-1">
             {tabs.map(([key, meta]) => (
               <button
                 key={key}
@@ -271,48 +282,49 @@ export function TripPage() {
                   setPanelMode("expanded");
                 }}
                 title={meta.label}
-                className={`rounded-lg px-2.5 py-2 text-base transition-colors ${
-                  tab === key ? "bg-slate-900/10" : "hover:bg-slate-900/5"
+                className={`rounded-full p-2 transition-colors ${
+                  tab === key ? "bg-slate-900/10 text-slate-900" : "text-slate-500 hover:bg-slate-900/5"
                 }`}
               >
-                {meta.icon}
+                <meta.Icon className="size-4" />
               </button>
             ))}
           </div>
         </div>
       ) : (
-        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl">
+        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
           {/* traffic lights 标题栏 */}
           <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
-            <div className="group flex gap-1.5">
+            <div className="flex gap-2">
               <TrafficLight color="#ff5f57" title="隐藏面板" onClick={() => setPanelMode("hidden")} />
               <TrafficLight color="#febc2e" title="收成竖条" onClick={() => setPanelMode("collapsed")} />
               <TrafficLight color="#28c840" title="展开中" active onClick={() => {}} />
             </div>
-            <span className="glass-text ml-1 truncate text-xs font-semibold">
-              {TAB_META[tab].icon} {TAB_META[tab].label}
+            <span className="glass-text ml-1 flex items-center gap-1.5 truncate text-xs font-semibold">
+              <ActiveTabIcon className="size-3.5 text-slate-500" />
+              {TAB_META[tab].label}
             </span>
           </div>
 
-          {/* tabs */}
-          <nav className="flex border-b border-white/40 px-1">
-            {tabs.map(([key, meta]) => (
-              <button
-                key={key}
-                onClick={() => setTab(key)}
-                className={`flex-1 px-2 py-2 text-xs transition-colors ${
-                  tab === key
-                    ? "border-b-2 border-slate-700 font-semibold text-slate-900"
-                    : "text-slate-500 hover:text-slate-800"
-                }`}
-              >
-                {meta.icon} {meta.label}
-              </button>
-            ))}
+          {/* 分段控件（macOS segmented control） */}
+          <nav className="px-3 pt-3">
+            <div className="segmented w-full">
+              {tabs.map(([key, meta]) => (
+                <button
+                  key={key}
+                  onClick={() => setTab(key)}
+                  data-active={tab === key}
+                  className="segmented-item flex-1"
+                >
+                  <meta.Icon className="size-3.5" />
+                  <span className="truncate">{meta.label}</span>
+                </button>
+              ))}
+            </div>
           </nav>
 
           {/* 内容区（玻璃上再垫一层更实的底，保证长列表可读性） */}
-          <div className="glass-text min-h-0 flex-1 bg-white/45">
+          <div className="glass-text min-h-0 flex-1 bg-white/40 px-0 py-3">
             {tab === "chat" && (
               <ChatPanel
                 trip={trip}
@@ -350,7 +362,7 @@ export function TripPage() {
   );
 }
 
-/** mac traffic light 按钮 */
+/** mac traffic light 玻璃珠（CSS 材质见 .traffic-light） */
 function TrafficLight({
   color,
   title,
@@ -366,8 +378,13 @@ function TrafficLight({
     <button
       title={title}
       onClick={onClick}
-      className="h-3 w-3 rounded-full border border-black/10 transition-transform hover:scale-110"
-      style={{ background: color, opacity: active ? 1 : 0.85, boxShadow: active ? `0 0 6px ${color}66` : undefined }}
+      className="traffic-light"
+      style={{
+        background: color,
+        boxShadow: active
+          ? `0 0 0 3px ${color}33, inset 0 1px 1px rgba(255,255,255,.65), inset 0 -1px 2px rgba(0,0,0,.18)`
+          : undefined,
+      }}
     />
   );
 }

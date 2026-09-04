@@ -50,6 +50,14 @@ export function MapCanvas({
   const initErrorRef = useRef<string | null>(null);
   const fittedRef = useRef<string>("");
   const [initError, setInitError] = useState<string | null>(null);
+  /** 最新渲染输入（init 完成晚于 bundle 到达时，init 回调用它补画一帧） */
+  const latestRef = useRef<{
+    bundle: TripBundle | null;
+    visibleDayIndex: number | null;
+    hotelArea: { center: LngLat; radiusM: number } | null;
+    selectedPlaceId: string | null;
+  }>({ bundle: null, visibleDayIndex: null, hotelArea: null, selectedPlaceId: null });
+  latestRef.current = { bundle, visibleDayIndex, hotelArea, selectedPlaceId };
 
   const provider = bundle?.trip.geoProvider ?? "osm";
   const center = bundle?.trip.location ?? null;
@@ -80,8 +88,20 @@ export function MapCanvas({
         rendererRef.current = renderer;
         initErrorRef.current = null;
         setInitError(null);
-        // 立即画一帧（后续由 specs effect 驱动）
-        renderer.render(buildOverlaySpecs(bundle, visibleDayIndex, hotelArea), selectedPlaceId);
+        // init 可能晚于 bundle 到达：用最新输入补画一帧 + fit + 城市定位，
+        // 否则 specs effect 已跑过、地图会空转（竞态修复）
+        const latest = latestRef.current;
+        if (latest.bundle) {
+          const specs = buildOverlaySpecs(latest.bundle, latest.visibleDayIndex, latest.hotelArea);
+          renderer.render(specs, latest.selectedPlaceId);
+          const fitKey = latest.bundle.places.map((p) => p.id).sort().join(",");
+          if (latest.bundle.places.length > 0) {
+            renderer.fit(specs);
+            fittedRef.current = fitKey;
+          } else if (latest.bundle.trip.location) {
+            renderer.flyTo(latest.bundle.trip.location, 12);
+          }
+        }
       })
       .catch((err) => {
         if (disposed) return;

@@ -1,9 +1,5 @@
-import {
-  Map as MlMap,
-  Marker as MlMarker,
-  AttributionControl,
-  Map as MapLibreMap,
-} from "maplibre-gl";
+import maplibregl from "maplibre-gl";
+import type { Map as MlMap, Marker as MlMarker } from "maplibre-gl";
 import type { LngLat } from "@odessey/shared";
 import type { OverlaySpecs } from "./overlaySpecs";
 import type { MapRenderer } from "./MapCanvas";
@@ -42,7 +38,7 @@ export class MapLibreRenderer implements MapRenderer {
   constructor(private onSelectPlace: (placeId: string) => void) {}
 
   async init(container: HTMLElement, center: LngLat | null): Promise<void> {
-    const map = new MapLibreMap({
+    const map = new maplibregl.Map({
       container,
       style: OSM_STYLE as never,
       center: center ? [center.lng, center.lat] : [151.2, -33.87],
@@ -50,12 +46,25 @@ export class MapLibreRenderer implements MapRenderer {
       attributionControl: false,
     });
     this.map = map;
-    map.addControl(new AttributionControl({ compact: true }));
+    // 调试暴露（生产无碍：单机自托管）
+    (window as unknown as Record<string, unknown>).__mapDebug = map;
+    map.addControl(new maplibregl.AttributionControl({ compact: true }));
+    // context lost 可见于 UI（WebGL 资源被系统回收时的自愈提示）
+    map.getCanvas().addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      console.warn("[map] WebGL context lost");
+    });
     await new Promise<void>((resolve, reject) => {
       map.once("load", () => resolve());
       map.once("error", (e: unknown) =>
         reject(new Error(String((e as { error?: unknown })?.error ?? "map load error"))),
       );
+      // 兜底：8s 内 load/error 都没触发（环境 WebGL 异常时 maplibre 会静默挂起）
+      setTimeout(() => {
+        if (!map.loaded() && !map.isStyleLoaded()) {
+          reject(new Error("地图初始化超时（WebGL 可能不可用，请尝试刷新页面）"));
+        }
+      }, 8000);
     });
   }
 
@@ -140,19 +149,18 @@ export class MapLibreRenderer implements MapRenderer {
       this.sourceIds.push("hotel-area-src");
     }
 
-    // markers：引脚 DOM（毛玻璃卡片风格，选中态高亮）
+    // markers：Tahoe 风玻璃胶囊徽标（选中态高亮环）
     for (const spec of specs.markers) {
       const selected = spec.placeId === selectedPlaceId;
       const el = document.createElement("button");
-      el.className =
-        "border-none bg-transparent p-0 cursor-pointer flex flex-col items-center group";
+      el.className = "border-none bg-transparent p-0 cursor-pointer flex flex-col items-center";
       el.innerHTML = `
-        <div style="white-space:nowrap;font-size:12px;padding:2px 8px;border-radius:9999px;background:${spec.color};color:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25)${
-          selected ? ";outline:3px solid rgba(37,99,235,.5)" : ""
+        <div style="white-space:nowrap;font-size:12px;font-weight:600;padding:3px 10px;border-radius:9999px;background:linear-gradient(180deg,${spec.color}f2,${spec.color}d9);color:#fff;box-shadow:0 2px 8px rgba(15,23,42,.3),inset 0 1px 0 rgba(255,255,255,.45)${
+          selected ? ";outline:3px solid rgba(37,99,235,.45)" : ""
         }">${escapeHtml(spec.label)}</div>
-        <div style="width:9px;height:9px;border-radius:9999px;background:${spec.color};margin:-2px auto 0;box-shadow:0 1px 3px rgba(0,0,0,.3)"></div>`;
+        <div style="width:10px;height:10px;border-radius:9999px;background:${spec.color};margin:-3px auto 0;box-shadow:0 1px 4px rgba(15,23,42,.4),inset 0 1px 0 rgba(255,255,255,.4)"></div>`;
       el.onclick = () => this.onSelectPlace(spec.placeId);
-      const marker = new MlMarker({ element: el, anchor: "bottom" })
+      const marker = new maplibregl.Marker({ element: el, anchor: "bottom" })
         .setLngLat([spec.position.lng, spec.position.lat])
         .addTo(map);
       this.markers.push(marker);

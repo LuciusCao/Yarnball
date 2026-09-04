@@ -20,26 +20,100 @@ body {
   height: 100%;
 }
 
-/* ===== mac 毛玻璃浮层 ===== */
+/* ===== macOS Tahoe · Liquid Glass ===== */
+
+/*
+ * Tahoe 玻璃的三要素：
+ * 1. 高斯模糊 + 饱和度提升（材质感来自底层的色彩渗透）
+ * 2. 顶部高光边缘（inset 白色描边——光从上方打进玻璃）
+ * 3. 大而柔的投影（浮在内容上方）
+ */
 
 .glass {
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(28px) saturate(1.8);
-  -webkit-backdrop-filter: blur(28px) saturate(1.8);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.58),
+    rgba(255, 255, 255, 0.42)
+  );
+  backdrop-filter: blur(40px) saturate(1.9);
+  -webkit-backdrop-filter: blur(40px) saturate(1.9);
   border: 1px solid rgba(255, 255, 255, 0.55);
   box-shadow:
-    0 8px 32px rgba(15, 23, 42, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.12),
+    0 10px 40px rgba(15, 23, 42, 0.16),
+    0 2px 8px rgba(15, 23, 42, 0.05);
 }
 
 .glass-deep {
-  background: rgba(255, 255, 255, 0.6);
-  backdrop-filter: blur(36px) saturate(1.6);
-  -webkit-backdrop-filter: blur(36px) saturate(1.6);
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.66),
+    rgba(255, 255, 255, 0.5)
+  );
+  backdrop-filter: blur(48px) saturate(1.8);
+  -webkit-backdrop-filter: blur(48px) saturate(1.8);
+  border: 1px solid rgba(255, 255, 255, 0.6);
   box-shadow:
-    0 12px 40px rgba(15, 23, 42, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.12),
+    0 16px 48px rgba(15, 23, 42, 0.2),
+    0 2px 8px rgba(15, 23, 42, 0.06);
+}
+
+/* macOS 分段控件（segmented control）容器 */
+.segmented {
+  display: flex;
+  gap: 2px;
+  border-radius: 9999px;
+  background: rgba(15, 23, 42, 0.06);
+  padding: 2px;
+}
+
+.segmented-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-radius: 9999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(51, 65, 85, 0.65);
+  transition: all 0.18s ease;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+}
+
+.segmented-item:hover {
+  color: #334155;
+}
+
+.segmented-item[data-active="true"] {
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* mac traffic light（内圈高光让它是颗玻璃珠） */
+.traffic-light {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  border: none;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.65),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.18),
+    0 1px 2px rgba(0, 0, 0, 0.15);
+  transition: transform 0.15s ease;
+}
+
+.traffic-light:hover {
+  transform: scale(1.12);
 }
 
 /* 面板进出场动画 */

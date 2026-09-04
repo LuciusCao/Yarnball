@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { formatDistance, formatDuration, type TripBundle } from "@odessey/shared";
 import { toast } from "sonner";
+import { BedDouble, Bus, Car, Footprints, Zap } from "lucide-react";
 import { api } from "../../api/client";
 import { DAY_COLORS } from "../map/MapCanvas";
 
@@ -126,7 +127,8 @@ export function ItineraryPanel({
                   disabled={busy}
                   className="ml-auto rounded border border-slate-300/60 bg-white/60 px-2 py-0.5 text-xs text-slate-600 hover:bg-white disabled:opacity-50"
                 >
-                  ⚡ 优化顺序
+                  <Zap className="size-3" />
+                  优化顺序
                 </button>
               )}
             </header>
@@ -201,9 +203,7 @@ export function ItineraryPanel({
                     </div>
                     {leg && (
                       <div className="flex items-center gap-1 py-0.5 pl-9 text-[11px] text-slate-400">
-                        <span>
-                          {toHotel ? "🏨" : leg.mode === "walk" ? "🚶" : leg.mode === "transit" ? "🚌" : "🚗"}
-                        </span>
+                        <TransportIcon mode={toHotel ? "hotel" : leg.mode} />
                         <span>
                           {toHotel ? `返回 ${hotelPlace?.name ?? "酒店"} · ` : ""}
                           {formatDuration(leg.durationS)}
@@ -220,4 +220,11 @@ export function ItineraryPanel({
       })}
     </div>
   );
+}
+
+function TransportIcon({ mode }: { mode: string }) {
+  if (mode === "hotel") return <BedDouble className="size-3 shrink-0 text-slate-400" />;
+  if (mode === "walk") return <Footprints className="size-3 shrink-0 text-slate-400" />;
+  if (mode === "transit") return <Bus className="size-3 shrink-0 text-slate-400" />;
+  return <Car className="size-3 shrink-0 text-slate-400" />;
 }

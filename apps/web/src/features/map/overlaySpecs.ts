@@ -48,15 +48,7 @@ export const DAY_COLORS = [
 ];
 
 export const HOTEL_COLOR = "#dc2626";
-export const UNSCHEDULED_COLOR = "#9ca3af";
-
-const CATEGORY_ICONS: Record<string, string> = {
-  attraction: "🏛",
-  restaurant: "🍜",
-  hotel: "🏨",
-  activity: "🎯",
-  other: "📍",
-};
+export const UNSCHEDULED_COLOR = "#64748b";
 
 export function dayColor(dayIndex: number): string {
   return DAY_COLORS[(dayIndex - 1) % DAY_COLORS.length];
@@ -142,7 +134,7 @@ export function buildOverlaySpecs(
       markers.push({
         id: `h-${cand.id}`,
         position: place.location,
-        label: `${isSel ? "✓ " : ""}🏨 ${place.name}${cand.pricePerNight ? ` $${cand.pricePerNight}/晚` : ""}`,
+        label: `${isSel ? "✓ " : ""}${place.name}${cand.pricePerNight ? ` · ${cand.pricePerNight}/晚` : ""}`,
         color: isSel ? HOTEL_COLOR : "#78716c",
         placeId: place.id,
       });
@@ -153,7 +145,7 @@ export function buildOverlaySpecs(
       markers.push({
         id: `p-${place.id}`,
         position: place.location,
-        label: `${CATEGORY_ICONS[place.category] ?? "📍"} ${place.name}`,
+        label: place.name,
         color: UNSCHEDULED_COLOR,
         placeId: place.id,
       });

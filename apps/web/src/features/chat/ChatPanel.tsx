@@ -3,6 +3,7 @@ import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
 import type { ChatMessageDto, ChatSessionDto, TripDto } from "@odessey/shared";
 import { toast } from "sonner";
+import { AlertTriangle, Brain, Check, Clock, ListChecks, Loader2, ShieldCheck, X } from "lucide-react";
 import { api } from "../../api/client";
 import { Button } from "../../components/ui/button";
 import { Textarea, Select } from "../../components/ui/input";
@@ -244,7 +245,10 @@ function MessageBubble({
     case "agent_thought":
       return (
         <details className="rounded-lg border border-slate-900/8 bg-white/50 px-3 py-1.5 text-xs text-slate-500">
-          <summary className="cursor-pointer select-none">💭 思考过程</summary>
+          <summary className="flex cursor-pointer select-none items-center gap-1.5">
+            <Brain className="size-3" />
+            思考过程
+          </summary>
           <div className="mt-1 whitespace-pre-wrap">{String(message.content.text ?? "")}</div>
         </details>
       );
@@ -255,7 +259,10 @@ function MessageBubble({
     case "plan":
       return (
         <div className="rounded-lg border border-slate-900/8 bg-white/60 px-3 py-2 text-xs">
-          <p className="mb-1 font-medium text-slate-600">📋 计划</p>
+          <p className="mb-1 flex items-center gap-1.5 font-medium text-slate-600">
+            <ListChecks className="size-3.5" />
+            计划
+          </p>
           <ol className="list-inside list-decimal space-y-0.5 text-slate-600">
             {(message.content.entries as { content: string; status?: string }[] | undefined)?.map(
               (e, i) => (
@@ -273,7 +280,10 @@ function MessageBubble({
       const requestId = String(message.content.requestId ?? "");
       return (
         <div className="rounded-lg border border-amber-300/70 bg-amber-100/70 px-3 py-2 text-sm shadow-sm">
-          <p className="font-medium text-amber-800">🔐 请求权限：{toolCall?.title ?? "工具调用"}</p>
+          <p className="flex items-center gap-1.5 font-medium text-amber-800">
+            <ShieldCheck className="size-4 shrink-0" />
+            请求权限：{toolCall?.title ?? "工具调用"}
+          </p>
           <div className="mt-2 flex flex-wrap gap-2">
             {options.map((o) => (
               <button
@@ -306,8 +316,9 @@ function MessageBubble({
       );
     case "error":
       return (
-        <div className="rounded-lg border border-red-200/70 bg-red-100/70 px-3 py-2 text-xs text-red-600">
-          ⚠️ {String(message.content.text ?? "")}
+        <div className="flex items-start gap-1.5 rounded-lg border border-red-200/70 bg-red-100/70 px-3 py-2 text-xs text-red-600">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span>{String(message.content.text ?? "")}</span>
         </div>
       );
     default:
@@ -322,8 +333,15 @@ function ToolCallCard({ message }: { message: ChatMessageDto }) {
     status?: string;
     rawInput?: unknown;
   };
-  const icon =
-    status === "completed" ? "✅" : status === "failed" ? "❌" : status === "in_progress" ? "🔄" : "⏳";
+  const StatusIcon =
+    status === "completed" ? Check : status === "failed" ? X : status === "in_progress" ? Loader2 : Clock;
+  const spin = status === "in_progress";
+  const statusColor =
+    status === "completed"
+      ? "text-emerald-600"
+      : status === "failed"
+        ? "text-red-500"
+        : "text-slate-400";
   const summary =
     rawInput != null
       ? (() => {
@@ -341,7 +359,7 @@ function ToolCallCard({ message }: { message: ChatMessageDto }) {
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
       >
-        <span>{icon}</span>
+        <StatusIcon className={`size-3.5 shrink-0 ${statusColor} ${spin ? "animate-spin" : ""}`} />
         <span className="font-medium text-slate-700">{title ?? "工具调用"}</span>
         <span className="ml-auto truncate text-slate-400">{summary}</span>
       </button>

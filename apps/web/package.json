@@ -20,7 +20,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.39.0",
-    "maplibre-gl": "^6.6.0",
+    "maplibre-gl": "^5.24.0",
     "marked": "^16.4.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
