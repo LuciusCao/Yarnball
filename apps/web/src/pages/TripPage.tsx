@@ -27,14 +27,13 @@ import { BudgetStrip } from "../features/budget/BudgetStrip";
  * 行程页 —— macOS Tahoe（Liquid Glass）布局：地图全屏打底，一切 UI 都是玻璃浮层。
  */
 
-type Tab = "chat" | "itinerary" | "hotel" | "dining" | "search";
+type LeftPanel = "itinerary" | "hotel" | "dining" | "search";
 
-const TAB_META: Record<Tab, { label: string; Icon: LucideIcon }> = {
-  chat: { label: "对话", Icon: MessageCircle },
+const LEFT_PANEL_META: Record<LeftPanel, { label: string; Icon: LucideIcon }> = {
   itinerary: { label: "行程", Icon: CalendarDays },
   hotel: { label: "酒店", Icon: BedDouble },
   dining: { label: "美食", Icon: UtensilsCrossed },
-  search: { label: "添加", Icon: Search },
+  search: { label: "添加地点", Icon: Search },
 };
 
 export function TripPage() {
@@ -42,7 +41,7 @@ export function TripPage() {
   const { bundle, error, load, subscribe } = useTripStore();
   const [amapJsKey, setAmapJsKey] = useState("");
   const [amapJsSecret, setAmapJsSecret] = useState("");
-  const [tab, setTab] = useState<Tab>("chat");
+  const [leftPanel, setLeftPanel] = useState<LeftPanel | null>(null);
   const [chatSessions, setChatSessions] = useState<ChatSessionDto[]>([]);
   const [visibleDay, setVisibleDay] = useState<number | null>(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
@@ -155,9 +154,9 @@ export function TripPage() {
     selectedPlaceId != null
       ? bundle.places.find((p) => p.id === selectedPlaceId) ?? null
       : null;
-  const ActiveTabIcon = TAB_META[tab].Icon;
   const days = [...bundle.days].sort((a, b) => a.dayIndex - b.dayIndex);
-  const tabs = Object.entries(TAB_META) as [Tab, { label: string; Icon: LucideIcon }][];
+  const leftPanels = Object.entries(LEFT_PANEL_META) as [LeftPanel, { label: string; Icon: LucideIcon }][];
+  const activeLeftMeta = leftPanel != null ? LEFT_PANEL_META[leftPanel] : null;
 
   return (
     <div className="relative h-full overflow-hidden">
@@ -199,6 +198,15 @@ export function TripPage() {
         >
           <Crosshair className="size-3.5" />
         </button>
+        <Link
+          to={`/share/${trip.shareToken}`}
+          target="_blank"
+          title="打开只读分享页"
+          className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
+        >
+          <Link2 className="size-3" />
+          分享
+        </Link>
       </header>
 
       {/* 左上第二行：Day 筛选 chips */}
@@ -233,9 +241,9 @@ export function TripPage() {
         </div>
       )}
 
-      {/* 左下：选中地点信息卡 */}
+      {/* 左上（Day chips 下方）：选中地点信息卡 */}
       {selectedPlace && (
-        <div className="glass panel-in absolute bottom-4 left-4 z-10 max-w-xs rounded-2xl p-3.5">
+        <div className="glass panel-in absolute left-4 top-[104px] z-10 max-w-xs rounded-2xl p-3.5">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-slate-900">
@@ -268,26 +276,71 @@ export function TripPage() {
         </div>
       )}
 
-      {/* 左下：只读分享入口（低调） */}
-      <Link
-        to={`/share/${trip.shareToken}`}
-        target="_blank"
-        className={`glass glass-text panel-in absolute z-10 flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium text-slate-600 transition-transform hover:scale-105 ${
-          selectedPlace ? "bottom-4 left-[calc(1rem+min(20rem,60vw))]" : "bottom-4 left-4"
-        }`}
-      >
-        <Link2 className="size-3.5" />
-        只读分享
-      </Link>
+      {/* 左下：数据面板 dock（行程/酒店/美食/添加），常驻一小条，点击展开 ===== */}
+      {leftPanel != null && activeLeftMeta != null && (
+        <div className="glass-deep panel-in absolute bottom-[68px] left-4 z-10 flex h-[min(52vh,500px)] w-[360px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
+          <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
+            <activeLeftMeta.Icon className="size-3.5 text-slate-500" />
+            <span className="glass-text ml-1 text-xs font-semibold">{activeLeftMeta.label}</span>
+            <button
+              onClick={() => setLeftPanel(null)}
+              title="收起面板"
+              className="ml-auto flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-600"
+            >
+              ✕
+            </button>
+          </div>
+          {/* 预算条：跨类别（住宿/餐饮/门票）汇总，面板展开时常驻顶部 */}
+          <div className="glass-text flex min-h-0 flex-1 flex-col gap-3 bg-white/40 py-3">
+            {budgetSummary && (
+              <div className="px-3">
+                <BudgetStrip tripId={trip.id} summary={budgetSummary} onRefresh={refreshBudget} />
+              </div>
+            )}
+            <div className="min-h-0 flex-1">
+              {leftPanel === "itinerary" && (
+                <ItineraryPanel
+                  tripId={trip.id}
+                  bundle={bundle}
+                  selectedPlaceId={selectedPlaceId}
+                  onSelectPlace={setSelectedPlaceId}
+                  onDataChanged={() => void load(trip.id)}
+                />
+              )}
+              {leftPanel === "hotel" && (
+                <HotelPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
+              )}
+              {leftPanel === "dining" && <DiningPanel bundle={bundle} />}
+              {leftPanel === "search" && (
+                <SearchAddPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="glass panel-in absolute bottom-4 left-4 z-10 flex items-center gap-1 rounded-full p-1.5">
+        {leftPanels.map(([key, meta]) => (
+          <button
+            key={key}
+            onClick={() => setLeftPanel(leftPanel === key ? null : key)}
+            title={meta.label}
+            className={`flex items-center justify-center rounded-full p-2 transition-colors ${
+              leftPanel === key ? "bg-slate-900/10 text-slate-900" : "text-slate-500 hover:bg-slate-900/5"
+            }`}
+          >
+            <meta.Icon className="size-4" />
+          </button>
+        ))}
+      </div>
 
-      {/* 右侧主面板（mac 窗口） ===== */}
+      {/* 右侧主面板：纯 agent 对话 ===== */}
       {panelMode === "hidden" ? (
         <button
           onClick={() => setPanelMode("expanded")}
           className="glass panel-in absolute right-4 top-4 z-20 flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
         >
-          <ActiveTabIcon className="size-3.5" />
-          <span>显示{TAB_META[tab].label}面板</span>
+          <MessageCircle className="size-3.5" />
+          显示 Agent 面板
         </button>
       ) : panelMode === "collapsed" ? (
         <div className="glass panel-in absolute right-4 top-4 z-20 flex flex-col items-center gap-1 rounded-3xl p-2.5">
@@ -297,23 +350,13 @@ export function TripPage() {
             <TrafficLight color="#febc2e" title="已收起，点击展开" onClick={() => setPanelMode("expanded")} />
             <TrafficLight color="#28c840" title="展开面板" onClick={() => setPanelMode("expanded")} />
           </div>
-          <div className="flex flex-col gap-1">
-            {tabs.map(([key, meta]) => (
-              <button
-                key={key}
-                onClick={() => {
-                  setTab(key);
-                  setPanelMode("expanded");
-                }}
-                title={meta.label}
-                className={`rounded-full p-2 transition-colors ${
-                  tab === key ? "bg-slate-900/10 text-slate-900" : "text-slate-500 hover:bg-slate-900/5"
-                }`}
-              >
-                <meta.Icon className="size-4" />
-              </button>
-            ))}
-          </div>
+          <button
+            onClick={() => setPanelMode("expanded")}
+            title="Agent 对话"
+            className="rounded-full p-2 text-slate-500 transition-colors hover:bg-slate-900/5"
+          >
+            <MessageCircle className="size-4" />
+          </button>
         </div>
       ) : (
         <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
@@ -325,65 +368,19 @@ export function TripPage() {
               <TrafficLight color="#28c840" title="展开中" active onClick={() => {}} />
             </div>
             <span className="glass-text ml-1 flex items-center gap-1.5 truncate text-xs font-semibold">
-              <ActiveTabIcon className="size-3.5 text-slate-500" />
-              {TAB_META[tab].label}
+              <MessageCircle className="size-3.5 text-slate-500" />
+              Agent
             </span>
           </div>
 
-          {/* 分段控件（macOS segmented control） */}
-          <nav className="px-3 pt-3">
-            <div className="segmented w-full">
-              {tabs.map(([key, meta]) => (
-                <button
-                  key={key}
-                  onClick={() => setTab(key)}
-                  data-active={tab === key}
-                  className="segmented-item flex-1"
-                >
-                  <meta.Icon className="size-3.5" />
-                  <span className="truncate">{meta.label}</span>
-                </button>
-              ))}
-            </div>
-          </nav>
-
-          {/* 预算条：跨类别（住宿/餐饮/门票）汇总，常驻所有 tab 之上 */}
-          {budgetSummary && (
-            <div className="px-3 pt-3">
-              <BudgetStrip tripId={trip.id} summary={budgetSummary} onRefresh={refreshBudget} />
-            </div>
-          )}
-
           {/* 内容区（玻璃上再垫一层更实的底，保证长列表可读性） */}
-          <div className="glass-text min-h-0 flex-1 bg-white/40 px-0 py-3">
-            {tab === "chat" && (
-              <ChatPanel
-                trip={trip}
-                sessions={chatSessions}
-                onSessionsChanged={() => void refreshSessions()}
-                selectedPlaceId={selectedPlaceId}
-              />
-            )}
-            {tab === "itinerary" && (
-              <ItineraryPanel
-                tripId={trip.id}
-                bundle={bundle}
-                selectedPlaceId={selectedPlaceId}
-                onSelectPlace={setSelectedPlaceId}
-                onDataChanged={() => void load(trip.id)}
-              />
-            )}
-            {tab === "hotel" && (
-              <HotelPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
-            )}
-            {tab === "dining" && <DiningPanel bundle={bundle} />}
-            {tab === "search" && (
-              <SearchAddPanel
-                tripId={trip.id}
-                bundle={bundle}
-                onDataChanged={() => void load(trip.id)}
-              />
-            )}
+          <div className="glass-text min-h-0 flex-1 bg-white/40">
+            <ChatPanel
+              trip={trip}
+              sessions={chatSessions}
+              onSessionsChanged={() => void refreshSessions()}
+              selectedPlaceId={selectedPlaceId}
+            />
           </div>
         </aside>
       )}
