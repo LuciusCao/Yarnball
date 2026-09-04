@@ -98,24 +98,6 @@ body {
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
-/* mac traffic light（内圈高光让它是颗玻璃珠） */
-.traffic-light {
-  width: 12px;
-  height: 12px;
-  border-radius: 9999px;
-  border: none;
-  cursor: pointer;
-  box-shadow:
-    inset 0 1px 1px rgba(255, 255, 255, 0.65),
-    inset 0 -1px 2px rgba(0, 0, 0, 0.18),
-    0 1px 2px rgba(0, 0, 0, 0.15);
-  transition: transform 0.15s ease;
-}
-
-.traffic-light:hover {
-  transform: scale(1.12);
-}
-
 /* 面板进出场动画 */
 @keyframes panel-in {
   from {

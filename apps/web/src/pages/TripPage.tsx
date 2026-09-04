@@ -6,7 +6,8 @@ import {
   CalendarCheck,
   Crosshair,
   Link2,
-  MessageCircle,
+  PanelRightClose,
+  PanelRightOpen,
   Search,
   UtensilsCrossed,
   type LucideIcon,
@@ -47,8 +48,8 @@ export function TripPage() {
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [hotelArea, setHotelArea] = useState<{ center: { lng: number; lat: number }; radiusM: number } | null>(null);
   const [budgetSummary, setBudgetSummary] = useState<BudgetSummary | null>(null);
-  /** 面板形态：expanded（完整）/ collapsed（收成竖条）/ hidden（隐藏，只剩呼出按钮） */
-  const [panelMode, setPanelMode] = useState<"expanded" | "collapsed" | "hidden">("expanded");
+  /** 面板形态：expanded（完整）/ hidden（收起到右上角的呼出钮） */
+  const [panelMode, setPanelMode] = useState<"expanded" | "hidden">("expanded");
 
   useEffect(() => {
     if (!tripId) return;
@@ -339,41 +340,21 @@ export function TripPage() {
           onClick={() => setPanelMode("expanded")}
           className="glass panel-in absolute right-4 top-4 z-20 flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
         >
-          <MessageCircle className="size-3.5" />
+          <PanelRightOpen className="size-3.5" />
           显示 Agent 面板
         </button>
-      ) : panelMode === "collapsed" ? (
-        <div className="glass panel-in absolute right-4 top-4 z-20 flex flex-col items-center gap-1 rounded-3xl p-2.5">
-          {/* mini traffic lights */}
-          <div className="flex gap-2 pb-1.5">
-            <TrafficLight color="#ff5f57" title="隐藏面板" onClick={() => setPanelMode("hidden")} />
-            <TrafficLight color="#febc2e" title="已收起，点击展开" onClick={() => setPanelMode("expanded")} />
-            <TrafficLight color="#28c840" title="展开面板" onClick={() => setPanelMode("expanded")} />
-          </div>
-          <button
-            onClick={() => setPanelMode("expanded")}
-            title="Agent 对话"
-            className="rounded-full p-2 text-slate-500 transition-colors hover:bg-slate-900/5"
-          >
-            <MessageCircle className="size-4" />
-          </button>
-        </div>
       ) : (
-        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
-          {/* traffic lights 标题栏 */}
-          <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
-            <div className="flex gap-2">
-              <TrafficLight color="#ff5f57" title="隐藏面板" onClick={() => setPanelMode("hidden")} />
-              <TrafficLight color="#febc2e" title="收成竖条" onClick={() => setPanelMode("collapsed")} />
-              <TrafficLight color="#28c840" title="展开中" active onClick={() => {}} />
-            </div>
-            <span className="glass-text ml-1 flex items-center gap-1.5 truncate text-xs font-semibold">
-              <MessageCircle className="size-3.5 text-slate-500" />
-              Agent
-            </span>
-          </div>
+        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col rounded-[22px]">
+          {/* 收起把手：悬浮在面板右边框上，点击收起到右上角 */}
+          <button
+            onClick={() => setPanelMode("hidden")}
+            title="收起面板"
+            className="glass absolute right-0 top-4 z-30 flex size-7 items-center justify-center rounded-full text-slate-500 shadow transition-all hover:scale-110 hover:text-slate-800"
+            style={{ transform: "translateX(50%)" }}
+          >
+            <PanelRightClose className="size-3.5" />
+          </button>
 
-          {/* 内容区（玻璃上再垫一层更实的底，保证长列表可读性） */}
           <div className="glass-text min-h-0 flex-1 bg-white/40">
             <ChatPanel
               trip={trip}
@@ -385,32 +366,5 @@ export function TripPage() {
         </aside>
       )}
     </div>
-  );
-}
-
-/** mac traffic light 玻璃珠（CSS 材质见 .traffic-light） */
-function TrafficLight({
-  color,
-  title,
-  onClick,
-  active = false,
-}: {
-  color: string;
-  title: string;
-  onClick: () => void;
-  active?: boolean;
-}) {
-  return (
-    <button
-      title={title}
-      onClick={onClick}
-      className="traffic-light"
-      style={{
-        background: color,
-        boxShadow: active
-          ? `0 0 0 3px ${color}33, inset 0 1px 1px rgba(255,255,255,.65), inset 0 -1px 2px rgba(0,0,0,.18)`
-          : undefined,
-      }}
-    />
   );
 }
