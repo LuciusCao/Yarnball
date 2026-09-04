@@ -12,7 +12,7 @@ import { createMcpApp } from "./mcp/app.js";
 import { createApi } from "./routes/api.js";
 
 /**
- * Odessey server —— 组装：DB / 事件总线 / TripService / MCP 工具面 / ACP 会话 / REST + SSE。
+ * TripMapper server —— 组装：DB / 事件总线 / TripService / MCP 工具面 / ACP 会话 / REST + SSE。
  */
 
 const { db, pool } = createDb(env.databaseUrl);
@@ -61,11 +61,11 @@ async function seedAgents() {
 }
 
 const server = serve({ fetch: app.fetch, port: env.serverPort }, async (info) => {
-  console.log(`[odessey] server listening on http://127.0.0.1:${info.port}`);
+  console.log(`[tripmapper] server listening on http://127.0.0.1:${info.port}`);
   await seedAgents();
   if (!env.amapConfigured) {
     console.warn(
-      "[odessey] AMAP keys not configured — POI search / routing will use rough estimates. " +
+      "[tripmapper] AMAP keys not configured — POI search / routing will use rough estimates. " +
         "Set AMAP_JS_KEY / AMAP_SERVER_KEY in .env (see .env.example).",
     );
   }
@@ -74,7 +74,7 @@ const server = serve({ fetch: app.fetch, port: env.serverPort }, async (info) =>
 // ---------- 优雅关闭 ----------
 
 async function shutdown() {
-  console.log("[odessey] shutting down…");
+  console.log("[tripmapper] shutting down…");
   await acpSessions.stopAll();
   server.close();
   await pool.end().catch(() => {});

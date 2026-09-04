@@ -200,7 +200,7 @@ async function main() {
 
     await api(`/chat-sessions/${permSession.id}`, { method: "DELETE" });
 
-    // 4.5 mcp_call_flow：fake agent 真实调用 odessey MCP server
+    // 4.5 mcp_call_flow：fake agent 真实调用 tripmapper MCP server
     console.log("-- mcp_call_flow --");
     const mcpAgentId = "fake-agent-smoke-mcp";
     await client.query(
@@ -242,7 +242,7 @@ async function main() {
     const mcpAgentText = mcpMsgs.find((m) => m.kind === "agent_text");
     assert(
       mcpAgentText != null && String(mcpAgentText.content.text).includes("MCP 连接成功"),
-      "fake agent connected to odessey MCP server via injected URL",
+      "fake agent connected to tripmapper MCP server via injected URL",
     );
     assert(
       mcpAgentText != null && String(mcpAgentText.content.text).includes("smoke-trip"),

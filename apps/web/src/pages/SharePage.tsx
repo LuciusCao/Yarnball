@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import { api } from "../api/client";
 import { MapCanvas, dayColor } from "../features/map/MapCanvas";
 import { ItineraryPanel } from "../features/itinerary/ItineraryPanel";
-import type { TripBundle } from "@odessey/shared";
+import type { TripBundle } from "@tripmapper/shared";
 
 /** 只读分享页：全屏地图 + 毛玻璃浮层行程面板（无编辑无对话） */
 export function SharePage() {

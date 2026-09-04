@@ -12,7 +12,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { ChatSessionDto } from "@odessey/shared";
+import { formatMoney, type BudgetSummary, type ChatSessionDto } from "@tripmapper/shared";
 import { api } from "../api/client";
 import { useTripStore } from "../stores/tripStore";
 import { MapCanvas, dayColor } from "../features/map/MapCanvas";
@@ -20,8 +20,8 @@ import { ItineraryPanel } from "../features/itinerary/ItineraryPanel";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import { HotelPanel } from "../features/hotel/HotelPanel";
 import { SearchAddPanel } from "../features/map/SearchAddPanel";
-import { DiningBudgetPanel } from "../features/dining/DiningBudgetPanel";
-import { formatMoney } from "@odessey/shared";
+import { DiningPanel } from "../features/dining/DiningPanel";
+import { BudgetStrip } from "../features/budget/BudgetStrip";
 
 /**
  * 行程页 —— macOS Tahoe（Liquid Glass）布局：地图全屏打底，一切 UI 都是玻璃浮层。
@@ -33,7 +33,7 @@ const TAB_META: Record<Tab, { label: string; Icon: LucideIcon }> = {
   chat: { label: "对话", Icon: MessageCircle },
   itinerary: { label: "行程", Icon: CalendarDays },
   hotel: { label: "酒店", Icon: BedDouble },
-  dining: { label: "美食·预算", Icon: UtensilsCrossed },
+  dining: { label: "美食", Icon: UtensilsCrossed },
   search: { label: "添加", Icon: Search },
 };
 
@@ -47,6 +47,7 @@ export function TripPage() {
   const [visibleDay, setVisibleDay] = useState<number | null>(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [hotelArea, setHotelArea] = useState<{ center: { lng: number; lat: number }; radiusM: number } | null>(null);
+  const [budgetSummary, setBudgetSummary] = useState<BudgetSummary | null>(null);
   /** 面板形态：expanded（完整）/ collapsed（收成竖条）/ hidden（隐藏，只剩呼出按钮） */
   const [panelMode, setPanelMode] = useState<"expanded" | "collapsed" | "hidden">("expanded");
 
@@ -69,6 +70,29 @@ export function TripPage() {
     if (!tripId || !bundle) return;
     void api.hotelArea(tripId).then(({ area }) => setHotelArea(area));
   }, [tripId, bundle?.places.length]);
+
+  // 预算汇总：bundle 被替换（load/SSE 全量快照）即意味着数据变了，跟着重拉
+  useEffect(() => {
+    if (!tripId || !bundle) return;
+    let cancelled = false;
+    api
+      .getBudget(tripId)
+      .then(({ summary }) => {
+        if (!cancelled) setBudgetSummary(summary);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [tripId, bundle]);
+
+  /** 预算保存后：币种写进了 trip，汇总和 bundle 都要重拉（价格展示跟着换币种） */
+  const refreshBudget = useCallback(async () => {
+    if (!tripId) return;
+    const { summary } = await api.getBudget(tripId);
+    setBudgetSummary(summary);
+    await load(tripId);
+  }, [tripId, load]);
 
   // 城市定位自愈：行程没有中心坐标（创建时解析失败）→ 自动重解析一次
   const cityUnresolved = bundle != null && bundle.trip.location == null;
@@ -323,6 +347,13 @@ export function TripPage() {
             </div>
           </nav>
 
+          {/* 预算条：跨类别（住宿/餐饮/门票）汇总，常驻所有 tab 之上 */}
+          {budgetSummary && (
+            <div className="px-3 pt-3">
+              <BudgetStrip tripId={trip.id} summary={budgetSummary} onRefresh={refreshBudget} />
+            </div>
+          )}
+
           {/* 内容区（玻璃上再垫一层更实的底，保证长列表可读性） */}
           <div className="glass-text min-h-0 flex-1 bg-white/40 px-0 py-3">
             {tab === "chat" && (
@@ -345,9 +376,7 @@ export function TripPage() {
             {tab === "hotel" && (
               <HotelPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
             )}
-            {tab === "dining" && (
-              <DiningBudgetPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
-            )}
+            {tab === "dining" && <DiningPanel bundle={bundle} />}
             {tab === "search" && (
               <SearchAddPanel
                 tripId={trip.id}

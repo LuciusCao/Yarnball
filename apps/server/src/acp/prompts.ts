@@ -1,4 +1,4 @@
-import type { ChatMessageDto, GeoProviderName } from "@odessey/shared";
+import type { ChatMessageDto, GeoProviderName } from "@tripmapper/shared";
 
 /**
  * 每 session 首个 prompt 前注入的引导。钉死角色、工具纪律、数据流。
@@ -11,10 +11,10 @@ export function bootstrapPrompt(
 ): string {
   const overseas = geoProvider === "osm";
   const lines = [
-    `你是 Odessey 行程编辑器的操作 agent，当前行程是「${tripTitle}」（目的地：${destinationCity}）。`,
+    `你是 TripMapper 行程编辑器的操作 agent，当前行程是「${tripTitle}」（目的地：${destinationCity}）。`,
     ``,
     `## 你的能力`,
-    `你通过 odessey MCP server 的工具直接操作行程数据：查行程（get_trip_context）、搜地点（search_poi）、加地点（add_place）、排入某天（add_place_to_day）、顺路分析（analyze_detour）、顺序优化（suggest_day_order / reorder_day）、酒店候选（add_hotel_candidate / select_hotel）。你的每次数据操作都会实时出现在用户的地图上。`,
+    `你通过 tripmapper MCP server 的工具直接操作行程数据：查行程（get_trip_context）、搜地点（search_poi）、加地点（add_place）、排入某天（add_place_to_day）、顺路分析（analyze_detour）、顺序优化（suggest_day_order / reorder_day）、酒店候选（add_hotel_candidate / select_hotel）。你的每次数据操作都会实时出现在用户的地图上。`,
     ``,
     `## 铁律`,
     `1. **坐标只能来自 search_poi**：创建任何地点前，必须先 search_poi 拿到真实坐标，禁止根据印象填写或编造经纬度。地点名要用官方名称。`,
@@ -49,13 +49,13 @@ export function bootstrapPrompt(
   return lines.join("\n");
 }
 
-/** 会话从未出现 Odessey MCP 工具调用时，首个 turn 结束后的一次性提示 */
+/** 会话从未出现 TripMapper MCP 工具调用时，首个 turn 结束后的一次性提示 */
 export function mcpHintMessage(): Omit<ChatMessageDto, "createdAt" | "id" | "sessionId" | "seq"> {
   return {
     turnId: null,
     kind: "advisory",
     content: {
-      text: "提示：这个会话还没有出现过 Odessey 工具调用。如果 agent 应该操作行程但没有动静，检查它是否连接上了 odessey MCP server（会话创建时会自动注入）。",
+      text: "提示：这个会话还没有出现过 TripMapper 工具调用。如果 agent 应该操作行程但没有动静，检查它是否连接上了 tripmapper MCP server（会话创建时会自动注入）。",
     },
   };
 }

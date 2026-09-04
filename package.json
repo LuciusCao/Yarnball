@@ -1,20 +1,20 @@
 {
-  "name": "odessey",
+  "name": "tripmapper",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@10.33.1",
   "scripts": {
-    "dev": "pnpm --parallel --filter @odessey/server --filter @odessey/web dev",
-    "dev:server": "pnpm --filter @odessey/server dev",
-    "dev:web": "pnpm --filter @odessey/web dev",
+    "dev": "pnpm --parallel --filter @tripmapper/server --filter @tripmapper/web dev",
+    "dev:server": "pnpm --filter @tripmapper/server dev",
+    "dev:web": "pnpm --filter @tripmapper/web dev",
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down",
-    "db:migrate": "pnpm --filter @odessey/server db:migrate",
-    "db:generate": "pnpm --filter @odessey/server db:generate",
+    "db:migrate": "pnpm --filter @tripmapper/server db:migrate",
+    "db:generate": "pnpm --filter @tripmapper/server db:generate",
     "build": "pnpm -r build",
-    "test": "pnpm --filter @odessey/server test",
-    "smoke": "pnpm --filter @odessey/server smoke"
+    "test": "pnpm --filter @tripmapper/server test",
+    "smoke": "pnpm --filter @tripmapper/server smoke"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

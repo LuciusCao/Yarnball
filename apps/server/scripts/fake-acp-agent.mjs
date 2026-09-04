@@ -5,12 +5,12 @@
  * 移植自 agent-legion 的 tests/helpers/fake_acp_agent.py。
  * 行为由环境变量驱动：
  *   FAKE_SCRIPT=prompt_flow     默认。收到 prompt 后：流式 agent_message_chunk →
- *                               tool_call（odessey: add_place）→ 回复文本 → stop
+ *                               tool_call（tripmapper: add_place）→ 回复文本 → stop
  *   FAKE_SCRIPT=permission_flow 发 permission 请求（Bash 工具），等待 client 决策，
  *                               按结果走不同回复
  *   FAKE_SCRIPT=terminal_flow   走 ACP terminal 协议：terminal/create 一个 echo 命令，
  *                               output → wait_for_exit → release
- *   FAKE_SCRIPT=mcp_call_flow   收到 prompt 后：真实连接 session/new 注入的 odessey
+ *   FAKE_SCRIPT=mcp_call_flow   收到 prompt 后：真实连接 session/new 注入的 tripmapper
  *                               MCP server（streamable HTTP），调 get_trip_context，
  *                               把结果作为 agent_message_chunk 回复 —— 验证 MCP 工具面
  *
@@ -225,7 +225,7 @@ async function handlePrompt(requestId, text) {
   }
 
   if (script === "mcp_call_flow") {
-    // 真实调用 Odessey MCP server（session/new 注入的 http spec）
+    // 真实调用 TripMapper MCP server（session/new 注入的 http spec）
     if (!injectedMcp) {
       update({
         sessionUpdate: "agent_message_chunk",
@@ -268,7 +268,7 @@ async function handlePrompt(requestId, text) {
       update({
         sessionUpdate: "tool_call",
         toolCallId: "mcp-1",
-        title: "odessey: get_trip_context",
+        title: "tripmapper: get_trip_context",
         kind: "other",
         status: "completed",
         rawInput: "{}",
@@ -290,7 +290,7 @@ async function handlePrompt(requestId, text) {
     return;
   }
 
-  // 默认 prompt_flow：流式回复 + 模拟 odessey MCP 工具调用
+  // 默认 prompt_flow：流式回复 + 模拟 tripmapper MCP 工具调用
   update({
     sessionUpdate: "agent_message_chunk",
     content: { type: "text", text: "收到！我来解析这段攻略……\n" },
@@ -299,13 +299,13 @@ async function handlePrompt(requestId, text) {
   update({
     sessionUpdate: "tool_call",
     toolCallId: "tc-1",
-    title: "odessey: search_poi",
+    title: "tripmapper: search_poi",
     kind: "other",
     status: "in_progress",
     rawInput: JSON.stringify({ keyword: "灵隐寺", city: "杭州" }),
   });
 
-  // 真实调用 MCP：从 session/new 记录的 mcpServers 是 Odessey 注入的；
+  // 真实调用 MCP：从 session/new 记录的 mcpServers 是 TripMapper 注入的；
   // 但假 agent 不直接连 MCP（协议上 agent 自己连）。这里只模拟工具卡片更新。
   await sleep(200);
   update({

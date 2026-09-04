@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ChatMessageDto, TripBundle } from "@odessey/shared";
+import type { ChatMessageDto, TripBundle } from "@tripmapper/shared";
 import { api, subscribeChat, subscribeTrip } from "../api/client";
 
 /**

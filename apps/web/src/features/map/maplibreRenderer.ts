@@ -1,6 +1,6 @@
 import maplibregl from "maplibre-gl";
 import type { Map as MlMap, Marker as MlMarker } from "maplibre-gl";
-import type { LngLat } from "@odessey/shared";
+import type { LngLat } from "@tripmapper/shared";
 import type { OverlaySpecs } from "./overlaySpecs";
 import type { MapRenderer } from "./MapCanvas";
 

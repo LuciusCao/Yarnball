@@ -6,7 +6,7 @@ import type {
   PlaceDto,
   TransportLegDto,
   TripDto,
-} from "@odessey/shared";
+} from "@tripmapper/shared";
 import type * as t from "../db/schema.js";
 
 type TripRow = typeof t.trips.$inferSelect;

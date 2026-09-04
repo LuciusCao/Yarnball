@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Globe2, MapPin, MoreHorizontal, Plus, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import type { TripDto } from "@odessey/shared";
+import type { TripDto } from "@tripmapper/shared";
 import { api } from "../api/client";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -107,7 +107,7 @@ export function TripListPage() {
             <Sparkles className="size-3.5" />
             Agent-native 行程编辑器
           </div>
-          <h1 className="text-3xl font-bold tracking-tight text-slate-900">Odessey</h1>
+          <h1 className="text-3xl font-bold tracking-tight text-slate-900">TripMapper</h1>
           <p className="mt-2 text-sm leading-relaxed text-slate-500">
             把攻略文本变成地图上的行程 —— 连接你自己的 agent，粘贴小红书 / 博客 / 酒店候选，
             它来解析地点、编排路线、分析顺路。

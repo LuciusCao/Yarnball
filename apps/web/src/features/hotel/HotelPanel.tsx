@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { TripBundle } from "@odessey/shared";
+import type { TripBundle } from "@tripmapper/shared";
 import { toast } from "sonner";
 import { BedDouble, MapPinned } from "lucide-react";
 import { api } from "../../api/client";

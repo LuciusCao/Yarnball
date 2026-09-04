@@ -1,4 +1,4 @@
-import type { LngLat, TripBundle } from "@odessey/shared";
+import type { LngLat, TripBundle } from "@tripmapper/shared";
 
 /**
  * 地图 overlay 数据层 —— 引擎无关（AMap / MapLibre 共用）。

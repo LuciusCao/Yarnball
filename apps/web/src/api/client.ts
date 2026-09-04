@@ -4,7 +4,7 @@ import type {
   PoiCandidate,
   TripBundle,
   TripDto,
-} from "@odessey/shared";
+} from "@tripmapper/shared";
 
 /**
  * 前端 API 层 —— 全部走 Vite 代理（/api → server），无跨域。

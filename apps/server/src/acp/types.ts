@@ -1,4 +1,4 @@
-import type { ChatMessageDto } from "@odessey/shared";
+import type { ChatMessageDto } from "@tripmapper/shared";
 import type * as acp from "@agentclientprotocol/sdk";
 
 /**

@@ -13,6 +13,7 @@ const badgeVariants = cva(
         success: "border-emerald-200 bg-emerald-100/70 text-emerald-700",
         blue: "border-blue-200 bg-blue-100/70 text-blue-700",
         orange: "border-orange-200 bg-orange-100/70 text-orange-700",
+        destructive: "border-red-200 bg-red-100/70 text-red-700",
       },
     },
     defaultVariants: { variant: "secondary" },

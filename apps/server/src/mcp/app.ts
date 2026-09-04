@@ -7,7 +7,7 @@ import {
   MCP_SERVER_NAME,
   SESSION_ID_HEADER,
   authenticateMcpRequest,
-  registerOdesseyTools,
+  registerTripMapperTools,
 } from "./tools.js";
 
 /**
@@ -43,7 +43,7 @@ export function createMcpApp(
       // stateless：sessionIdGenerator 为 undefined，不产生跨请求状态
       { capabilities: { tools: {} } },
     );
-    registerOdesseyTools(server, {
+    registerTripMapperTools(server, {
       db,
       tripService,
       chatSessionId: auth.chatSession.id,

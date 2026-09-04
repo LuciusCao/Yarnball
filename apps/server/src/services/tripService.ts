@@ -15,7 +15,7 @@ import type {
   LngLat,
   TripBundle,
   UpdatePlaceInput,
-} from "@odessey/shared";
+} from "@tripmapper/shared";
 import { TRIPS_CHANNEL, tripChannel, type EventBus } from "../events.js";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
