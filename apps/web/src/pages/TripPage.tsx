@@ -344,8 +344,8 @@ export function TripPage() {
           显示 Agent 面板
         </button>
       ) : (
-        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col rounded-[22px]">
-          {/* 收起把手：贴在面板右上角内侧 */}
+        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
+          {/* 收起把手：面板右上角内侧（会话头已用 pr-11 让位） */}
           <button
             onClick={() => setPanelMode("hidden")}
             title="收起面板"

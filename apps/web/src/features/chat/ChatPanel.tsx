@@ -3,7 +3,7 @@ import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
 import type { ChatMessageDto, ChatSessionDto, TripDto } from "@tripmapper/shared";
 import { toast } from "sonner";
-import { AlertTriangle, Brain, Check, Clock, ListChecks, Loader2, SendHorizontal, ShieldCheck, X } from "lucide-react";
+import { AlertTriangle, Brain, Check, Clock, ListChecks, Loader2, SendHorizontal, ShieldCheck, Unplug, X } from "lucide-react";
 import { api } from "../../api/client";
 import { Button } from "../../components/ui/button";
 import { Textarea, Select } from "../../components/ui/input";
@@ -129,8 +129,8 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
   return (
     <div className="flex h-full flex-col">
-      {/* 会话头 */}
-      <div className="flex items-center gap-2 border-b border-slate-900/8 px-3 py-2">
+      {/* 会话头（右侧留出面板收起把手的高度） */}
+      <div className="flex items-center gap-2 border-b border-slate-900/8 pl-3 pr-11 py-2">
         <span className="h-2 w-2 shrink-0 rounded-full" style={{
           background:
             activeSession.status === "running" ? "#f59e0b" :
@@ -149,7 +149,14 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
           />
           允许全部权限
         </label>
-        <Button variant="outline" size="sm" onClick={closeSession}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={closeSession}
+          title="断开 agent"
+          className="h-6 gap-1 px-2 text-[11px]"
+        >
+          <Unplug className="size-3" />
           断开
         </Button>
       </div>
