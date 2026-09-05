@@ -122,6 +122,7 @@ export function SharePage() {
               selectedPlaceId={selectedPlaceId}
               onSelectPlace={setSelectedPlaceId}
               onDataChanged={() => {}}
+              readOnly
             />
           </div>
         </aside>
