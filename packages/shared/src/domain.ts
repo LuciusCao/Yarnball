@@ -122,6 +122,7 @@ export const TripDtoSchema = z.object({
   location: LngLatSchema.nullable(),
   startDate: z.string().nullable(),
   endDate: z.string().nullable(),
+  /** @deprecated 兼容镜像：checkInDay 最早的已选定酒店候选 id；多酒店请看 hotelCandidates[].selected/checkInDay/checkOutDay */
   selectedHotelCandidateId: z.string().nullable(),
   /** 总预算（币种为 currency） */
   budgetCny: z.number().nullable(),
@@ -194,6 +195,12 @@ export const HotelCandidateDtoSchema = z.object({
   placeId: z.string(),
   pricePerNight: z.number().nullable(),
   notes: z.string().nullable(),
+  /** 是否已选定；多酒店场景同一行程可选定多家，各覆盖一段天数 */
+  selected: z.boolean(),
+  /** 入住天序号（1-based，含）；仅 selected 时非空 */
+  checkInDay: z.number().nullable(),
+  /** 离店天序号（1-based，不含当晚）；闭开区间 [checkInDay, checkOutDay) 覆盖每晚住宿 */
+  checkOutDay: z.number().nullable(),
 });
 export type HotelCandidateDto = z.infer<typeof HotelCandidateDtoSchema>;
 
@@ -284,6 +291,36 @@ export const CreateHotelCandidateInputSchema = CreatePlaceInputSchema.extend({
 export type CreateHotelCandidateInput = z.infer<
   typeof CreateHotelCandidateInputSchema
 >;
+
+/**
+ * 选定酒店（POST /api/trips/:tripId/select-hotel 与 MCP select_hotel）。
+ * 天序号为 1-based 闭开区间 [checkInDay, checkOutDay)：覆盖第 checkInDay..checkOutDay-1 晚。
+ * checkInDay/checkOutDay 必须同给或同缺（同缺时服务端智能建议覆盖尚未被覆盖的最长连续天段）；
+ * 同一行程已选定酒店的天数区间不得重叠。candidateId=null 表示取消全部选定（兼容旧契约）。
+ */
+export const SelectHotelInputSchema = z
+  .object({
+    candidateId: z.string().nullable(),
+    checkInDay: z.number().int().min(1).optional(),
+    checkOutDay: z.number().int().min(2).optional(),
+  })
+  .refine((v) => (v.checkInDay == null) === (v.checkOutDay == null), {
+    message: "checkInDay 与 checkOutDay 必须同时提供或同时省略",
+  })
+  .refine(
+    (v) =>
+      v.checkInDay == null ||
+      v.checkOutDay == null ||
+      v.checkInDay < v.checkOutDay,
+    { message: "checkInDay 必须小于 checkOutDay" },
+  );
+export type SelectHotelInput = z.infer<typeof SelectHotelInputSchema>;
+
+/** 取消单个酒店的选定（POST /api/trips/:tripId/unselect-hotel） */
+export const UnselectHotelInputSchema = z.object({
+  candidateId: z.string(),
+});
+export type UnselectHotelInput = z.infer<typeof UnselectHotelInputSchema>;
 
 // ---------- 设置与 Agent 注册 ----------
 
@@ -405,6 +442,7 @@ export const BudgetSummarySchema = z.object({
   currency: z.string(),
   budgetCny: z.number().nullable(),
   travelerCount: z.number(),
+  /** 晚数：有已选定酒店时 = 覆盖晚数合计（与 hotelCny 计费口径一致）；无覆盖时 = 行程天数-1（N 天行程 N-1 晚，末日离店不住） */
   nights: z.number(),
   hotelSelected: z.boolean(),
   hotelCny: z.number().nullable(),

@@ -10,8 +10,10 @@ import {
   CreatePlaceInputSchema,
   CreateTripInputSchema,
   ReorderDayInputSchema,
+  SelectHotelInputSchema,
   SetLegModeInputSchema,
   SetPlaceStatusInputSchema,
+  UnselectHotelInputSchema,
   UpdateAgentInputSchema,
   UpdatePlaceInputSchema,
   UpdateSettingsInputSchema,
@@ -44,6 +46,10 @@ export function createApi(
 
   api.onError((err, c) => {
     if (err instanceof ServiceError) return c.json({ error: err.message }, err.status as 400);
+    // zod 入参校验失败 → 400（此前一律 500，调用方无法区分是参数错还是服务端故障）
+    if (err instanceof z.ZodError) {
+      return c.json({ error: err.issues.map((i) => i.message).join("; ") }, 400);
+    }
     console.error("[api] unhandled:", err);
     return c.json({ error: "internal error" }, 500);
   });
@@ -202,9 +208,21 @@ export function createApi(
     return c.json(result, 201);
   });
 
+  // 选定酒店：可带 checkInDay/checkOutDay（1-based 闭开区间，缺省服务端智能建议）；
+  // candidateId=null 取消全部选定（兼容旧单选契约）
   api.post("/trips/:tripId/select-hotel", async (c) => {
-    const input = z.object({ candidateId: z.string().nullable() }).parse(await c.req.json());
-    await tripService.selectHotel(c.req.param("tripId"), input.candidateId);
+    const input = SelectHotelInputSchema.parse(await c.req.json());
+    const range = await tripService.selectHotel(c.req.param("tripId"), input.candidateId, {
+      checkInDay: input.checkInDay,
+      checkOutDay: input.checkOutDay,
+    });
+    return c.json({ ok: true, ...(range ?? {}) });
+  });
+
+  // 取消单个酒店的选定
+  api.post("/trips/:tripId/unselect-hotel", async (c) => {
+    const input = UnselectHotelInputSchema.parse(await c.req.json());
+    await tripService.unselectHotel(c.req.param("tripId"), input.candidateId);
     return c.json({ ok: true });
   });
 

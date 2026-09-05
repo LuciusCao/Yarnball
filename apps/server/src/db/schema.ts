@@ -26,6 +26,10 @@ export const trips = pgTable("trips", {
   cityCenterLat: numeric("city_center_lat", { precision: 10, scale: 6 }),
   startDate: text("start_date"), // YYYY-MM-DD
   endDate: text("end_date"),
+  /**
+   * 兼容镜像（deprecated）：指向 checkInDay 最早的已选定酒店候选，供旧前端过渡。
+   * 权威数据在 hotel_candidates.selected + check_in_day/check_out_day；由 service 层同步维护。
+   */
   selectedHotelCandidateId: text("selected_hotel_candidate_id"),
   /** 总预算（币种为 currency） */
   budgetCny: integer("budget_cny"),
@@ -139,6 +143,12 @@ export const hotelCandidates = pgTable(
       .references(() => places.id, { onDelete: "cascade" }),
     pricePerNight: integer("price_per_night"),
     notes: text("notes"),
+    /** 是否已选定（多酒店：同一行程可选定多家，各覆盖一段天数） */
+    selected: boolean("selected").notNull().default(false),
+    /** 入住天序号（1-based）；闭开区间 [checkInDay, checkOutDay) 覆盖每晚住宿，仅 selected 时有意义 */
+    checkInDay: integer("check_in_day"),
+    /** 离店天序号（1-based，不含当天住宿）；换酒店日 = 旧酒店 checkOutDay = 新酒店 checkInDay */
+    checkOutDay: integer("check_out_day"),
   },
   (t) => [index("hotel_cand_trip_idx").on(t.tripId)],
 );

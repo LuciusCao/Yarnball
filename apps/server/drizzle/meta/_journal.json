@@ -36,6 +36,13 @@
       "when": 1788578667904,
       "tag": "0004_exotic_lionheart",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788595053553,
+      "tag": "0005_spicy_enchantress",
+      "breakpoints": true
     }
   ]
 }

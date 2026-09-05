@@ -108,6 +108,9 @@ export function toHotelDto(row: HotelRow): HotelCandidateDto {
     placeId: row.placeId,
     pricePerNight: row.pricePerNight,
     notes: row.notes,
+    selected: row.selected,
+    checkInDay: row.checkInDay,
+    checkOutDay: row.checkOutDay,
   };
 }
 

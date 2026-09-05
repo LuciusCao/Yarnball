@@ -30,7 +30,7 @@ import {
   toTripDto,
 } from "./mappers.js";
 import { amap, currencyForCountry, fallbackRoute, getProvider, haversineM, osm } from "./geo.js";
-import { insertionIncrements, optimizeLoopOrder, optimizeOrder, orderTotalDuration } from "./routing.js";
+import { insertionIncrements, optimizeLoopOrder, optimizeOrder, optimizePathOrder, orderTotalDuration } from "./routing.js";
 import { amapConfigured } from "./settings.js";
 
 const uuid = () => randomUUID();
@@ -322,20 +322,12 @@ export class TripService {
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
     this.assertNotLockedForAgent(existing, actor);
     const tripId = existing.tripId;
-    // 删的是选定酒店 → 先解除选定，避免悬空引用
-    const [trip] = await this.db.select().from(schema.trips).where(eq(schema.trips.id, tripId));
-    if (trip?.selectedHotelCandidateId) {
-      const [cand] = await this.db
-        .select()
-        .from(schema.hotelCandidates)
-        .where(eq(schema.hotelCandidates.id, trip.selectedHotelCandidateId));
-      if (cand?.placeId === placeId) {
-        await this.db
-          .update(schema.trips)
-          .set({ selectedHotelCandidateId: null })
-          .where(eq(schema.trips.id, tripId));
-      }
-    }
+    // 删的是已选定酒店 → 候选行随 place 级联删除，所有天的锚点都要重算
+    const linkedHotels = await this.db
+      .select()
+      .from(schema.hotelCandidates)
+      .where(eq(schema.hotelCandidates.placeId, placeId));
+    const wasSelectedHotel = linkedHotels.some((h) => h.selected);
     // 级联删 entries/legs（FK on delete cascade），受影响的天需要重算 legs
     const affectedDays = await this.db
       .selectDistinct({ dayId: schema.entries.dayId })
@@ -343,7 +335,12 @@ export class TripService {
       .where(eq(schema.entries.placeId, placeId));
     await this.db.delete(schema.places).where(eq(schema.places.id, placeId));
     await this.touchTrip(tripId);
-    for (const { dayId } of affectedDays) await this.recalcDayLegs(tripId, dayId);
+    if (wasSelectedHotel) {
+      await this.syncSelectedHotelMirror(tripId);
+      await this.recalcAllDayLegs(tripId);
+    } else {
+      for (const { dayId } of affectedDays) await this.recalcDayLegs(tripId, dayId);
+    }
     await this.publishBundle(tripId);
   }
 
@@ -504,44 +501,74 @@ export class TripService {
 
   // ---------- transport legs ----------
 
-  /** 当前选定酒店的 placeId（未选为 null） */
-  private async getSelectedHotelPlaceId(tripId: string): Promise<string | null> {
-    const [trip] = await this.db.select().from(schema.trips).where(eq(schema.trips.id, tripId));
-    if (!trip?.selectedHotelCandidateId) return null;
-    const [cand] = await this.db
+  /** 某晚（夜 = dayIndex 当晚）住宿的已选定酒店 placeId：checkInDay <= night < checkOutDay */
+  private async getHotelPlaceIdForNight(tripId: string, night: number): Promise<string | null> {
+    if (night < 1) return null;
+    const selected = await this.db
       .select()
       .from(schema.hotelCandidates)
-      .where(eq(schema.hotelCandidates.id, trip.selectedHotelCandidateId));
-    return cand?.placeId ?? null;
+      .where(and(eq(schema.hotelCandidates.tripId, tripId), eq(schema.hotelCandidates.selected, true)));
+    const hit = selected.find(
+      (c) => c.checkInDay != null && c.checkOutDay != null && c.checkInDay <= night && night < c.checkOutDay,
+    );
+    return hit?.placeId ?? null;
+  }
+
+  /**
+   * 某天的首/尾酒店锚点（多酒店模型）：
+   * - 首锚点 = 前一晚住宿的酒店（缺省回退当晚酒店，如行程第 1 天先到酒店）
+   * - 尾锚点 = 当晚住宿的酒店（缺省回退前一晚酒店，如最后一天不住宿）
+   * 换酒店日（旧酒店 checkOutDay = 当天 = 新酒店 checkInDay）：首 = 旧酒店，尾 = 新酒店。
+   * 没有任何已选定酒店覆盖时两端都是 null（无锚点，保持现状）。
+   */
+  private async getDayHotelAnchors(
+    tripId: string,
+    dayIndex: number,
+  ): Promise<{ startPlaceId: string | null; endPlaceId: string | null }> {
+    const prev = await this.getHotelPlaceIdForNight(tripId, dayIndex - 1);
+    const curr = await this.getHotelPlaceIdForNight(tripId, dayIndex);
+    return { startPlaceId: prev ?? curr, endPlaceId: curr ?? prev };
   }
 
   /**
    * 变更某天 entry / 换酒店后重算该天交通段。
-   * 选定酒店时链路为 [酒店, ...entries, 酒店]——每天自动计算往返交通；
-   * 未选酒店时为 [...entries]（景点间移动）。
+   * 酒店锚点按天解析（见 getDayHotelAnchors）：普通日首尾同为当晚酒店，
+   * 换酒店日首 = 旧酒店、尾 = 新酒店；无覆盖酒店的天不锚定（仅景点间移动）。
    * 手动 mode 覆盖（modeOverride）按端点配对保留，重算不冲掉。
    */
   async recalcDayLegs(tripId: string, dayId: string) {
     const [trip] = await this.db.select().from(schema.trips).where(eq(schema.trips.id, tripId));
     const geo = getProvider(trip?.geoProvider ?? "osm");
+    const [day] = await this.db.select().from(schema.days).where(eq(schema.days.id, dayId));
     const entries = await this.db
       .select()
       .from(schema.entries)
       .where(eq(schema.entries.dayId, dayId))
       .orderBy(asc(schema.entries.position));
-    const hotelPlaceId = entries.length > 0 ? await this.getSelectedHotelPlaceId(tripId) : null;
+    const anchors =
+      day && entries.length > 0
+        ? await this.getDayHotelAnchors(tripId, day.dayIndex)
+        : { startPlaceId: null, endPlaceId: null };
 
-    const placeIds = [...new Set([...entries.map((e) => e.placeId), ...(hotelPlaceId ? [hotelPlaceId] : [])])];
+    const placeIds = [
+      ...new Set(
+        [
+          ...entries.map((e) => e.placeId),
+          ...(anchors.startPlaceId ? [anchors.startPlaceId] : []),
+          ...(anchors.endPlaceId ? [anchors.endPlaceId] : []),
+        ],
+      ),
+    ];
     const places = placeIds.length
       ? await this.db.select().from(schema.places).where(inArray(schema.places.id, placeIds))
       : [];
     const placeById = new Map(places.map((p) => [p.id, p]));
 
-    // 端点链：entry（行程内）或 place（酒店）
+    // 端点链：entry（行程内）或 place（酒店首/尾锚点，换酒店日可不同）
     const chain: Array<{ entryId: string | null; placeId: string }> = [];
-    if (hotelPlaceId) chain.push({ entryId: null, placeId: hotelPlaceId });
+    if (anchors.startPlaceId) chain.push({ entryId: null, placeId: anchors.startPlaceId });
     for (const e of entries) chain.push({ entryId: e.id, placeId: e.placeId });
-    if (hotelPlaceId) chain.push({ entryId: null, placeId: hotelPlaceId });
+    if (anchors.endPlaceId) chain.push({ entryId: null, placeId: anchors.endPlaceId });
 
     // 重算前收集手动覆盖：key = 端点配对（entry 或酒店 place）
     const endpointKey = (entryId: string | null, placeId: string | null) =>
@@ -645,7 +672,7 @@ export class TripService {
     );
   }
 
-  /** 重排建议（不落库）：选定酒店时按「酒店出发→…→返回酒店」环路优化，否则保持首点为起点 */
+  /** 重排建议（不落库）：按天取酒店锚点——同酒店往返按环路优化，换酒店日按「旧酒店→…→新酒店」定端路径优化，无锚点保持首点为起点 */
   async suggestDayOrder(tripId: string, dayIndex: number) {
     const trip = await this.getTrip(tripId);
     const day = await this.ensureDay(tripId, dayIndex);
@@ -664,27 +691,47 @@ export class TripService {
       const p = placeById.get(e.placeId)!;
       return { lng: Number(p.lng), lat: Number(p.lat) };
     });
-    const hotelPlaceId = await this.getSelectedHotelPlaceId(tripId);
-    const hotelPlace = hotelPlaceId
-      ? (await this.db.select().from(schema.places).where(eq(schema.places.id, hotelPlaceId)))[0]
-      : null;
-    const hotelAnchored = !!hotelPlace;
-    const hotelCoord = hotelPlace
-      ? { lng: Number(hotelPlace.lng), lat: Number(hotelPlace.lat) }
-      : null;
+    const anchors = await this.getDayHotelAnchors(tripId, dayIndex);
+    const anchorCoord = new Map<string, LngLat>();
+    for (const pid of new Set(
+      [anchors.startPlaceId, anchors.endPlaceId].filter((x): x is string => x != null),
+    )) {
+      const p = placeById.get(pid) ?? (await this.db.select().from(schema.places).where(eq(schema.places.id, pid)))[0];
+      if (p) anchorCoord.set(pid, { lng: Number(p.lng), lat: Number(p.lat) });
+    }
+    const startCoord = anchors.startPlaceId ? (anchorCoord.get(anchors.startPlaceId) ?? null) : null;
+    const endCoord = anchors.endPlaceId ? (anchorCoord.get(anchors.endPlaceId) ?? null) : null;
+    const hotelAnchored = startCoord != null || endCoord != null;
+    // 换酒店日：首（旧酒店）≠ 尾（新酒店）；getDayHotelAnchors 保证要么两端都有、要么都无
+    const switchDay =
+      anchors.startPlaceId != null && anchors.endPlaceId != null && anchors.startPlaceId !== anchors.endPlaceId;
 
     let optimizedIdx: number[]; // entries 数组的下标顺序
     let before: number;
     let after: number;
-    if (hotelAnchored && hotelCoord) {
+    if (hotelAnchored && startCoord && endCoord && switchDay) {
+      // 定端路径：[旧酒店, ...entries, 新酒店]，下标 0 / n-1 固定
+      const coords = [startCoord, ...entryCoords, endCoord];
+      const matrix = await this.buildDurationMatrix(trip.geoProvider, coords);
+      const path = optimizePathOrder(matrix); // [0, ...perm, n-1]
+      optimizedIdx = path.slice(1, -1).map((i) => i - 1);
+      const pathCost = (order: number[]): number => {
+        let sum = 0;
+        const seq = [0, ...order.map((i) => i + 1), coords.length - 1];
+        for (let i = 0; i + 1 < seq.length; i++) sum += matrix[seq[i]][seq[i + 1]];
+        return sum;
+      };
+      before = pathCost(entries.map((_, i) => i));
+      after = pathCost(optimizedIdx);
+    } else if (hotelAnchored && startCoord) {
       // 环路：[酒店, ...entries, 酒店]，下标 0 = 酒店
-      const coords = [hotelCoord, ...entryCoords];
+      const coords = [startCoord, ...entryCoords];
       const matrix = await this.buildDurationMatrix(trip.geoProvider, coords);
       const loop = optimizeLoopOrder(matrix); // [0, ...perm, 0]
       optimizedIdx = loop.slice(1, -1).map((i) => i - 1);
       const loopCost = (order: number[]): number => {
         let sum = 0;
-        const seq = [0, ...order, 0];
+        const seq = [0, ...order.map((i) => i + 1), 0];
         for (let i = 0; i + 1 < seq.length; i++) sum += matrix[seq[i]][seq[i + 1]];
         return sum;
       };
@@ -711,7 +758,7 @@ export class TripService {
     };
   }
 
-  /** 顺路度分析（不落库）：把 place 插入某天每个位置的时间增量 + 最优位置。选定酒店时按往返闭环计算 */
+  /** 顺路度分析（不落库）：把 place 插入某天每个位置的时间增量 + 最优位置。酒店锚点按天解析，换酒店日首尾锚点不同 */
   async analyzeDetour(tripId: string, placeId: string, dayIndex: number) {
     const [place] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!place) throw new ServiceError(404, `place ${placeId} not found`);
@@ -723,11 +770,11 @@ export class TripService {
       .where(eq(schema.entries.dayId, day.id))
       .orderBy(asc(schema.entries.position));
 
-    const hotelPlaceId = await this.getSelectedHotelPlaceId(tripId);
-    const hotelPlace = hotelPlaceId
-      ? (await this.db.select().from(schema.places).where(eq(schema.places.id, hotelPlaceId)))[0]
-      : null;
-    const hotelAnchored = !!hotelPlace;
+    const anchors = await this.getDayHotelAnchors(tripId, dayIndex);
+    const anchorPlaceIds = [
+      ...new Set([anchors.startPlaceId, anchors.endPlaceId].filter((x): x is string => x != null)),
+    ];
+    const hotelAnchored = anchorPlaceIds.length > 0;
 
     // 无行程且无酒店锚点：插在第一位即可
     if (entries.length === 0 && !hotelAnchored) {
@@ -741,34 +788,44 @@ export class TripService {
       };
     }
 
-    const placeIds = [...new Set([...entries.map((e) => e.placeId), placeId, ...(hotelPlaceId ? [hotelPlaceId] : [])])];
+    const placeIds = [...new Set([...entries.map((e) => e.placeId), placeId, ...anchorPlaceIds])];
     const places = await this.db.select().from(schema.places).where(inArray(schema.places.id, placeIds));
     const placeById = new Map(places.map((p) => [p.id, p]));
     const target = placeById.get(placeId)!;
-    const hotelName = hotelPlace?.name ?? null;
+    const startHotel = anchors.startPlaceId ? placeById.get(anchors.startPlaceId) : undefined;
+    const endHotel = anchors.endPlaceId ? placeById.get(anchors.endPlaceId) : undefined;
+    const hotelName = startHotel?.name ?? null;
+    const switchDay =
+      anchors.startPlaceId != null && anchors.endPlaceId != null && anchors.startPlaceId !== anchors.endPlaceId;
 
-    // 坐标矩阵：酒店锚点时 [酒店, ...entries, 目标]，否则 [...entries, 目标]
+    // 坐标矩阵：同酒店锚点 [酒店, ...entries, 目标]；换酒店日 [旧酒店, ...entries, 新酒店, 目标]；无锚点 [...entries, 目标]
     const entryCoords = entries.map((e) => {
       const p = placeById.get(e.placeId)!;
       return { lng: Number(p.lng), lat: Number(p.lat) };
     });
-    const hotelCoord = hotelPlace
-      ? { lng: Number(hotelPlace.lng), lat: Number(hotelPlace.lat) }
-      : null;
+    const coordOf = (p?: { lng: string; lat: string } | null) =>
+      p ? { lng: Number(p.lng), lat: Number(p.lat) } : null;
+    const startCoord = coordOf(startHotel);
+    const endCoord = coordOf(endHotel);
     const targetCoord = { lng: Number(target.lng), lat: Number(target.lat) };
-    const points = hotelAnchored && hotelCoord
-      ? [hotelCoord, ...entryCoords, targetCoord]
-      : [...entryCoords, targetCoord];
+    const points =
+      hotelAnchored && startCoord && endCoord
+        ? switchDay
+          ? [startCoord, ...entryCoords, endCoord, targetCoord]
+          : [startCoord, ...entryCoords, targetCoord]
+        : [...entryCoords, targetCoord];
     const matrix = await this.buildDurationMatrix(trip.geoProvider, points);
     const targetIdx = points.length - 1;
     const hotelIdx = hotelAnchored ? 0 : undefined;
+    // 换酒店日的尾锚点（新酒店）在 entries 之后；同酒店时尾锚点 = 首锚点
+    const endHotelIdx = hotelAnchored && switchDay ? points.length - 2 : hotelIdx;
     const base = hotelAnchored ? 1 : 0;
     const chain = entries.map((_, i) => base + i);
 
-    const options = insertionIncrements(chain, targetIdx, matrix, hotelIdx).map((o) => ({
+    const options = insertionIncrements(chain, targetIdx, matrix, hotelIdx, endHotelIdx).map((o) => ({
       position: o.position,
       incrementS: o.incrementS,
-      // 插在 position k = 跟在原链路第 k-1 个 entry 后面；k=0 时锚定酒店则"从酒店出发后"
+      // 插在 position k = 跟在原链路第 k-1 个 entry 后面；k=0 时锚定酒店则"从（首锚点）酒店出发后"
       afterEntryName:
         o.position > 0
           ? placeById.get(entries[o.position - 1].placeId)!.name
@@ -805,22 +862,154 @@ export class TripService {
     return { candidate: toHotelDto(row), place };
   }
 
-  async selectHotel(tripId: string, candidateId: string | null) {
-    await this.getTrip(tripId);
-    if (candidateId != null) {
-      const [cand] = await this.db
-        .select()
-        .from(schema.hotelCandidates)
-        .where(and(eq(schema.hotelCandidates.id, candidateId), eq(schema.hotelCandidates.tripId, tripId)));
-      if (!cand) throw new ServiceError(404, `hotel candidate ${candidateId} not found`);
+  async selectHotel(
+    tripId: string,
+    candidateId: string | null,
+    days?: { checkInDay?: number; checkOutDay?: number },
+  ) {
+    const trip = await this.getTrip(tripId);
+    // candidateId=null：取消全部选定（兼容旧单选契约）
+    if (candidateId == null) {
+      await this.db
+        .update(schema.hotelCandidates)
+        .set({ selected: false, checkInDay: null, checkOutDay: null })
+        .where(eq(schema.hotelCandidates.tripId, tripId));
+      await this.syncSelectedHotelMirror(tripId);
+      await this.recalcAllDayLegs(tripId);
+      await this.publishBundle(tripId);
+      return;
     }
+    const [cand] = await this.db
+      .select()
+      .from(schema.hotelCandidates)
+      .where(and(eq(schema.hotelCandidates.id, candidateId), eq(schema.hotelCandidates.tripId, tripId)));
+    if (!cand) throw new ServiceError(404, `hotel candidate ${candidateId} not found`);
+
+    const dayCount = await this.getTripDayCount(trip);
+    const others = await this.db
+      .select()
+      .from(schema.hotelCandidates)
+      .where(
+        and(
+          eq(schema.hotelCandidates.tripId, tripId),
+          eq(schema.hotelCandidates.selected, true),
+          sql`${schema.hotelCandidates.id} <> ${candidateId}`,
+        ),
+      );
+
+    let checkInDay = days?.checkInDay;
+    let checkOutDay = days?.checkOutDay;
+    // REST 由 SelectHotelInputSchema 保证同给同缺；MCP 走 shape 注册不跑对象级 refine，这里兜底
+    if ((checkInDay == null) !== (checkOutDay == null)) {
+      throw new ServiceError(422, "checkInDay 与 checkOutDay 必须同时提供或同时省略（同缺时自动建议未被覆盖的天段）");
+    }
+    if (checkInDay == null || checkOutDay == null) {
+      // 缺省智能建议：尚未被其他已选定酒店覆盖的最长连续天段
+      const covered = new Set<number>();
+      for (const o of others) {
+        if (o.checkInDay == null || o.checkOutDay == null) continue;
+        for (let d = o.checkInDay; d < o.checkOutDay; d++) covered.add(d);
+      }
+      let bestStart = 0;
+      let bestLen = 0;
+      let runStart = 0;
+      for (let d = 1; d <= dayCount + 1; d++) {
+        if (d <= dayCount && !covered.has(d)) {
+          if (runStart === 0) runStart = d;
+          const len = d - runStart + 1;
+          if (len > bestLen) {
+            bestStart = runStart;
+            bestLen = len;
+          }
+        } else {
+          runStart = 0;
+        }
+      }
+      if (bestLen === 0) {
+        throw new ServiceError(
+          422,
+          `行程 ${dayCount} 天均已被其他已选定酒店覆盖，请显式指定 checkInDay/checkOutDay（不得重叠）或先取消其他酒店的选定`,
+        );
+      }
+      checkInDay = bestStart;
+      checkOutDay = bestStart + bestLen;
+    }
+    // 入离店天必须在行程天数范围内（闭开区间，checkOutDay 可到 dayCount+1）
+    if (checkInDay < 1 || checkOutDay > dayCount + 1 || checkInDay >= checkOutDay) {
+      throw new ServiceError(
+        422,
+        `入离店天区间 [${checkInDay}, ${checkOutDay}) 超出行程天数范围（共 ${dayCount} 天）或区间为空`,
+      );
+    }
+    // 同一行程已选定酒店的天数区间不得重叠
+    for (const o of others) {
+      if (o.checkInDay == null || o.checkOutDay == null) continue;
+      if (checkInDay < o.checkOutDay && o.checkInDay < checkOutDay) {
+        throw new ServiceError(
+          422,
+          `与已选定酒店的天数区间 [${o.checkInDay}, ${o.checkOutDay}) 重叠；同一晚只能有一家酒店`,
+        );
+      }
+    }
+
     await this.db
-      .update(schema.trips)
-      .set({ selectedHotelCandidateId: candidateId, updatedAt: new Date() })
-      .where(eq(schema.trips.id, tripId));
+      .update(schema.hotelCandidates)
+      .set({ selected: true, checkInDay, checkOutDay })
+      .where(eq(schema.hotelCandidates.id, candidateId));
+    await this.syncSelectedHotelMirror(tripId);
     // 酒店是每天往返交通的锚点：选定/取消后全量重算各天 legs
     await this.recalcAllDayLegs(tripId);
     await this.publishBundle(tripId);
+    return { checkInDay, checkOutDay };
+  }
+
+  /** 取消单个酒店的选定 */
+  async unselectHotel(tripId: string, candidateId: string) {
+    await this.getTrip(tripId);
+    const [cand] = await this.db
+      .select()
+      .from(schema.hotelCandidates)
+      .where(and(eq(schema.hotelCandidates.id, candidateId), eq(schema.hotelCandidates.tripId, tripId)));
+    if (!cand) throw new ServiceError(404, `hotel candidate ${candidateId} not found`);
+    await this.db
+      .update(schema.hotelCandidates)
+      .set({ selected: false, checkInDay: null, checkOutDay: null })
+      .where(eq(schema.hotelCandidates.id, candidateId));
+    await this.syncSelectedHotelMirror(tripId);
+    await this.recalcAllDayLegs(tripId);
+    await this.publishBundle(tripId);
+  }
+
+  /**
+   * 同步 trips.selected_hotel_candidate_id 兼容镜像（deprecated，供旧前端过渡）：
+   * 指向 checkInDay 最早的已选定候选，无为 null。权威数据在 hotel_candidates 上。
+   */
+  private async syncSelectedHotelMirror(tripId: string) {
+    const selected = await this.db
+      .select()
+      .from(schema.hotelCandidates)
+      .where(and(eq(schema.hotelCandidates.tripId, tripId), eq(schema.hotelCandidates.selected, true)));
+    selected.sort((a, b) => (a.checkInDay ?? 0) - (b.checkInDay ?? 0));
+    await this.db
+      .update(schema.trips)
+      .set({ selectedHotelCandidateId: selected[0]?.id ?? null, updatedAt: new Date() })
+      .where(eq(schema.trips.id, tripId));
+  }
+
+  /** 行程天数：日期范围优先，退回已建天的最大 dayIndex，至少 1 */
+  private async getTripDayCount(trip: { id: string; startDate: string | null; endDate: string | null }) {
+    let n = 0;
+    if (trip.startDate && trip.endDate) {
+      const diff =
+        Math.round((new Date(trip.endDate).getTime() - new Date(trip.startDate).getTime()) / 86_400_000) + 1;
+      if (Number.isFinite(diff) && diff > 0) n = diff;
+    }
+    const [row] = await this.db
+      .select({ max: sql<number | null>`max(${schema.days.dayIndex})` })
+      .from(schema.days)
+      .where(eq(schema.days.tripId, trip.id));
+    if (row?.max != null) n = Math.max(n, row.max);
+    return Math.max(n, 1);
   }
 
   // ---------- 预算 ----------
@@ -846,7 +1035,7 @@ export class TripService {
   }
 
   /**
-   * 预算汇总：住宿（选定酒店 × 晚数）+ 餐饮（餐厅人均 × 人数）+ 门票（景点 × 人数）。
+   * 预算汇总：住宿（各已选定酒店 × 各自覆盖晚数求和）+ 餐饮（餐厅人均 × 人数）+ 门票（景点 × 人数）。
    * 交通费不自动计入（打车/公交成本因人而异，提示用户自行预留）。
    */
   async getBudgetSummary(tripId: string) {
@@ -858,27 +1047,38 @@ export class TripService {
       .where(eq(schema.days.tripId, tripId));
     const places = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
 
-    // 晚数：日期范围优先，退回天数，至少 1
-    let nights = Math.max(dayRows.length, 1);
+    // 行程天数：日期范围优先（含首尾 = 日期差+1），退回已建天数
+    let tripDays = Math.max(dayRows.length, 1);
     if (trip.startDate && trip.endDate) {
       const diff = Math.round(
         (new Date(trip.endDate).getTime() - new Date(trip.startDate).getTime()) / 86_400_000,
-      );
-      if (Number.isFinite(diff) && diff > 0) nights = diff;
+      ) + 1;
+      if (Number.isFinite(diff) && diff > 0) tripDays = diff;
     }
 
+    // 住宿费：各已选定酒店 × 各自覆盖晚数（checkOutDay - checkInDay）求和。
+    // 晚数口径与计费一致：N 天行程 = N-1 晚（最后一天离店不住）；
+    // 有已选定酒店时 nights = 覆盖晚数合计，无覆盖时显示 天数-1 供参考。
+    const selectedHotels = await this.db
+      .select()
+      .from(schema.hotelCandidates)
+      .where(
+        and(eq(schema.hotelCandidates.tripId, tripId), eq(schema.hotelCandidates.selected, true)),
+      );
     let hotelCny: number | null = null;
     let hotelSelected = false;
-    if (trip.selectedHotelCandidateId) {
-      const [cand] = await this.db
-        .select()
-        .from(schema.hotelCandidates)
-        .where(eq(schema.hotelCandidates.id, trip.selectedHotelCandidateId));
-      if (cand?.pricePerNight != null) {
-        hotelSelected = true;
-        hotelCny = cand.pricePerNight * nights;
-      }
+    let coveredNightsTotal = 0;
+    for (const cand of selectedHotels) {
+      hotelSelected = true;
+      const coveredNights =
+        cand.checkInDay != null && cand.checkOutDay != null
+          ? Math.max(0, cand.checkOutDay - cand.checkInDay)
+          : 0;
+      coveredNightsTotal += coveredNights;
+      if (cand.pricePerNight == null) continue;
+      hotelCny = (hotelCny ?? 0) + cand.pricePerNight * coveredNights;
     }
+    const nights = hotelSelected ? coveredNightsTotal : Math.max(0, tripDays - 1);
 
     let diningCny = 0;
     let ticketsCny = 0;
