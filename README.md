@@ -55,7 +55,7 @@ cp .env.example .env        # 海外行程可跳过 key；国内行程填 AMAP_*
 cp .env.example apps/server/.env  # dotenv 从 server 目录读取
 docker compose up -d db     # Postgres 16 (localhost:5433)
 pnpm db:migrate
-pnpm dev                    # server :18787 + web :15173
+pnpm dev                    # server :18788 + web :15173
 ```
 
 打开 http://localhost:15173 → 创建行程（填 "Sydney" 或 "杭州"）→ 右侧面板选择 agent 连接 → 粘贴攻略文本。
@@ -103,4 +103,4 @@ packages/shared   zod schema 单一定义点（REST/MCP/前端三处共享）
 
 ## 环境变量
 
-见 `.env.example`。`SERVER_BASE_URL` 默认 `http://127.0.0.1:18787`（agent 子进程连 MCP 的基址，同机部署不用改）。
+见 `.env.example`。`SERVER_BASE_URL` 默认 `http://127.0.0.1:18788`（agent 子进程连 MCP 的基址，同机部署不用改）。

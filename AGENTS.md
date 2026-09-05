@@ -14,7 +14,7 @@
 ```
 Browser ── REST(人类直接编辑) + SSE(实时刷新) ──┐
                                                 │
-Hono Server (apps/server, :18787)               │
+Hono Server (apps/server, :18788)               │
   ├─ /api/*        REST + SSE（交互面，CORS 白名单 WEB_ORIGIN）
   ├─ /mcp          MCP streamable HTTP（工具面，无 CORS）◄─ agent 子进程用 URL+Bearer 直连
   └─ AcpSessionManager（对话面）
@@ -62,7 +62,7 @@ pnpm install
 cp .env.example .env && cp .env.example apps/server/.env   # dotenv 从 server 目录读取
 pnpm db:up              # docker compose up -d db（Postgres 16 @ localhost:5433）
 pnpm db:migrate
-pnpm dev                # 并行起 server (:18787) + web (:15173)
+pnpm dev                # 并行起 server (:18788) + web (:15173)
 
 # 单端 / 其他
 pnpm dev:server         # tsx watch src/main.ts
@@ -94,7 +94,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 
 ## 环境变量与安全
 
-- 见 `.env.example`；必填 `DATABASE_URL`，其余有默认值（`SERVER_PORT=18787`、`WEB_ORIGIN=http://localhost:15173`、`SERVER_BASE_URL` 默认 loopback）
+- 见 `.env.example`；必填 `DATABASE_URL`，其余有默认值（`SERVER_PORT=18788`、`WEB_ORIGIN=http://localhost:15173`、`SERVER_BASE_URL` 默认 loopback）
 - 高德三个 key（`AMAP_JS_KEY` / `AMAP_SERVER_KEY` / `AMAP_JS_SECRET`）**仅国内行程需要**；海外行程零配置。未配 key 时国内路线降级为直线距离 × 1.3 估算、POI 搜索不可用，海外不受影响
 - `.env` 不入库；MCP token 只存 hash；agent 经 `session/new` 注入的 URL+header 直连 `/mcp`，不经浏览器
 - 前端渲染 agent 文本用 marked + sanitize-html，不要绕过 sanitize 直接 `dangerouslySetInnerHTML`
