@@ -2,7 +2,6 @@ import { useState } from "react";
 import {
   BedDouble,
   CalendarCheck,
-  Clock,
   Landmark,
   Lock,
   LockOpen,
@@ -264,79 +263,79 @@ export function CandidatesPanel({
                     : place.priceCny;
                 const selected = place.id === selectedPlaceId;
 
+                // 是否有徽章要展示（没有就不渲染徽章行，避免多余间距）
+                const showBadges = place.createdBy === "agent" || locked || booking !== "none";
+
                 return (
                   <div
                     key={place.id}
                     onClick={() => onSelectPlace(place.id)}
-                    className={`cursor-pointer rounded-xl border p-3 shadow-sm transition-colors ${
+                    className={`cursor-pointer rounded-card border p-3 shadow-card transition-colors ${
                       selected
-                        ? "border-blue-300 bg-blue-50/60 ring-1 ring-blue-200"
+                        ? "border-scheduled/40 bg-scheduled/8 ring-1 ring-scheduled/30"
                         : isSelectedHotel
-                          ? "border-red-300 bg-red-100/40 ring-1 ring-red-200"
+                          ? "border-hotelpin/40 bg-hotelpin/8 ring-1 ring-hotelpin/30"
                           : pendingLocked
                             ? "border-orange-400 bg-orange-50/70 ring-1 ring-orange-300"
                             : locked
-                              ? "border-amber-300/70 bg-amber-50/50"
+                              ? "border-locked/30 bg-locked/5"
                               : "border-slate-900/10 bg-white/60"
                     }`}
                   >
                     <div className="flex items-start gap-2">
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
+                        {/* 第一行：名称 + 价格右置（价格是最常被扫视的决策信息） */}
+                        <div className="flex items-baseline gap-2">
                           <p className="truncate text-sm font-medium text-slate-900">{place.name}</p>
-                          {place.createdBy === "agent" && (
-                            <Badge variant="blue" className="shrink-0">
-                              <Sparkles className="size-3" />
-                              agent 推荐
-                            </Badge>
-                          )}
-                          {locked && (
-                            <Badge variant="orange" className="shrink-0">
-                              已锁定
-                            </Badge>
-                          )}
-                          {/* 预订状态徽章（M11）：locked 地点可点选流转；候选态仅展示 */}
-                          {locked ? (
-                            <button
-                              title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
-                              disabled={busy}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void cycleBooking(place);
-                              }}
-                              className="shrink-0 disabled:opacity-50"
-                            >
-                              <Badge
-                                variant={BOOKING_STATUS_META[booking].badgeVariant}
-                                className="cursor-pointer"
-                              >
-                                <CalendarCheck className="size-3" />
-                                {BOOKING_STATUS_META[booking].label}
-                              </Badge>
-                            </button>
-                          ) : (
-                            booking !== "none" && (
-                              <Badge
-                                variant={BOOKING_STATUS_META[booking].badgeVariant}
-                                className="shrink-0"
-                              >
-                                {BOOKING_STATUS_META[booking].label}
-                              </Badge>
-                            )
+                          {price != null && (
+                            <span className="ml-auto shrink-0 text-sm font-semibold text-orange-600">
+                              {formatMoney(price, cur)}
+                              {key === "hotel" ? "/晚" : place.category === "restaurant" ? "/人" : ""}
+                            </span>
                           )}
                         </div>
-                        <p className="truncate text-[11px] text-slate-400">{place.address ?? ""}</p>
-                        {openingHours && (
-                          <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-400">
-                            <Clock className="size-3 shrink-0" />
-                            {openingHours}
+                        {/* 第二行：地址 · 营业时间 合并一行，truncate 兜底 */}
+                        {(place.address || openingHours) && (
+                          <p className="truncate text-[11px] text-slate-400">
+                            {[place.address, openingHours].filter(Boolean).join(" · ")}
                           </p>
                         )}
-                        {price != null && (
-                          <p className="mt-1 text-sm font-semibold text-orange-600">
-                            {formatMoney(price, cur)}
-                            {key === "hotel" ? " /晚" : place.category === "restaurant" ? " /人" : ""}
-                          </p>
+                        {/* 徽章行（消费 M13 令牌变体）；预订状态徽章 locked 时可点选流转，候选态仅展示 */}
+                        {showBadges && (
+                          <div className="mt-1 flex flex-wrap items-center gap-1">
+                            {place.createdBy === "agent" && (
+                              <Badge variant="blue">
+                                <Sparkles className="size-3" />
+                                agent 推荐
+                              </Badge>
+                            )}
+                            {locked && <Badge variant="locked">已锁定</Badge>}
+                            {locked ? (
+                              <button
+                                title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
+                                disabled={busy}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void cycleBooking(place);
+                                }}
+                                className="shrink-0 disabled:opacity-50"
+                              >
+                                <Badge
+                                  variant={BOOKING_STATUS_META[booking].badgeVariant}
+                                  className="cursor-pointer"
+                                >
+                                  <CalendarCheck className="size-3" />
+                                  {BOOKING_STATUS_META[booking].label}
+                                </Badge>
+                              </button>
+                            ) : (
+                              booking !== "none" && (
+                                <Badge variant={BOOKING_STATUS_META[booking].badgeVariant}>
+                                  {BOOKING_STATUS_META[booking].label}
+                                </Badge>
+                              )
+                            )}
+                          </div>
                         )}
                         {hotelCand?.notes && (
                           <p className="mt-1 text-xs text-slate-500">{hotelCand.notes}</p>
@@ -380,7 +379,7 @@ export function CandidatesPanel({
                             }}
                             className={`rounded-lg px-2.5 py-1 text-xs font-medium disabled:opacity-50 ${
                               isSelectedHotel
-                                ? "bg-red-600 text-white"
+                                ? "bg-hotelpin text-white"
                                 : "border border-slate-200 text-slate-600 hover:bg-slate-50"
                             }`}
                           >
@@ -397,8 +396,8 @@ export function CandidatesPanel({
                             }}
                             className={`flex size-7 items-center justify-center rounded-lg transition-colors disabled:opacity-50 ${
                               locked
-                                ? "bg-amber-500/15 text-amber-600 hover:bg-amber-500/25"
-                                : "text-slate-400 hover:bg-slate-900/8 hover:text-amber-600"
+                                ? "bg-locked/10 text-locked hover:bg-locked/20"
+                                : "text-slate-400 hover:bg-slate-900/8 hover:text-locked"
                             }`}
                           >
                             {locked ? <Lock className="size-3.5" /> : <LockOpen className="size-3.5" />}

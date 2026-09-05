@@ -14,6 +14,10 @@ const badgeVariants = cva(
         blue: "border-blue-200 bg-blue-100/70 text-blue-700",
         orange: "border-orange-200 bg-orange-100/70 text-orange-700",
         destructive: "border-red-200 bg-red-100/70 text-red-700",
+        // 状态变体：消费 index.css 的 M13 设计令牌，与地图 overlay 颜色一一对应
+        candidate: "border-candidate/40 bg-candidate/15 text-slate-500",
+        locked: "border-locked/30 bg-locked/10 text-locked",
+        scheduled: "border-scheduled/30 bg-scheduled/10 text-scheduled",
       },
     },
     defaultVariants: { variant: "secondary" },

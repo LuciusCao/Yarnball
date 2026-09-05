@@ -267,7 +267,7 @@ export function ItineraryPanel({
                     ) : (
                     <div
                       className={`group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 ${
-                        selected ? "bg-blue-500/12 ring-1 ring-blue-300/60" : "hover:bg-slate-50"
+                        selected ? "bg-brand/10 ring-1 ring-brand/40" : "hover:bg-slate-50"
                       }`}
                       onClick={() => place && onSelectPlace(place.id)}
                     >
@@ -413,7 +413,7 @@ function TransitRow({
     <div
       className={`group flex items-center gap-2 rounded-lg border border-dashed px-2 py-1.5 ${
         selected
-          ? "border-blue-300 bg-blue-500/12 ring-1 ring-blue-300/60"
+          ? "border-brand/50 bg-brand/10 ring-1 ring-brand/40"
           : "border-slate-300/70 bg-slate-500/5 hover:bg-slate-500/10"
       } ${place ? "cursor-pointer" : ""}`}
       onClick={onSelect}

@@ -89,19 +89,19 @@ export function SharePage() {
       {panelMode === "hidden" ? (
         <button
           onClick={() => setPanelMode("expanded")}
-          className="glass panel-in absolute right-4 top-4 z-20 rounded-2xl px-3.5 py-2 text-xs font-medium text-slate-600 shadow-lg transition-transform hover:scale-105"
+          className="glass panel-in absolute right-4 top-4 z-20 rounded-full px-3.5 py-2 text-xs font-medium text-slate-600 shadow-lg transition-transform hover:scale-105"
         >
           🗓 显示行程
         </button>
       ) : panelMode === "collapsed" ? (
         <button
           onClick={() => setPanelMode("expanded")}
-          className="glass panel-in absolute right-4 top-4 z-20 rounded-2xl px-3.5 py-2 text-xs font-medium text-slate-600 shadow-lg transition-transform hover:scale-105"
+          className="glass panel-in absolute right-4 top-4 z-20 rounded-full px-3.5 py-2 text-xs font-medium text-slate-600 shadow-lg transition-transform hover:scale-105"
         >
           🗓 行程
         </button>
       ) : (
-        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[360px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-2xl">
+        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[360px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
           <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
             <div className="flex gap-1.5">
               <span className="h-3 w-3 rounded-full border border-black/10" style={{ background: "#ff5f57" }} />
@@ -115,7 +115,7 @@ export function SharePage() {
             </div>
             <span className="glass-text ml-1 text-xs font-semibold">🗓 行程</span>
           </div>
-          <div className="glass-text min-h-0 flex-1 bg-white/45">
+          <div className="glass-text min-h-0 flex-1 bg-white/40">
             <ItineraryPanel
               tripId={bundle.trip.id}
               bundle={bundle}

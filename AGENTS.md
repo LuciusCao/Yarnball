@@ -32,7 +32,8 @@ Hono Server (apps/server, :18787)               │
 apps/server
   src/acp/        ACP 会话管理（sessionManager.ts ~750 行；permissions.ts 四层权限策略；
                   prompts.ts bootstrap prompt；terminal 协议支持）
-  src/mcp/        MCP 工具面：tools.ts（17 个工具 + scoped token 鉴权，含 lock_place/unlock_place）、
+  src/mcp/        MCP 工具面：tools.ts（20 个工具 + scoped token 鉴权，含 lock_place/unlock_place、
+                  add_transit_entry/update_entry（大交通 entry）与 suggest_day_clusters（区域聚类分天建议））、
                   app.ts（HTTP 端点）
   src/services/   tripService.ts（编排/顺路算法核心）、geo.ts（provider 抽象）、settings.ts（全局设置：
                   高德 key 的 DB 覆盖 + env 兜底，/api/settings 响应掩码 amapServerKey）、
@@ -88,6 +89,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - **MCP 鉴权**：每个 chat session 一个 token（随机 32 字节，DB 存 sha256）；`/mcp` 每请求从 `Authorization: Bearer` + `x-yarnball-session-id` header 重解析并绑定到该会话的 trip —— agent 永远只能操作当前会话的行程（`src/mcp/tools.ts`）
 - **ACP 权限四层策略**（`src/acp/permissions.ts`）：Yarnball MCP 工具自动批准 → 只读 kind 自动批准 → 会话级 allow-all → 停靠到 UI 等用户 120s
 - **bootstrap prompt**（`src/acp/prompts.ts`）钉死「坐标必须来自 search_poi」纪律 + 海外英文搜索提示；恢复会话走 `session/new` + 压缩转录回放（ACP `session/load` 待 SDK 封装）
+- **大交通与预订状态**：`add_transit_entry` / `update_entry` 管理大交通 entry（🛬抵达 / 🛫离开 / 🚄城市间，departTime/arriveTime 是排程硬锚点）；地点带 `openingHours`（营业时间，排期完全无交叠时前端告警）与 `bookingStatus`（无需预订/待预订/已预订，UI 可点选流转）；`suggest_day_clusters`（对应 REST `GET /api/trips/:id/suggest-clusters`）按地理位置聚类给出分天建议
 - 验证 agent 链路改动**不依赖真 agent**：用 `pnpm smoke`（fake-acp-agent.mjs 是可脚本化的假 ACP agent）
 
 ## 环境变量与安全
