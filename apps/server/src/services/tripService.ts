@@ -13,6 +13,8 @@ import type {
   CreateTripInput,
   GeoProviderName,
   LngLat,
+  PlaceStatus,
+  TransportMode,
   TripBundle,
   UpdatePlaceInput,
 } from "@yarnball/shared";
@@ -29,7 +31,7 @@ import {
 } from "./mappers.js";
 import { amap, currencyForCountry, fallbackRoute, getProvider, haversineM, osm } from "./geo.js";
 import { insertionIncrements, optimizeLoopOrder, optimizeOrder, orderTotalDuration } from "./routing.js";
-import { env } from "../env.js";
+import { amapConfigured } from "./settings.js";
 
 const uuid = () => randomUUID();
 
@@ -75,7 +77,7 @@ export class TripService {
     center: LngLat | null;
     currency: string;
   }> {
-    if (forced === "amap" || (!forced && env.amapConfigured)) {
+    if (forced === "amap" || (!forced && amapConfigured())) {
       try {
         const geo = await amap.resolveCity(city);
         if (geo?.country === "中国") {
@@ -220,6 +222,7 @@ export class TripService {
   /**
    * 建 POI。actor=agent 时校验坐标必须落在目的城市附近（防 LLM 编造经纬度），
    * agent 被拒时应引导其先调 search_poi 拿真实坐标。
+   * 状态机：agent 建的默认 candidate（候选池）；human 手动建的默认 locked（确认要去）。
    */
   async createPlace(tripId: string, input: CreatePlaceInput, actor: Actor) {
     const trip = await this.getTrip(tripId);
@@ -253,6 +256,7 @@ export class TripService {
         priceCny: input.priceCny != null ? Math.round(input.priceCny) : null,
         bookingInfo: input.bookingInfo ?? null,
         createdBy: actor,
+        status: input.status ?? (actor === "human" ? "locked" : "candidate"),
       })
       .returning();
     await this.touchTrip(tripId);
@@ -260,9 +264,37 @@ export class TripService {
     return toPlaceDto(row);
   }
 
-  async updatePlace(placeId: string, input: UpdatePlaceInput) {
+  /**
+   * 锁定保护：locked = 用户已确认要去的地点，agent 不可改/删，
+   * 提示其请用户在界面上解锁。人类（REST 入口）不受限。
+   */
+  private assertNotLockedForAgent(place: { status: string; name: string }, actor: Actor) {
+    if (actor === "agent" && place.status === "locked") {
+      throw new ServiceError(
+        409,
+        `「${place.name}」已被用户锁定，agent 不可修改或删除。请用户在界面上解锁后再试。`,
+      );
+    }
+  }
+
+  /** 锁定/解锁地点（用户确认候选 → locked；退回候选池 → candidate） */
+  async setPlaceStatus(placeId: string, status: PlaceStatus) {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
+    const [row] = await this.db
+      .update(schema.places)
+      .set({ status })
+      .where(eq(schema.places.id, placeId))
+      .returning();
+    await this.touchTrip(existing.tripId);
+    await this.publishBundle(existing.tripId);
+    return toPlaceDto(row);
+  }
+
+  async updatePlace(placeId: string, input: UpdatePlaceInput, actor: Actor = "human") {
+    const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
+    if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
+    this.assertNotLockedForAgent(existing, actor);
     const patch: Partial<typeof schema.places.$inferInsert> = {};
     if (input.name != null) patch.name = input.name;
     if (input.category != null) patch.category = input.category;
@@ -278,15 +310,17 @@ export class TripService {
     if (input.priceCny !== undefined)
       patch.priceCny = input.priceCny != null ? Math.round(input.priceCny) : null;
     if (input.bookingInfo !== undefined) patch.bookingInfo = input.bookingInfo ?? null;
+    if (input.status !== undefined) patch.status = input.status;
     const [row] = await this.db.update(schema.places).set(patch).where(eq(schema.places.id, placeId)).returning();
     await this.touchTrip(existing.tripId);
     await this.publishBundle(existing.tripId);
     return toPlaceDto(row);
   }
 
-  async removePlace(placeId: string) {
+  async removePlace(placeId: string, actor: Actor = "human") {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
+    this.assertNotLockedForAgent(existing, actor);
     const tripId = existing.tripId;
     // 删的是选定酒店 → 先解除选定，避免悬空引用
     const [trip] = await this.db.select().from(schema.trips).where(eq(schema.trips.id, tripId));
@@ -335,7 +369,13 @@ export class TripService {
     return race;
   }
 
-  async addEntry(tripId: string, placeId: string, dayIndex: number, position: number | null) {
+  async addEntry(
+    tripId: string,
+    placeId: string,
+    dayIndex: number,
+    position: number | null,
+    startTime?: string | null,
+  ) {
     await this.getTrip(tripId);
     const [place] = await this.db
       .select()
@@ -360,6 +400,7 @@ export class TripService {
         dayId: day.id,
         placeId,
         position: pos,
+        startTime: startTime ?? null,
       });
     });
     await this.touchTrip(tripId);
@@ -478,6 +519,7 @@ export class TripService {
    * 变更某天 entry / 换酒店后重算该天交通段。
    * 选定酒店时链路为 [酒店, ...entries, 酒店]——每天自动计算往返交通；
    * 未选酒店时为 [...entries]（景点间移动）。
+   * 手动 mode 覆盖（modeOverride）按端点配对保留，重算不冲掉。
    */
   async recalcDayLegs(tripId: string, dayId: string) {
     const [trip] = await this.db.select().from(schema.trips).where(eq(schema.trips.id, tripId));
@@ -501,6 +543,23 @@ export class TripService {
     for (const e of entries) chain.push({ entryId: e.id, placeId: e.placeId });
     if (hotelPlaceId) chain.push({ entryId: null, placeId: hotelPlaceId });
 
+    // 重算前收集手动覆盖：key = 端点配对（entry 或酒店 place）
+    const endpointKey = (entryId: string | null, placeId: string | null) =>
+      entryId ? `e:${entryId}` : `p:${placeId}`;
+    const existingLegs = await this.db
+      .select()
+      .from(schema.transportLegs)
+      .where(eq(schema.transportLegs.dayId, dayId));
+    const overrides = new Map<string, TransportMode>();
+    for (const leg of existingLegs) {
+      if (leg.modeOverride) {
+        overrides.set(
+          `${endpointKey(leg.fromEntryId, leg.fromPlaceId)}->${endpointKey(leg.toEntryId, leg.toPlaceId)}`,
+          leg.modeOverride as TransportMode,
+        );
+      }
+    }
+
     await this.db.delete(schema.transportLegs).where(eq(schema.transportLegs.dayId, dayId));
     for (let i = 0; i + 1 < chain.length; i++) {
       const from = chain[i];
@@ -510,7 +569,11 @@ export class TripService {
       if (!fromPlace || !toPlace) continue;
       const a = { lng: Number(fromPlace.lng), lat: Number(fromPlace.lat) };
       const b = { lng: Number(toPlace.lng), lat: Number(toPlace.lat) };
-      const mode = haversineM(a, b) < 2000 ? ("walk" as const) : ("drive" as const);
+      const fromId = from.entryId ? null : from.placeId;
+      const toId = to.entryId ? null : to.placeId;
+      const override =
+        overrides.get(`${endpointKey(from.entryId, fromId)}->${endpointKey(to.entryId, toId)}`) ?? null;
+      const mode = override ?? (haversineM(a, b) < 2000 ? ("walk" as const) : ("drive" as const));
       let result;
       try {
         result = await geo.route(a, b, mode, trip?.destinationCity);
@@ -523,16 +586,33 @@ export class TripService {
         dayId,
         fromEntryId: from.entryId,
         toEntryId: to.entryId,
-        fromPlaceId: from.entryId ? null : from.placeId,
-        toPlaceId: to.entryId ? null : to.placeId,
+        fromPlaceId: fromId,
+        toPlaceId: toId,
         seq: i,
-        mode: result.mode,
+        mode: override ?? result.mode,
+        modeOverride: override,
         distanceM: result.distanceM,
         durationS: result.durationS,
         polyline: result.polyline,
         computedAt: new Date(),
       });
     }
+  }
+
+  /**
+   * 手动覆盖某段交通方式（mode=null 清除覆盖恢复自动）。
+   * 覆盖存在 leg.modeOverride 上，recalcDayLegs 按端点配对保留。
+   */
+  async setLegMode(legId: string, mode: TransportMode | null) {
+    const [leg] = await this.db.select().from(schema.transportLegs).where(eq(schema.transportLegs.id, legId));
+    if (!leg) throw new ServiceError(404, `leg ${legId} not found`);
+    await this.db
+      .update(schema.transportLegs)
+      .set({ modeOverride: mode })
+      .where(eq(schema.transportLegs.id, legId));
+    await this.touchTrip(leg.tripId);
+    await this.recalcDayLegs(leg.tripId, leg.dayId);
+    await this.publishBundle(leg.tripId);
   }
 
   /** 行程全部天的 legs 重算（换酒店/删除酒店地点用） */

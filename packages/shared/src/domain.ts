@@ -31,6 +31,15 @@ export type TransportMode = (typeof TRANSPORT_MODES)[number];
 export const ACTORS = ["human", "agent"] as const;
 export type Actor = (typeof ACTORS)[number];
 
+/**
+ * 地点状态机：candidate（候选池，agent 解析攻略/推荐的默认值）
+ * → locked（用户在界面上锁定 = 确认要去）。
+ * 纪律：agent 只建候选；locked 的地点 agent 不可改/删（需用户在界面解锁）；
+ * 只有 locked 的地点才应排入某天行程。
+ */
+export const PLACE_STATUSES = ["candidate", "locked"] as const;
+export type PlaceStatus = (typeof PLACE_STATUSES)[number];
+
 /** 地理服务 provider：amap（国内，需 key）| osm（海外，零 key） */
 export const GEO_PROVIDERS = ["amap", "osm"] as const;
 export type GeoProviderName = (typeof GEO_PROVIDERS)[number];
@@ -140,6 +149,8 @@ export const PlaceDtoSchema = z.object({
   priceCny: z.number().nullable(),
   /** 预约方式（平台/电话/网站 + 提前天数建议） */
   bookingInfo: z.string().nullable(),
+  /** 候选（candidate）或已锁定（locked），见 PLACE_STATUSES */
+  status: z.enum(PLACE_STATUSES),
   createdBy: z.enum(ACTORS),
   createdAt: z.string(),
 });
@@ -168,6 +179,8 @@ export const TransportLegDtoSchema = z.object({
   toPlaceId: z.string().nullable(),
   seq: z.number(),
   mode: z.enum(TRANSPORT_MODES),
+  /** 手动覆盖的交通方式：非空时重算交通段保留该模式，不被自动规则（<2km 步行）冲掉 */
+  modeOverride: z.enum(TRANSPORT_MODES).nullable(),
   distanceM: z.number().nullable(),
   durationS: z.number().nullable(),
   polyline: z.array(LngLatSchema).nullable(),
@@ -227,18 +240,38 @@ export const CreatePlaceInputSchema = z.object({
   durationMin: z.number().int().min(0).max(24 * 60).nullable().optional(),
   priceCny: z.number().min(0).nullable().optional(),
   bookingInfo: z.string().max(2000).nullable().optional(),
+  /** 显式指定初始状态；缺省由服务端按创建者决定（human→locked，agent→candidate） */
+  status: z.enum(PLACE_STATUSES).optional(),
 });
 export type CreatePlaceInput = z.infer<typeof CreatePlaceInputSchema>;
 
 export const UpdatePlaceInputSchema = CreatePlaceInputSchema.partial();
 export type UpdatePlaceInput = z.infer<typeof UpdatePlaceInputSchema>;
 
+/** 锁定/解锁地点（PATCH /api/places/:id/status 与 MCP lock_place/unlock_place） */
+export const SetPlaceStatusInputSchema = z.object({
+  status: z.enum(PLACE_STATUSES),
+});
+export type SetPlaceStatusInput = z.infer<typeof SetPlaceStatusInputSchema>;
+
 export const AddEntryInputSchema = z.object({
   placeId: z.string(),
   dayIndex: z.number().int().min(1),
   position: z.number().int().min(0).nullable().optional(),
+  /** 可选开始时间（HH:MM，24 小时制） */
+  startTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .nullable()
+    .optional(),
 });
 export type AddEntryInput = z.infer<typeof AddEntryInputSchema>;
+
+/** 手动覆盖交通段方式（PATCH /api/legs/:id/mode）；mode=null 清除覆盖恢复自动计算 */
+export const SetLegModeInputSchema = z.object({
+  mode: z.enum(TRANSPORT_MODES).nullable(),
+});
+export type SetLegModeInput = z.infer<typeof SetLegModeInputSchema>;
 
 export const ReorderDayInputSchema = z.object({
   entryIds: z.array(z.string()).min(1),
@@ -251,6 +284,61 @@ export const CreateHotelCandidateInputSchema = CreatePlaceInputSchema.extend({
 export type CreateHotelCandidateInput = z.infer<
   typeof CreateHotelCandidateInputSchema
 >;
+
+// ---------- 设置与 Agent 注册 ----------
+
+/** 全局设置（GET /api/settings 返回生效值：DB 覆盖优先，env 兜底） */
+export const SettingsDtoSchema = z.object({
+  amapJsKey: z.string(),
+  amapServerKey: z.string(),
+  amapJsSecret: z.string(),
+  /** 三个 key 是否齐备（DB 覆盖 + env 合并后判定） */
+  amapConfigured: z.boolean(),
+  /** 各字段当前值是否来自 DB 覆盖（false = env 兜底或未配置） */
+  overridden: z.object({
+    amapJsKey: z.boolean(),
+    amapServerKey: z.boolean(),
+    amapJsSecret: z.boolean(),
+  }),
+});
+export type SettingsDto = z.infer<typeof SettingsDtoSchema>;
+
+/** PUT /api/settings：写字段 = DB 覆盖 env；传 null = 清除覆盖回退 env */
+export const UpdateSettingsInputSchema = z.object({
+  amapJsKey: z.string().max(128).nullable().optional(),
+  amapServerKey: z.string().max(128).nullable().optional(),
+  amapJsSecret: z.string().max(128).nullable().optional(),
+});
+export type UpdateSettingsInput = z.infer<typeof UpdateSettingsInputSchema>;
+
+/** Agent 注册项（GET /api/agents；ACP 子进程启动命令） */
+export const AgentRegistryDtoSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  command: z.string(),
+  args: z.array(z.string()),
+  enabled: z.boolean(),
+  createdAt: z.string(),
+});
+export type AgentRegistryDto = z.infer<typeof AgentRegistryDtoSchema>;
+
+export const CreateAgentInputSchema = z.object({
+  label: z.string().min(1).max(60),
+  /** 可执行命令（如 "kimi"）；可用性用 GET /api/agents/detect 检测 */
+  command: z.string().min(1).max(200),
+  args: z.array(z.string().max(200)).max(20).default([]),
+  enabled: z.boolean().default(true),
+});
+export type CreateAgentInput = z.infer<typeof CreateAgentInputSchema>;
+
+export const UpdateAgentInputSchema = CreateAgentInputSchema.partial();
+export type UpdateAgentInput = z.infer<typeof UpdateAgentInputSchema>;
+
+/** GET /api/agents/detect 返回项：注册项 + 本机 which 检测结果 */
+export const AgentAvailabilitySchema = AgentRegistryDtoSchema.extend({
+  available: z.boolean(),
+});
+export type AgentAvailability = z.infer<typeof AgentAvailabilitySchema>;
 
 // ---------- SSE 事件 ----------
 

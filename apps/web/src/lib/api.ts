@@ -1,0 +1,92 @@
+import type {
+  AddEntryInput,
+  AgentAvailability,
+  AgentRegistryDto,
+  CreateAgentInput,
+  PlaceDto,
+  PlaceStatus,
+  SettingsDto,
+  SetLegModeInput,
+  TransportMode,
+  UpdateAgentInput,
+  UpdateSettingsInput,
+} from "@yarnball/shared";
+
+/**
+ * UX 重构新增端点的客户端契约（单点）。
+ * 设置页（M2）/ 候选池（M3）/ 时间轴（M4）一律从这里消费；
+ * 既有端点仍在 ../api/client.ts，新代码不要在那里加方法。
+ */
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`/api${path}`, {
+    headers: { "content-type": "application/json" },
+    ...init,
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  // ---------- 候选状态机 ----------
+
+  /** 锁定/解锁地点（PATCH /api/places/:id/status） */
+  setPlaceStatus: (placeId: string, status: PlaceStatus) =>
+    request<{ place: PlaceDto }>(`/places/${placeId}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
+
+  /** 排地点到某天，可带 startTime（HH:MM）（POST /api/trips/:tripId/entries） */
+  addEntry: (tripId: string, input: AddEntryInput) =>
+    request<{ dayId: string; position: number }>(`/trips/${tripId}/entries`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  /** 手动覆盖交通段方式；mode=null 清除覆盖（PATCH /api/legs/:id/mode） */
+  setLegMode: (legId: string, mode: TransportMode | null) =>
+    request<{ ok: true }>(`/legs/${legId}/mode`, {
+      method: "PATCH",
+      body: JSON.stringify({ mode } satisfies SetLegModeInput),
+    }),
+
+  // ---------- 设置 ----------
+
+  /** 生效设置（DB 覆盖 > env）（GET /api/settings） */
+  getSettings: () => request<{ settings: SettingsDto }>("/settings"),
+
+  /** 写设置覆盖；字段传 null 清除覆盖回退 env（PUT /api/settings） */
+  updateSettings: (input: UpdateSettingsInput) =>
+    request<{ settings: SettingsDto }>("/settings", {
+      method: "PUT",
+      body: JSON.stringify(input),
+    }),
+
+  // ---------- agent 注册 ----------
+
+  /** 全部注册 agent（含 disabled；会话创建按 enabled 过滤）（GET /api/agents） */
+  listAgents: () => request<{ agents: AgentRegistryDto[] }>("/agents"),
+
+  /** 各 agent 的 command 本机可用性检测（GET /api/agents/detect） */
+  detectAgents: () => request<{ agents: AgentAvailability[] }>("/agents/detect"),
+
+  createAgent: (input: CreateAgentInput) =>
+    request<{ agent: AgentRegistryDto }>("/agents", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  updateAgent: (agentId: string, input: UpdateAgentInput) =>
+    request<{ agent: AgentRegistryDto }>(`/agents/${agentId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+
+  /** 有历史会话引用的 agent 只停用不删除（disabled=true 表示走了停用） */
+  deleteAgent: (agentId: string) =>
+    request<{ ok: true; disabled: boolean }>(`/agents/${agentId}`, { method: "DELETE" }),
+};

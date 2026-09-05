@@ -56,6 +56,8 @@ export const places = pgTable(
     priceCny: integer("price_cny"),
     bookingInfo: text("booking_info"),
     createdBy: text("created_by").notNull().default("human"), // human | agent
+    /** 候选状态机：candidate | locked；human 手动创建在 service 层置 locked */
+    status: text("status").notNull().default("candidate"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("places_trip_idx").on(t.tripId)],
@@ -115,6 +117,8 @@ export const transportLegs = pgTable(
     /** 天内的段序号（含酒店往返段） */
     seq: integer("seq").notNull().default(0),
     mode: text("mode").notNull(), // TransportMode
+    /** 手动覆盖的交通方式：非空时 recalcDayLegs 保留它，不被自动规则冲掉 */
+    modeOverride: text("mode_override"),
     distanceM: integer("distance_m"),
     durationS: integer("duration_s"),
     polyline: jsonb("polyline"), // LngLat[] | null
@@ -185,6 +189,18 @@ export const agentRegistry = pgTable("agent_registry", {
   args: jsonb("args").notNull().default([]), // string[]
   enabled: boolean("enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * 全局设置（单行，id 固定 "global"）。
+ * 存的值覆盖同名 env（读取优先级 DB > env），null = 未覆盖回退 env。
+ */
+export const settings = pgTable("settings", {
+  id: text("id").primaryKey(),
+  amapJsKey: text("amap_js_key"),
+  amapServerKey: text("amap_server_key"),
+  amapJsSecret: text("amap_js_secret"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const agentTokens = pgTable(

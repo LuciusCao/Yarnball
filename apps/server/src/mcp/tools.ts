@@ -70,6 +70,12 @@ const AddPlaceToDayInput = z.object({
   placeId: z.string(),
   dayIndex: z.number().int().min(1),
   position: z.number().int().min(0).nullable().optional(),
+  /** 可选开始时间（HH:MM，24 小时制），排天时尽量给出 */
+  startTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .nullable()
+    .optional(),
 });
 
 const MoveEntryInput = z.object({
@@ -107,9 +113,14 @@ const SelectHotelInput = z.object({
   candidateId: z.string().nullable(),
 });
 
-const UpdatePlaceWithIdSchema = UpdatePlaceInputSchema.extend({ placeId: z.string() });
+// agent 不可经 add/update_place 直接指定 status：建点一律 candidate，锁定走 lock_place（或用户界面操作）
+const McpCreatePlaceSchema = CreatePlaceInputSchema.omit({ status: true });
+
+const UpdatePlaceWithIdSchema = UpdatePlaceInputSchema.omit({ status: true }).extend({ placeId: z.string() });
 
 const RemovePlaceInput = z.object({ placeId: z.string() });
+
+const PlaceStatusInput = z.object({ placeId: z.string() });
 
 const SetBudgetInput = z.object({
   total: z.number().min(0).nullable().optional(),
@@ -170,6 +181,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
         userUiContext: uiContext,
         hint:
           `字段含义：entries[].position 为天内顺序（0 起）；dayIndex 从 1 开始。` +
+          ` places[].status：candidate=候选池（待用户确认），locked=用户已锁定（agent 不可改/删，只排 locked 的地点进每日行程）。` +
           (overseas
             ? ` 本行程是海外目的地（${bundle.trip.destinationCity}，${bundle.trip.geoProvider} provider）：search_poi 时用英文或当地语言名称（如 "Sydney Opera House"）效果最好。`
             : ""),
@@ -227,8 +239,8 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_place",
     {
       description:
-        "添加地点（景点/餐厅/活动）到行程的地点库。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）和 durationMin（建议游玩时长）。金额单位为行程币种。",
-      inputSchema: CreatePlaceInputSchema.shape,
+        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）和 durationMin（建议游玩时长）。金额单位为行程币种。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上锁定（status=locked）后才用 add_place_to_day 排天。**",
+      inputSchema: McpCreatePlaceSchema.shape,
     },
     async (input) => {
       ctx.markMcpObserved();
@@ -244,13 +256,14 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
   server.registerTool(
     "update_place",
     {
-      description: "更新地点信息（备注、游玩时长、价格等）。只需要传要改的字段。",
+      description:
+        "更新地点信息（备注、游玩时长、价格等）。只需要传要改的字段。注意：status=locked（用户已锁定）的地点不可修改——请用户在界面上解锁。",
       inputSchema: UpdatePlaceWithIdSchema.shape,
     },
     async ({ placeId, ...patch }) => {
       ctx.markMcpObserved();
       try {
-        const place = await tripService.updatePlace(placeId, patch);
+        const place = await tripService.updatePlace(placeId, patch, "agent");
         return json({ ok: true, place });
       } catch (err) {
         return toolError(err);
@@ -261,14 +274,51 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
   server.registerTool(
     "remove_place",
     {
-      description: "从地点库删除地点（会连带从各天行程中移除）。",
+      description:
+        "从地点库删除地点（会连带从各天行程中移除）。注意：status=locked（用户已锁定）的地点不可删除——请用户在界面上解锁。",
       inputSchema: RemovePlaceInput.shape,
     },
     async ({ placeId }) => {
       ctx.markMcpObserved();
       try {
-        await tripService.removePlace(placeId);
+        await tripService.removePlace(placeId, "agent");
         return json({ ok: true });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "lock_place",
+    {
+      description:
+        "把候选地点标记为 locked（已确认要去）。一般只有用户明确要求「就定这家/这个一定要去」时才由 agent 调用；通常锁定动作由用户在界面上完成。",
+      inputSchema: PlaceStatusInput.shape,
+    },
+    async ({ placeId }) => {
+      ctx.markMcpObserved();
+      try {
+        const place = await tripService.setPlaceStatus(placeId, "locked");
+        return json({ ok: true, place });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "unlock_place",
+    {
+      description:
+        "把已锁定的地点退回候选池（status=candidate）。用户说「先不定了/再想想」时调用。",
+      inputSchema: PlaceStatusInput.shape,
+    },
+    async ({ placeId }) => {
+      ctx.markMcpObserved();
+      try {
+        const place = await tripService.setPlaceStatus(placeId, "candidate");
+        return json({ ok: true, place });
       } catch (err) {
         return toolError(err);
       }
@@ -278,13 +328,14 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
   server.registerTool(
     "add_place_to_day",
     {
-      description: "把地点库中的地点安排到某一天（dayIndex 从 1 开始）。不传 position 则加到当天末尾。",
+      description:
+        "把地点安排到某一天（dayIndex 从 1 开始）。不传 position 则加到当天末尾；startTime 传该地点的开始时间（HH:MM）。**只应排 status=locked 的地点**（先 get_trip_context 确认）；候选请先提醒用户去界面锁定。排天时按酒店→景点的实际交通写 startTime，保证时间轴连贯。",
       inputSchema: AddPlaceToDayInput.shape,
     },
-    async ({ placeId, dayIndex, position }) => {
+    async ({ placeId, dayIndex, position, startTime }) => {
       ctx.markMcpObserved();
       try {
-        const result = await tripService.addEntry(tripId, placeId, dayIndex, position ?? null);
+        const result = await tripService.addEntry(tripId, placeId, dayIndex, position ?? null, startTime ?? null);
         return json({ ok: true, ...result });
       } catch (err) {
         return toolError(err);
@@ -408,8 +459,8 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_hotel_candidate",
     {
       description:
-        "添加酒店候选（location 必须来自 search_poi）。价格单位：元/晚。",
-      inputSchema: CreateHotelCandidateInputSchema.shape,
+        "添加酒店候选（location 必须来自 search_poi）。价格单位：元/晚。酒店地点同样进候选池（status=candidate），用户选定用 select_hotel。",
+      inputSchema: CreateHotelCandidateInputSchema.omit({ status: true }).shape,
     },
     async (input) => {
       ctx.markMcpObserved();
