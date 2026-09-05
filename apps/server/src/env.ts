@@ -14,7 +14,7 @@ export const env = {
     return required("DATABASE_URL");
   },
   get serverPort() {
-    return Number(process.env.SERVER_PORT ?? 18787);
+    return Number(process.env.SERVER_PORT ?? 18788);
   },
   /** agent 子进程访问 MCP 端点的基址。agent 与服务端同机，默认 loopback。 */
   get serverBaseUrl() {

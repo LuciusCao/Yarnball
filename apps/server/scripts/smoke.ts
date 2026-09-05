@@ -15,7 +15,7 @@
 
 import "dotenv/config";
 
-const BASE = process.env.SMOKE_BASE ?? "http://127.0.0.1:18787";
+const BASE = process.env.SMOKE_BASE ?? "http://127.0.0.1:18788";
 const FAKE_AGENT_COMMAND = process.execPath;
 const FAKE_AGENT_ARGS = [new URL("./fake-acp-agent.mjs", import.meta.url).pathname];
 
