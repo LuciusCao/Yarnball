@@ -134,7 +134,6 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
-  agents: () => request<{ agents: { id: string; label: string }[] }>("/agents"),
   chatSessions: (tripId: string) =>
     request<{ sessions: ChatSessionDto[] }>(`/trips/${tripId}/chat-sessions`),
   createChatSession: (tripId: string, agentId: string) =>

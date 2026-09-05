@@ -47,11 +47,21 @@ export function amapConfigured(): boolean {
   return getAmapServerKey() !== "" && getAmapJsKey() !== "";
 }
 
-/** GET /api/settings 的返回：生效值 + 各字段是否来自 DB 覆盖 */
+/**
+ * amapServerKey 是服务端密钥（POI 搜索 / 路线规划），永不下发浏览器：
+ * GET/PUT /api/settings 响应里统一掩码为固定串，配置态靠非空 + overridden 布尔判断，
+ * 前端拿不到明文也无法回显。写入侧（PUT body）仍接受明文。
+ * amapJsKey / amapJsSecret 保持明文返回属设计使然 —— 高德 JSAPI 2.0 强制 key + 安全密钥
+ * 在浏览器端初始化（经 /api/config 下发），本就藏不住，靠高德后台的域名白名单防盗用。
+ */
+const MASKED_SERVER_KEY = "********";
+
+/** GET /api/settings 的返回：生效值 + 各字段是否来自 DB 覆盖（amapServerKey 掩码） */
 export function getSettings(): SettingsDto {
+  const serverKey = getAmapServerKey();
   return {
     amapJsKey: getAmapJsKey(),
-    amapServerKey: getAmapServerKey(),
+    amapServerKey: serverKey === "" ? "" : MASKED_SERVER_KEY,
     amapJsSecret: getAmapJsSecret(),
     amapConfigured: amapConfigured(),
     overridden: {
