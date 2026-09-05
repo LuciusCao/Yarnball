@@ -287,7 +287,11 @@ export type CreateHotelCandidateInput = z.infer<
 
 // ---------- 设置与 Agent 注册 ----------
 
-/** 全局设置（GET /api/settings 返回生效值：DB 覆盖优先，env 兜底） */
+/**
+ * 全局设置（GET /api/settings 返回生效值：DB 覆盖优先，env 兜底）。
+ * amapServerKey 永不出明文：已配置时返回固定掩码 "********"（配置态看非空 + overridden），
+ * 未配置为空串；amapJsKey / amapJsSecret 因高德 JSAPI 必须在浏览器端初始化，明文返回属设计使然。
+ */
 export const SettingsDtoSchema = z.object({
   amapJsKey: z.string(),
   amapServerKey: z.string(),

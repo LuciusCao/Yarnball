@@ -32,19 +32,24 @@ Hono Server (apps/server, :18787)               │
 apps/server
   src/acp/        ACP 会话管理（sessionManager.ts ~750 行；permissions.ts 四层权限策略；
                   prompts.ts bootstrap prompt；terminal 协议支持）
-  src/mcp/        MCP 工具面：tools.ts（15 个工具 + scoped token 鉴权）、app.ts（HTTP 端点）
-  src/services/   tripService.ts（编排/顺路算法核心）、geo.ts（provider 抽象）、
+  src/mcp/        MCP 工具面：tools.ts（17 个工具 + scoped token 鉴权，含 lock_place/unlock_place）、
+                  app.ts（HTTP 端点）
+  src/services/   tripService.ts（编排/顺路算法核心）、geo.ts（provider 抽象）、settings.ts（全局设置：
+                  高德 key 的 DB 覆盖 + env 兜底，/api/settings 响应掩码 amapServerKey）、
                   routing.ts、mappers.ts（DB 行 → DTO）、chatStore.ts
   src/routes/     api.ts（REST + SSE 全部端点）
   src/db/         schema.ts（drizzle 表定义）、client.ts、migrate.ts
-  drizzle/        迁移 SQL（注意：该目录在 .gitignore 里，由 db:generate 本地生成）
+  drizzle/        迁移 SQL（随库提交；注意被 .gitignore 的是根 /drizzle/，apps/server/drizzle/ 正常跟踪）
   scripts/        fake-acp-agent.mjs（可脚本化假 agent）、smoke.ts（端到端冒烟）
 apps/web
-  src/features/   map（amapRenderer + maplibreRenderer 双渲染器）、chat、itinerary、
-                  hotel、dining、budget —— 按领域划分
+  src/features/   map（amapRenderer + maplibreRenderer 双渲染器）、chat、itinerary（时间轴）、
+                  candidates（候选池：candidate/locked 状态机）、settings（设置抽屉：密钥 + agent CLI）、
+                  budget —— 按领域划分
   src/pages/      TripListPage / TripPage / SharePage（/share/:token 只读分享）
   src/components/ui/  Radix + CVA 的 shadcn 风格基础组件
   src/stores/     tripStore.ts（zustand：bundle 全量快照 + SSE 增量合并）
+  src/lib/api.ts  新端点客户端契约单点（设置 / agent 注册 / 候选状态机 / 时间轴），
+                  既有端点在 src/api/client.ts，新代码不要往那里加
 packages/shared/src/domain.ts   枚举 / DTO / 请求体 / SSE 事件 / 格式化工具（zod schema）
 ```
 
