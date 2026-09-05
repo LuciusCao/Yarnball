@@ -8,6 +8,14 @@ import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { Switch } from "../../components/ui/switch";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../../components/ui/dialog";
+import {
   settingsApi,
   type AgentCliStatus,
   type AppSettings,
@@ -56,6 +64,8 @@ export function SettingsDrawer({
   const [detecting, setDetecting] = useState(false);
   const [form, setForm] = useState<AgentFormState | null>(null);
   const [savingAgent, setSavingAgent] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<AgentCliStatus | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   async function reload() {
     const [settingsRes, agentsRes] = await Promise.allSettled([
@@ -162,13 +172,18 @@ export function SettingsDrawer({
     }
   }
 
-  async function removeAgent(agent: AgentCliStatus) {
+  async function confirmRemoveAgent() {
+    if (!deleteTarget) return;
+    setDeleting(true);
     try {
-      await settingsApi.deleteAgent(agent.id);
-      setAgents((prev) => prev.filter((a) => a.id !== agent.id));
-      toast.success(`已删除「${agent.name}」`);
+      await settingsApi.deleteAgent(deleteTarget.id);
+      setAgents((prev) => prev.filter((a) => a.id !== deleteTarget.id));
+      toast.success(`已删除「${deleteTarget.name}」`);
+      setDeleteTarget(null);
     } catch (err) {
       toast.error("删除失败", { description: (err as Error).message });
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -182,6 +197,9 @@ export function SettingsDrawer({
             <DialogPrimitive.Title className="text-base font-semibold text-slate-900">
               设置
             </DialogPrimitive.Title>
+            <DialogPrimitive.Description className="sr-only">
+              管理高德地图密钥与 agent CLI
+            </DialogPrimitive.Description>
             <DialogPrimitive.Close className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600">
               <X className="size-4" />
             </DialogPrimitive.Close>
@@ -213,10 +231,22 @@ export function SettingsDrawer({
                           >
                             已配置 · 清除
                           </button>
+                        ) : cleared ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setClearedKeys((prev) => {
+                                const next = new Set(prev);
+                                next.delete(key);
+                                return next;
+                              })
+                            }
+                            className="text-xs text-red-400 underline-offset-2 transition-colors hover:text-slate-600 hover:underline"
+                          >
+                            保存后清除 · 撤销
+                          </button>
                         ) : (
-                          <span className={cn("text-xs", cleared ? "text-red-400" : "text-slate-300")}>
-                            {cleared ? "保存后清除" : "未配置"}
-                          </span>
+                          <span className="text-xs text-slate-300">未配置</span>
                         )}
                       </div>
                       <Input
@@ -312,7 +342,7 @@ export function SettingsDrawer({
                     <button
                       type="button"
                       aria-label={`删除 ${agent.name}`}
-                      onClick={() => removeAgent(agent)}
+                      onClick={() => setDeleteTarget(agent)}
                       className="rounded-lg p-1.5 text-slate-300 transition-colors hover:bg-red-50 hover:text-red-500"
                     >
                       <Trash2 className="size-3.5" />
@@ -407,6 +437,26 @@ export function SettingsDrawer({
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
+
+      {/* 删除 agent 确认（嵌套 Dialog，与行程删除确认同一模式） */}
+      <Dialog open={deleteTarget != null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>删除 agent？</DialogTitle>
+            <DialogDescription>
+              「{deleteTarget?.name}」（{deleteTarget?.command}）将从注册列表中移除。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={confirmRemoveAgent} disabled={deleting}>
+              {deleting ? "删除中…" : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DialogPrimitive.Root>
   );
 }
