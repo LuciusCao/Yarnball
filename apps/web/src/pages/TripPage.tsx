@@ -9,6 +9,8 @@ import {
   Link2,
   Lock,
   LockOpen,
+  Maximize2,
+  Minimize2,
   PanelRightClose,
   PanelRightOpen,
   Search,
@@ -23,7 +25,7 @@ import { api } from "../api/client";
 import { api as uxApi } from "../lib/api";
 import { useTripStore } from "../stores/tripStore";
 import { Badge } from "../components/ui/badge";
-import { MapCanvas, dayColor } from "../features/map/MapCanvas";
+import { MapCanvas } from "../features/map/MapCanvas";
 import { ItineraryPanel } from "../features/itinerary/ItineraryPanel";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import { CandidatesPanel } from "../features/candidates/CandidatesPanel";
@@ -67,6 +69,8 @@ export function TripPage() {
   const [budgetSummary, setBudgetSummary] = useState<BudgetSummary | null>(null);
   /** 面板形态：expanded（完整）/ hidden（收起到右上角的呼出钮） */
   const [panelMode, setPanelMode] = useState<"expanded" | "hidden">("expanded");
+  /** 左下 dock 面板放大态：跨面板切换保持（M15） */
+  const [dockMaximized, setDockMaximized] = useState(false);
 
   useEffect(() => {
     if (!tripId) return;
@@ -303,41 +307,9 @@ export function TripPage() {
         </Link>
       </header>
 
-      {/* 左上第二行：Day 筛选 chips */}
-      {days.length > 0 && (
-        <div className="panel-in absolute left-4 top-[60px] z-10 flex flex-wrap gap-1.5 pr-4">
-          <button
-            onClick={() => setVisibleDay(null)}
-            className={`glass rounded-full px-3 py-1 text-xs font-medium transition-all hover:scale-105 ${
-              visibleDay == null ? "!bg-slate-900/80 !border-transparent text-white" : "glass-text"
-            }`}
-          >
-            全部
-          </button>
-          {days.map((d) => {
-            const color = dayColor(d.dayIndex);
-            const active = visibleDay === d.dayIndex;
-            return (
-              <button
-                key={d.id}
-                onClick={() => setVisibleDay(active ? null : d.dayIndex)}
-                className="glass rounded-full px-3 py-1 text-xs font-medium shadow transition-all hover:scale-105"
-                style={
-                  active
-                    ? { background: color, color: "#fff", borderColor: "transparent" }
-                    : { color }
-                }
-              >
-                D{d.dayIndex}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {/* 左上（Day chips 下方）：选中地点信息卡（可操作：锁定/解锁/删除） ===== */}
+      {/* 左上（行程信息条下方）：选中地点信息卡（可操作：锁定/解锁/删除） ===== */}
       {selectedPlace && (
-        <div className="glass panel-in rounded-card absolute left-4 top-[104px] z-10 max-w-xs p-3.5 shadow-card">
+        <div className="glass panel-in rounded-card absolute left-4 top-[60px] z-10 max-w-xs p-3.5 shadow-card">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-slate-900">
@@ -474,14 +446,27 @@ export function TripPage() {
 
       {/* 左下：数据面板 dock（行程/候选池/添加），常驻一小条，点击展开 ===== */}
       {leftPanel != null && activeLeftMeta != null && (
-        <div className="glass-deep panel-in absolute bottom-[68px] left-4 z-10 flex h-[min(52vh,500px)] w-[360px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
+        <div
+          className={`glass-deep panel-in absolute bottom-[68px] left-4 z-10 flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
+            dockMaximized
+              ? "h-[min(65vh,760px)] w-[min(520px,calc(100vw-2rem))]"
+              : "h-[min(52vh,500px)] w-[360px]"
+          }`}
+        >
           <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
             <activeLeftMeta.Icon className="size-3.5 text-slate-500" />
             <span className="glass-text ml-1 text-xs font-semibold">{activeLeftMeta.label}</span>
             <button
+              onClick={() => setDockMaximized((v) => !v)}
+              title={dockMaximized ? "恢复面板大小" : "放大面板"}
+              className="ml-auto flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-600"
+            >
+              {dockMaximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+            </button>
+            <button
               onClick={() => setLeftPanel(null)}
               title="收起面板"
-              className="ml-auto flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-600"
+              className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-600"
             >
               ✕
             </button>
@@ -501,6 +486,8 @@ export function TripPage() {
                   selectedPlaceId={selectedPlaceId}
                   onSelectPlace={setSelectedPlaceId}
                   onDataChanged={() => void load(trip.id)}
+                  visibleDay={visibleDay}
+                  onVisibleDayChange={setVisibleDay}
                 />
               )}
               {leftPanel === "candidates" && (

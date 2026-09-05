@@ -29,6 +29,8 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  * - entry 之间显示交通段（模式图标 + 时长 + 距离），可手动切换 步行/驾车（M1 leg override 端点）
  * - 每天头部显示当晚住宿（多酒店，M10：取覆盖该天的已选定酒店）；
  *   换酒店日显示「离店 A → 入住 B」提示
+ * - Day 筛选 tabs（M15，TripPage 传入 visibleDay/onVisibleDayChange 时启用）：
+ *   面板顶部「全部/D1/D2…」，选中天过滤面板并同步地图聚焦
  * - readOnly（分享页）：隐藏一切编辑操作
  */
 
@@ -40,6 +42,12 @@ interface ItineraryPanelProps {
   onDataChanged: () => void;
   /** 只读模式（分享页）：不渲染编辑按钮与交通段切换 */
   readOnly?: boolean;
+  /**
+   * Day 筛选 tabs（M15，仅 TripPage 传入）：面板顶部渲染「全部/D1/D2…」，
+   * 选中后过滤面板只显示该天，并回传 TripPage 让地图聚焦同一天（原地图浮条的状态通道）
+   */
+  visibleDay?: number | null;
+  onVisibleDayChange?: (dayIndex: number | null) => void;
 }
 
 export function ItineraryPanel({
@@ -49,6 +57,8 @@ export function ItineraryPanel({
   onSelectPlace,
   onDataChanged,
   readOnly = false,
+  visibleDay = null,
+  onVisibleDayChange,
 }: ItineraryPanelProps) {
   const [busy, setBusy] = useState(false);
   const placeById = new Map(bundle.places.map((p) => [p.id, p]));
@@ -158,14 +168,52 @@ export function ItineraryPanel({
     }
   }
 
+  /** Day tabs（M15）：选中某天后面板只显示该天；地图聚焦由 TripPage 经 visibleDay 同通道驱动 */
+  const dayTabsEnabled = onVisibleDayChange != null;
+  const shownDays =
+    dayTabsEnabled && visibleDay != null
+      ? sortedDays.filter((d) => d.dayIndex === visibleDay)
+      : sortedDays;
+
   return (
     <div className="flex h-full flex-col overflow-y-auto">
+      {/* Day 筛选 tabs（M15）：替代原地图左上浮条；选中天 = 面板过滤 + 地图聚焦 */}
+      {dayTabsEnabled && sortedDays.length > 0 && (
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-1.5 border-b border-slate-900/8 bg-white/80 px-3 py-2 backdrop-blur-sm">
+          <button
+            onClick={() => onVisibleDayChange(null)}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              visibleDay == null
+                ? "bg-slate-900/85 text-white"
+                : "bg-slate-900/6 text-slate-500 hover:bg-slate-900/12 hover:text-slate-700"
+            }`}
+          >
+            全部
+          </button>
+          {sortedDays.map((d) => {
+            const color = DAY_COLORS[(d.dayIndex - 1) % DAY_COLORS.length];
+            const active = visibleDay === d.dayIndex;
+            return (
+              <button
+                key={d.id}
+                onClick={() => onVisibleDayChange(active ? null : d.dayIndex)}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                  active ? "text-white" : "bg-slate-900/6 hover:bg-slate-900/12"
+                }`}
+                style={active ? { background: color } : { color }}
+              >
+                D{d.dayIndex}
+              </button>
+            );
+          })}
+        </div>
+      )}
       {sortedDays.length === 0 && (
         <div className="p-6 text-center text-sm text-slate-400">
           还没有行程。让 agent 帮你排，或在「搜索添加」里手动加地点。
         </div>
       )}
-      {sortedDays.map((day) => {
+      {shownDays.map((day) => {
         const color = DAY_COLORS[(day.dayIndex - 1) % DAY_COLORS.length];
         const entries = dayEntries.get(day.id) ?? [];
         const timeline = buildDayTimeline(entries, placeById, legAfter);
