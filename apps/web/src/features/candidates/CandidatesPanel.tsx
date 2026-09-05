@@ -1,6 +1,8 @@
 import { useState } from "react";
 import {
   BedDouble,
+  CalendarCheck,
+  Clock,
   Landmark,
   Lock,
   LockOpen,
@@ -17,6 +19,12 @@ import { Badge } from "../../components/ui/badge";
 import { candidatesApi } from "./api";
 import { HotelStayRangePicker } from "./HotelStayRangePicker";
 import {
+  BOOKING_STATUS_META,
+  bookingStatusOf,
+  nextBookingStatus,
+  openingHoursOf,
+} from "./booking";
+import {
   getSelectedStays,
   largestFreeSpan,
   type HotelStayRange,
@@ -27,6 +35,8 @@ import {
  * 按 酒店/景点/美食/其他 分组；每项可锁定（=确认要去，锁定后才排日程）、删除；
  * 酒店组支持选定多家酒店（M10 多酒店）：每家已选定酒店带 入住第N天/离店第M天 选择器，
  * 区间互相冲突的选项禁用并提示（服务端同样校验，见 M9 契约）。
+ * 预订状态（M11）：每项显示 无需预订/待预订/已预订 徽章，locked 地点可点选流转；
+ * 待预订的锁定地点卡片高亮并在顶部汇总提醒。营业时间（openingHours）有值即展示。
  * 数据刷新：操作后走 SSE bundle 全量快照 + 主动 load 兜底，不做本地增量。
  */
 
@@ -86,6 +96,19 @@ export function CandidatesPanel({
     setBusy(true);
     try {
       await uxApi.setPlaceStatus(place.id, next);
+      onDataChanged();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 预订状态点选流转（M11：PATCH /api/places/:id 带 bookingStatus）：无需预订 → 待预订 → 已预订 → 无需预订；仅 locked 地点可操作 */
+  async function cycleBooking(place: PlaceDto) {
+    setBusy(true);
+    try {
+      await uxApi.updatePlace(place.id, { bookingStatus: nextBookingStatus(bookingStatusOf(place)) });
       onDataChanged();
     } catch (err) {
       toast.error((err as Error).message);
@@ -156,9 +179,19 @@ export function CandidatesPanel({
   }
 
   const totalCount = GROUP_ORDER.reduce((n, key) => n + grouped[key].length, 0);
+  /** 待预订的锁定地点（M11）：顶部汇总提醒 + 卡片高亮 */
+  const pendingLockedCount = bundle.places.filter(
+    (p) => p.status === "locked" && bookingStatusOf(p) === "pending",
+  ).length;
 
   return (
     <div className="h-full overflow-y-auto p-3">
+      {pendingLockedCount > 0 && (
+        <div className="mb-3 flex items-center gap-1.5 rounded-xl border border-orange-300/70 bg-orange-100/60 px-3 py-2 text-xs text-orange-700">
+          <CalendarCheck className="size-3.5 shrink-0" />
+          有 {pendingLockedCount} 个锁定地点待预订，出行前记得完成预订（点徽章可标记已预订）。
+        </div>
+      )}
       {totalCount === 0 && (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white/40 py-8 text-center">
           <p className="text-xs text-slate-400">
@@ -219,6 +252,9 @@ export function CandidatesPanel({
             <div className="space-y-2">
               {places.map((place) => {
                 const locked = place.status === "locked";
+                const booking = bookingStatusOf(place);
+                const pendingLocked = locked && booking === "pending";
+                const openingHours = openingHoursOf(place);
                 const hotelCand = hotelCandByPlaceId.get(place.id);
                 const stay = hotelCand ? stayByCandidateId.get(hotelCand.id) : undefined;
                 const isSelectedHotel = stay != null;
@@ -237,9 +273,11 @@ export function CandidatesPanel({
                         ? "border-blue-300 bg-blue-50/60 ring-1 ring-blue-200"
                         : isSelectedHotel
                           ? "border-red-300 bg-red-100/40 ring-1 ring-red-200"
-                          : locked
-                            ? "border-amber-300/70 bg-amber-50/50"
-                            : "border-slate-900/10 bg-white/60"
+                          : pendingLocked
+                            ? "border-orange-400 bg-orange-50/70 ring-1 ring-orange-300"
+                            : locked
+                              ? "border-amber-300/70 bg-amber-50/50"
+                              : "border-slate-900/10 bg-white/60"
                     }`}
                   >
                     <div className="flex items-start gap-2">
@@ -257,8 +295,43 @@ export function CandidatesPanel({
                               已锁定
                             </Badge>
                           )}
+                          {/* 预订状态徽章（M11）：locked 地点可点选流转；候选态仅展示 */}
+                          {locked ? (
+                            <button
+                              title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
+                              disabled={busy}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void cycleBooking(place);
+                              }}
+                              className="shrink-0 disabled:opacity-50"
+                            >
+                              <Badge
+                                variant={BOOKING_STATUS_META[booking].badgeVariant}
+                                className="cursor-pointer"
+                              >
+                                <CalendarCheck className="size-3" />
+                                {BOOKING_STATUS_META[booking].label}
+                              </Badge>
+                            </button>
+                          ) : (
+                            booking !== "none" && (
+                              <Badge
+                                variant={BOOKING_STATUS_META[booking].badgeVariant}
+                                className="shrink-0"
+                              >
+                                {BOOKING_STATUS_META[booking].label}
+                              </Badge>
+                            )
+                          )}
                         </div>
                         <p className="truncate text-[11px] text-slate-400">{place.address ?? ""}</p>
+                        {openingHours && (
+                          <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-400">
+                            <Clock className="size-3 shrink-0" />
+                            {openingHours}
+                          </p>
+                        )}
                         {price != null && (
                           <p className="mt-1 text-sm font-semibold text-orange-600">
                             {formatMoney(price, cur)}

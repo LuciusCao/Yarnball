@@ -6,6 +6,11 @@ import { toast } from "sonner";
 import { AlertTriangle, Brain, CalendarClock, Check, Clock, ListChecks, Loader2, SendHorizontal, ShieldCheck, Unplug, X } from "lucide-react";
 import { api } from "../../api/client";
 import { api as libApi } from "../../lib/api";
+import {
+  TRANSIT_KIND_META,
+  transitKindOf,
+  transitRouteText,
+} from "../itinerary/transit";
 import { Button } from "../../components/ui/button";
 import { Textarea, Select } from "../../components/ui/input";
 import { useChatStore } from "../../stores/tripStore";
@@ -96,8 +101,9 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   }
 
   /**
-   * 「规划每日行程」引导：拉当前 bundle，把已锁定/候选地点摘要组装成预制指令，
-   * 走现有发送链路发给 agent。place.status 来自 shared 契约：locked=必排，candidate=按顺路取舍。
+   * 「规划每日行程」引导：拉当前 bundle，把已锁定/候选地点摘要 + 区域聚类建议（M11）+
+   * 大交通锚点组装成预制指令，走现有发送链路发给 agent，提示按区域成片分天。
+   * place.status 来自 shared 契约：locked=必排，candidate=按顺路取舍。
    */
   async function planDays() {
     if (!activeSession) return;
@@ -114,13 +120,55 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
         list
           .map((p) => `${p.name}${p.durationMin ? `（约${p.durationMin}分钟）` : ""}`)
           .join("、") || "（无）";
-      const text = [
-        `请帮我规划这次「${bundle.trip.destinationCity}」之行的每日行程。`,
+
+      // 区域聚类建议（M11：GET /api/trips/:tripId/suggest-clusters，lib/api 单点）；失败时静默降级，不阻塞规划引导
+      let clusterLines: string[] = [];
+      try {
+        const { suggestion } = await libApi.suggestDayClusters(trip.id);
+        clusterLines = suggestion.clusters
+          .map((c) => {
+            const names = c.places.map((p) => p.name).join("、");
+            if (!names) return null;
+            const day = c.suggestedDayIndex != null ? `（建议排 Day ${c.suggestedDayIndex}）` : "";
+            return `区域${c.clusterIndex + 1}${day}：${names}`;
+          })
+          .filter((l): l is string => l != null);
+      } catch {
+        // 聚类端点不可用时忽略，提示 agent 自行聚类
+      }
+
+      // 大交通锚点（M11）：抵达/离开/城市间时刻固定，排程须对齐（类别按所处天推断）
+      const dayIndexById = new Map(bundle.days.map((d) => [d.id, d.dayIndex]));
+      const placeById = new Map(bundle.places.map((p) => [p.id, p]));
+      const totalDays = bundle.days.length;
+      const anchorLines = bundle.entries
+        .filter((e) => e.entryType === "transit")
+        .map((e) => {
+          const kind = TRANSIT_KIND_META[transitKindOf(e, dayIndexById.get(e.dayId) ?? 0, totalDays) ?? "intercity"].label;
+          const times = [e.departTime, e.arriveTime].filter(Boolean).join("–");
+          const route = transitRouteText(e, placeById) ?? "";
+          return `Day ${dayIndexById.get(e.dayId) ?? "?"} ${times ? `${times} ` : ""}${kind}${route ? ` ${route}` : ""}`;
+        });
+
+      const lines = [
+        `请帮我规划这次「${bundle.trip.destinationCity}」之行的每日行程，按区域成片分天：同一片区的地点尽量排在同一天，减少跨区折返。`,
         `已锁定（必须排入）：${fmt(locked)}`,
         `候选地点（按顺路和体验取舍）：${fmt(candidates)}`,
-        `当前已有 ${bundle.days.length} 天日程框架。要求：每天从 09:00 开始，为每个地点写入 startTime，交通段自动计算；排完后简述安排思路。`,
-      ].join("\n");
-      await api.sendPrompt(activeSession.id, text);
+      ];
+      if (clusterLines.length > 0) {
+        lines.push(`区域聚类建议（按地理位置分组，供分天参考）：\n${clusterLines.join("\n")}`);
+      } else {
+        lines.push("请先把上述地点按地理位置聚类，再按区域成片分天。");
+      }
+      if (anchorLines.length > 0) {
+        lines.push(
+          `大交通锚点（时刻固定不可变动，排程须对齐：到达日从落地时间起算，离开日预留前往机场/车站的时间）：\n${anchorLines.join("\n")}`,
+        );
+      }
+      lines.push(
+        `当前已有 ${bundle.days.length} 天日程框架。要求：每天从 09:00 开始（有大交通锚点的天以锚点为准），为每个地点写入 startTime，交通段自动计算；排完后简述安排思路。`,
+      );
+      await api.sendPrompt(activeSession.id, lines.join("\n"));
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
