@@ -97,7 +97,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
   /**
    * 「规划每日行程」引导：拉当前 bundle，把已锁定/候选地点摘要组装成预制指令，
-   * 走现有发送链路发给 agent。place.status 由 M1 引入，合入前防御性按候选处理。
+   * 走现有发送链路发给 agent。place.status 来自 shared 契约：locked=必排，candidate=按顺路取舍。
    */
   async function planDays() {
     if (!activeSession) return;
