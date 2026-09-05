@@ -42,20 +42,37 @@ const uuid = () => randomUUID();
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
-/** 并发限流器：同一时刻最多 concurrency 个任务在执行，其余排队（限制外部路由 API 并发，礼貌流量） */
-function createLimiter(concurrency: number) {
+/**
+ * 并发限流器：同一时刻最多 concurrency 个任务在执行，其余排队。
+ * minIntervalMs > 0 时叠加漏桶限速：任务启动间隔不小于该值——免费 OSRM demo 服按速率限流（429），
+ * 只限并发不够（并发 2 时秒级峰值仍可能超窗口），必须把请求速率本身压下来。
+ */
+function createLimiter(concurrency: number, minIntervalMs = 0) {
   let active = 0;
+  let nextStartAt = 0;
   const queue: Array<() => void> = [];
-  return async function limit<T>(task: () => Promise<T>): Promise<T> {
-    if (active >= concurrency) {
-      await new Promise<void>((resolve) => queue.push(resolve));
+  // 启动队首任务（受并发数 + 最小启动间隔双重约束）；间隔未到位的任务先占住并发槽位再延迟启动，
+  // 保证任何时刻窗口内的请求速率都不超限
+  const pump = () => {
+    while (queue.length > 0 && active < concurrency) {
+      const delay = Math.max(0, nextStartAt - Date.now());
+      const start = queue.shift()!;
+      active++;
+      nextStartAt = Date.now() + delay + minIntervalMs;
+      if (delay > 0) setTimeout(start, delay);
+      else start();
     }
-    active++;
+  };
+  return async function limit<T>(task: () => Promise<T>): Promise<T> {
+    await new Promise<void>((resolve) => {
+      queue.push(resolve);
+      pump();
+    });
     try {
       return await task();
     } finally {
       active--;
-      queue.shift()?.();
+      pump();
     }
   };
 }
@@ -90,8 +107,15 @@ function transitDurationS(departTime: string | null, arriveTime: string | null):
 }
 
 export class TripService {
-  /** 路由调用的全局限流（跨天/跨段共享）：选定酒店全量重算时多天的路线请求都经它排队 */
-  private routeLimit = createLimiter(5);
+  /**
+   * 路由调用的全局限流（跨天/跨段共享），按 provider 分档：
+   * 免费 OSRM demo 服按速率限流（429），并发 2 + 最小启动间隔 500ms（≤2 次/秒，实测 2.5 次/秒仍偶发 429）；
+   * 高德付费 API 无此约束，保持并发 5。
+   */
+  private routeLimits: Record<GeoProviderName, ReturnType<typeof createLimiter>> = {
+    amap: createLimiter(5),
+    osm: createLimiter(2, 500),
+  };
 
   constructor(
     private db: Db,
@@ -629,7 +653,7 @@ export class TripService {
       });
     }
     await this.touchTrip(entry.tripId);
-    // 跨天移动时两天都要重算，并行（外部路由并发由 routeLimit 收口）
+    // 跨天移动时两天都要重算，并行（外部路由并发由 routeLimits 按 provider 收口）
     await Promise.all([
       this.recalcDayLegs(entry.tripId, day.id),
       day.id !== entry.dayId ? this.recalcDayLegs(entry.tripId, entry.dayId) : Promise.resolve(),
@@ -721,6 +745,7 @@ export class TripService {
   async recalcDayLegs(tripId: string, dayId: string) {
     const [trip] = await this.db.select().from(schema.trips).where(eq(schema.trips.id, tripId));
     const geo = getProvider(trip?.geoProvider ?? "osm");
+    const routeLimit = this.routeLimits[geo.name];
     const [day] = await this.db.select().from(schema.days).where(eq(schema.days.id, dayId));
     const entries = await this.db
       .select()
@@ -838,11 +863,19 @@ export class TripService {
           polyline = [a, b];
         } else {
           mode = override ?? (haversineM(a, b) < 2000 ? "walk" : "drive");
+          // 失败在限流器内退避重试一次（免费 OSRM 服按速率限流返回 429，需等限流窗口过去再试），
+          // 仍失败才降级直线估算并告警（可观测：此前静默降级导致 polyline=null 无人察觉）
           let result;
           try {
-            result = await this.routeLimit(() => geo.route(a, b, mode, trip?.destinationCity));
+            result = await routeLimit(() => geo.route(a, b, mode, trip?.destinationCity));
           } catch {
-            result = fallbackRoute(a, b, mode);
+            try {
+              await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
+              result = await routeLimit(() => geo.route(a, b, mode, trip?.destinationCity));
+            } catch (err) {
+              console.warn(`[routing] route(${mode}) 重试仍失败，降级直线估算:`, (err as Error).message);
+              result = fallbackRoute(a, b, mode);
+            }
           }
           mode = override ?? result.mode;
           distanceM = result.distanceM;
@@ -889,7 +922,7 @@ export class TripService {
     await this.publishBundle(leg.tripId);
   }
 
-  /** 行程全部天的 legs 重算（换酒店/删除酒店地点用）。多天并行，外部路由并发由 routeLimit 全局收口 */
+  /** 行程全部天的 legs 重算（换酒店/删除酒店地点用）。多天并行，外部路由并发由 routeLimits 全局收口 */
   private async recalcAllDayLegs(tripId: string) {
     const dayRows = await this.db
       .select({ id: schema.days.id })
