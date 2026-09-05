@@ -40,6 +40,18 @@ export type Actor = (typeof ACTORS)[number];
 export const PLACE_STATUSES = ["candidate", "locked"] as const;
 export type PlaceStatus = (typeof PLACE_STATUSES)[number];
 
+/**
+ * entry 类型：place=常规地点节点；transit=大交通节点（航班/高铁/城际移动）。
+ * transit 不建新表：复用 entries 行，起讫点挂在 fromPlaceId/toPlaceId（行程内地点，走真实坐标）
+ * 或 fromName/toName（自由文本，如「萧山机场」「家」）。未来跨城市移动同样是 transit entry。
+ */
+export const ENTRY_TYPES = ["place", "transit"] as const;
+export type EntryType = (typeof ENTRY_TYPES)[number];
+
+/** 预订状态流转：none=无需/未考虑预订 → pending=待预订 → booked=已预订。以用户在界面上的标记为准 */
+export const BOOKING_STATUSES = ["none", "pending", "booked"] as const;
+export type BookingStatus = (typeof BOOKING_STATUSES)[number];
+
 /** 地理服务 provider：amap（国内，需 key）| osm（海外，零 key） */
 export const GEO_PROVIDERS = ["amap", "osm"] as const;
 export type GeoProviderName = (typeof GEO_PROVIDERS)[number];
@@ -150,6 +162,10 @@ export const PlaceDtoSchema = z.object({
   priceCny: z.number().nullable(),
   /** 预约方式（平台/电话/网站 + 提前天数建议） */
   bookingInfo: z.string().nullable(),
+  /** 营业时间（v1 自由文本，如「09:00-17:00 周一闭馆」）；排天硬约束依据 */
+  openingHours: z.string().nullable(),
+  /** 预订状态流转，见 BOOKING_STATUSES */
+  bookingStatus: z.enum(BOOKING_STATUSES),
   /** 候选（candidate）或已锁定（locked），见 PLACE_STATUSES */
   status: z.enum(PLACE_STATUSES),
   createdBy: z.enum(ACTORS),
@@ -161,10 +177,27 @@ export const EntryDtoSchema = z.object({
   id: z.string(),
   dayId: z.string(),
   tripId: z.string(),
-  placeId: z.string(),
+  entryType: z.enum(ENTRY_TYPES),
+  /** entryType=place 时非空；transit 可为 null（纯自由文本起讫点） */
+  placeId: z.string().nullable(),
   position: z.number(),
   startTime: z.string().nullable(),
   note: z.string().nullable(),
+  /** 单条停留时长覆盖（分钟）；null = 用 place.durationMin */
+  durationMin: z.number().nullable(),
+  // ---- transit entry 字段（entryType=transit 时有意义） ----
+  /** 出发时间（HH:MM）；到达日排天容量约束依据 */
+  departTime: z.string().nullable(),
+  /** 到达时间（HH:MM） */
+  arriveTime: z.string().nullable(),
+  /** 起点：行程内地点（走真实坐标参与路线锚定） */
+  fromPlaceId: z.string().nullable(),
+  /** 讫点：行程内地点 */
+  toPlaceId: z.string().nullable(),
+  /** 起点自由文本（fromPlaceId 为空时展示用，如「家」「杭州东站」） */
+  fromName: z.string().nullable(),
+  /** 讫点自由文本 */
+  toName: z.string().nullable(),
 });
 export type EntryDto = z.infer<typeof EntryDtoSchema>;
 
@@ -247,6 +280,10 @@ export const CreatePlaceInputSchema = z.object({
   durationMin: z.number().int().min(0).max(24 * 60).nullable().optional(),
   priceCny: z.number().min(0).nullable().optional(),
   bookingInfo: z.string().max(2000).nullable().optional(),
+  /** 营业时间（v1 自由文本，如「09:00-17:00 周一闭馆」） */
+  openingHours: z.string().max(200).nullable().optional(),
+  /** 预订状态；agent 可填（如已核实可订），但以用户在界面上的标记为准 */
+  bookingStatus: z.enum(BOOKING_STATUSES).optional(),
   /** 显式指定初始状态；缺省由服务端按创建者决定（human→locked，agent→candidate） */
   status: z.enum(PLACE_STATUSES).optional(),
 });
@@ -261,18 +298,61 @@ export const SetPlaceStatusInputSchema = z.object({
 });
 export type SetPlaceStatusInput = z.infer<typeof SetPlaceStatusInputSchema>;
 
-export const AddEntryInputSchema = z.object({
-  placeId: z.string(),
-  dayIndex: z.number().int().min(1),
-  position: z.number().int().min(0).nullable().optional(),
-  /** 可选开始时间（HH:MM，24 小时制） */
-  startTime: z
-    .string()
-    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
-    .nullable()
-    .optional(),
-});
+/** HH:MM（24 小时制） */
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/**
+ * 排入某天（POST /api/trips/:tripId/entries）。
+ * entryType=place（默认）：placeId 必填。
+ * entryType=transit（大交通：航班/高铁/城际移动）：placeId 不用传；
+ * 起讫点各给 fromPlaceId（行程内地点，走真实坐标）或 fromName（自由文本）之一，讫点同理。
+ */
+export const AddEntryInputSchema = z
+  .object({
+    entryType: z.enum(ENTRY_TYPES).default("place"),
+    placeId: z.string().nullable().optional(),
+    dayIndex: z.number().int().min(1),
+    position: z.number().int().min(0).nullable().optional(),
+    /** 可选开始时间（HH:MM，24 小时制）；transit 缺省取 departTime */
+    startTime: z.string().regex(HHMM).nullable().optional(),
+    note: z.string().max(2000).nullable().optional(),
+    // ---- transit 字段 ----
+    departTime: z.string().regex(HHMM).nullable().optional(),
+    arriveTime: z.string().regex(HHMM).nullable().optional(),
+    fromPlaceId: z.string().nullable().optional(),
+    toPlaceId: z.string().nullable().optional(),
+    fromName: z.string().min(1).max(120).nullable().optional(),
+    toName: z.string().min(1).max(120).nullable().optional(),
+  })
+  .refine((v) => v.entryType !== "place" || !!v.placeId, {
+    message: "entryType=place 时必须提供 placeId",
+  })
+  .refine((v) => v.entryType !== "transit" || !!(v.fromPlaceId || v.fromName), {
+    message: "transit entry 需要 fromPlaceId 或 fromName（起点）",
+  })
+  .refine((v) => v.entryType !== "transit" || !!(v.toPlaceId || v.toName), {
+    message: "transit entry 需要 toPlaceId 或 toName（讫点）",
+  });
 export type AddEntryInput = z.infer<typeof AddEntryInputSchema>;
+
+/**
+ * 编辑 entry（PATCH /api/entries/:id）。
+ * startTime/durationMin/note 对两类 entry 通用；transit 时间字段仅 entryType=transit 可改。
+ * fromPlaceId/toPlaceId 传 null = 清除地点引用（退回纯文本）；fromName/toName 传 null = 清除文本。
+ */
+export const UpdateEntryInputSchema = z.object({
+  startTime: z.string().regex(HHMM).nullable().optional(),
+  note: z.string().max(2000).nullable().optional(),
+  /** 单条停留时长覆盖（分钟）；null = 恢复用 place.durationMin */
+  durationMin: z.number().int().min(0).max(24 * 60).nullable().optional(),
+  departTime: z.string().regex(HHMM).nullable().optional(),
+  arriveTime: z.string().regex(HHMM).nullable().optional(),
+  fromPlaceId: z.string().nullable().optional(),
+  toPlaceId: z.string().nullable().optional(),
+  fromName: z.string().min(1).max(120).nullable().optional(),
+  toName: z.string().min(1).max(120).nullable().optional(),
+});
+export type UpdateEntryInput = z.infer<typeof UpdateEntryInputSchema>;
 
 /** 手动覆盖交通段方式（PATCH /api/legs/:id/mode）；mode=null 清除覆盖恢复自动计算 */
 export const SetLegModeInputSchema = z.object({
@@ -284,6 +364,36 @@ export const ReorderDayInputSchema = z.object({
   entryIds: z.array(z.string()).min(1),
 });
 export type ReorderDayInput = z.infer<typeof ReorderDayInputSchema>;
+
+// ---------- 区域聚类（suggest_day_clusters / GET /api/trips/:tripId/suggest-clusters） ----------
+
+/** 一个地理聚类：未排期地点按位置聚成的一片区域 + 建议排入的天 */
+export const DayClusterSchema = z.object({
+  clusterIndex: z.number(),
+  places: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      category: z.enum(PLACE_CATEGORIES),
+      location: LngLatSchema,
+    }),
+  ),
+  /** 簇质心（成员坐标均值） */
+  centroid: LngLatSchema,
+  /** 建议排入的天（1-based，按各天当前负载分配，少的优先）；行程无天信息时为 null */
+  suggestedDayIndex: z.number().nullable(),
+});
+export type DayCluster = z.infer<typeof DayClusterSchema>;
+
+/** 区域聚类建议（只建议不落库）：把未排期的非酒店地点按地理聚成 1-4 片，建议每天一片 */
+export const SuggestDayClustersResultSchema = z.object({
+  clusters: z.array(DayClusterSchema),
+  /** 参与聚类的未排期地点数（不含酒店、不含已排入某天行程的） */
+  unscheduledCount: z.number(),
+  dayCount: z.number(),
+  note: z.string().optional(),
+});
+export type SuggestDayClustersResult = z.infer<typeof SuggestDayClustersResultSchema>;
 
 export const CreateHotelCandidateInputSchema = CreatePlaceInputSchema.extend({
   pricePerNight: z.number().min(0).nullable().optional(),

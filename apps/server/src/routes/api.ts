@@ -15,6 +15,7 @@ import {
   SetPlaceStatusInputSchema,
   UnselectHotelInputSchema,
   UpdateAgentInputSchema,
+  UpdateEntryInputSchema,
   UpdatePlaceInputSchema,
   UpdateSettingsInputSchema,
   type AgentAvailability,
@@ -160,16 +161,17 @@ export function createApi(
 
   // ---------- entries ----------
 
+  /** 排入某天：entryType=place（默认，placeId 必填）或 transit（大交通节点，起讫点 fromPlaceId/fromName + toPlaceId/toName） */
   api.post("/trips/:tripId/entries", async (c) => {
     const input = AddEntryInputSchema.parse(await c.req.json());
-    const result = await tripService.addEntry(
-      c.req.param("tripId"),
-      input.placeId,
-      input.dayIndex,
-      input.position ?? null,
-      input.startTime ?? null,
-    );
+    const result = await tripService.addEntry(c.req.param("tripId"), input);
     return c.json(result, 201);
+  });
+
+  /** 编辑 entry：startTime/durationMin/note 通用；departTime/arriveTime/起讫点仅 transit entry */
+  api.patch("/entries/:entryId", async (c) => {
+    const input = UpdateEntryInputSchema.parse(await c.req.json());
+    return c.json({ entry: await tripService.updateEntry(c.req.param("entryId"), input) });
   });
 
   api.delete("/entries/:entryId", async (c) => {
@@ -241,6 +243,11 @@ export function createApi(
 
   api.get("/trips/:tripId/suggest-order", async (c) =>
     c.json({ suggestion: await tripService.suggestDayOrder(c.req.param("tripId"), Number(c.req.query("dayIndex"))) }),
+  );
+
+  /** 区域聚类建议（只建议不落库）：未排期地点按地理聚成 1-4 片，建议每天一片 */
+  api.get("/trips/:tripId/suggest-clusters", async (c) =>
+    c.json({ suggestion: await tripService.suggestDayClusters(c.req.param("tripId")) }),
   );
 
   // ---------- 预算 ----------

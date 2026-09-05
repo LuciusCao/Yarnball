@@ -4,18 +4,23 @@ import {
   asc,
   eq,
   inArray,
+  or,
   sql,
 } from "drizzle-orm";
 import type {
   Actor,
+  AddEntryInput,
   CreateHotelCandidateInput,
   CreatePlaceInput,
   CreateTripInput,
+  DayCluster,
   GeoProviderName,
   LngLat,
   PlaceStatus,
+  SuggestDayClustersResult,
   TransportMode,
   TripBundle,
+  UpdateEntryInput,
   UpdatePlaceInput,
 } from "@yarnball/shared";
 import { TRIPS_CHANNEL, tripChannel, type EventBus } from "../events.js";
@@ -30,7 +35,7 @@ import {
   toTripDto,
 } from "./mappers.js";
 import { amap, currencyForCountry, fallbackRoute, getProvider, haversineM, osm } from "./geo.js";
-import { insertionIncrements, optimizeLoopOrder, optimizeOrder, optimizePathOrder, orderTotalDuration } from "./routing.js";
+import { insertionIncrements, kMedoids, optimizeLoopOrder, optimizeOrder, optimizePathOrder, orderTotalDuration } from "./routing.js";
 import { amapConfigured } from "./settings.js";
 
 const uuid = () => randomUUID();
@@ -51,6 +56,20 @@ const AGENT_PLACE_MAX_CITY_DIST_KM: Record<GeoProviderName, number> = {
   amap: 150,
   osm: 300, // 海外城市间距大（悉尼→蓝山 ~110km，墨尔本→大洋路 ~230km）
 };
+
+/** transit entry 大交通段时长：depart/arrive 时刻差（跨零点按次日到达计）；缺任一为 null */
+function transitDurationS(departTime: string | null, arriveTime: string | null): number | null {
+  const parse = (t: string | null) => {
+    if (!t) return null;
+    const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(t);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  };
+  const d = parse(departTime);
+  const a = parse(arriveTime);
+  if (d == null || a == null) return null;
+  const diff = a >= d ? a - d : a + 24 * 60 - d;
+  return diff * 60;
+}
 
 export class TripService {
   constructor(
@@ -255,6 +274,8 @@ export class TripService {
         durationMin: input.durationMin ?? null,
         priceCny: input.priceCny != null ? Math.round(input.priceCny) : null,
         bookingInfo: input.bookingInfo ?? null,
+        openingHours: input.openingHours ?? null,
+        bookingStatus: input.bookingStatus ?? "none",
         createdBy: actor,
         status: input.status ?? (actor === "human" ? "locked" : "candidate"),
       })
@@ -310,6 +331,8 @@ export class TripService {
     if (input.priceCny !== undefined)
       patch.priceCny = input.priceCny != null ? Math.round(input.priceCny) : null;
     if (input.bookingInfo !== undefined) patch.bookingInfo = input.bookingInfo ?? null;
+    if (input.openingHours !== undefined) patch.openingHours = input.openingHours ?? null;
+    if (input.bookingStatus !== undefined) patch.bookingStatus = input.bookingStatus;
     if (input.status !== undefined) patch.status = input.status;
     const [row] = await this.db.update(schema.places).set(patch).where(eq(schema.places.id, placeId)).returning();
     await this.touchTrip(existing.tripId);
@@ -328,11 +351,17 @@ export class TripService {
       .from(schema.hotelCandidates)
       .where(eq(schema.hotelCandidates.placeId, placeId));
     const wasSelectedHotel = linkedHotels.some((h) => h.selected);
-    // 级联删 entries/legs（FK on delete cascade），受影响的天需要重算 legs
+    // 级联删 entries/legs（placeId 引用 FK on delete cascade；transit 的 from/toPlaceId 引用 set null），受影响的天需要重算 legs
     const affectedDays = await this.db
       .selectDistinct({ dayId: schema.entries.dayId })
       .from(schema.entries)
-      .where(eq(schema.entries.placeId, placeId));
+      .where(
+        or(
+          eq(schema.entries.placeId, placeId),
+          eq(schema.entries.fromPlaceId, placeId),
+          eq(schema.entries.toPlaceId, placeId),
+        ),
+      );
     await this.db.delete(schema.places).where(eq(schema.places.id, placeId));
     await this.touchTrip(tripId);
     if (wasSelectedHotel) {
@@ -366,44 +395,157 @@ export class TripService {
     return race;
   }
 
-  async addEntry(
-    tripId: string,
-    placeId: string,
-    dayIndex: number,
-    position: number | null,
-    startTime?: string | null,
-  ) {
+  /**
+   * 排入某天。entryType=place（默认）：placeId 必填且必须属于本行程。
+   * entryType=transit（大交通节点）：起讫点各给 fromPlaceId/fromName、toPlaceId/toName 之一；
+   * 起讫引用 place 时 recalcDayLegs 走真实坐标参与锚定（到达日起点 / 离开日收口），纯文本则不产生交通段。
+   * transit 的 startTime 缺省取 departTime（时间轴排序用）。
+   */
+  async addEntry(tripId: string, input: AddEntryInput) {
     await this.getTrip(tripId);
-    const [place] = await this.db
-      .select()
-      .from(schema.places)
-      .where(and(eq(schema.places.id, placeId), eq(schema.places.tripId, tripId)));
-    if (!place) throw new ServiceError(404, `place ${placeId} not found in trip ${tripId}`);
-    const day = await this.ensureDay(tripId, dayIndex);
+    const entryType = input.entryType ?? "place";
+    if (entryType === "place") {
+      if (!input.placeId) throw new ServiceError(422, "entryType=place 时必须提供 placeId");
+      // 与 PATCH /entries/:id 对称：place entry 不接受 transit 字段（拒绝而非静默丢弃）
+      const transitFields = [
+        input.departTime,
+        input.arriveTime,
+        input.fromPlaceId,
+        input.toPlaceId,
+        input.fromName,
+        input.toName,
+      ];
+      if (transitFields.some((v) => v != null)) {
+        throw new ServiceError(
+          422,
+          "entryType=place 不接受 departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName",
+        );
+      }
+      const [place] = await this.db
+        .select()
+        .from(schema.places)
+        .where(and(eq(schema.places.id, input.placeId), eq(schema.places.tripId, tripId)));
+      if (!place) throw new ServiceError(404, `place ${input.placeId} not found in trip ${tripId}`);
+    } else {
+      if (!input.fromPlaceId && !input.fromName) {
+        throw new ServiceError(422, "transit entry 需要 fromPlaceId 或 fromName（起点）");
+      }
+      if (!input.toPlaceId && !input.toName) {
+        throw new ServiceError(422, "transit entry 需要 toPlaceId 或 toName（讫点）");
+      }
+      for (const pid of [input.fromPlaceId, input.toPlaceId]) {
+        if (!pid) continue;
+        const [place] = await this.db
+          .select({ id: schema.places.id })
+          .from(schema.places)
+          .where(and(eq(schema.places.id, pid), eq(schema.places.tripId, tripId)));
+        if (!place) throw new ServiceError(404, `place ${pid} not found in trip ${tripId}`);
+      }
+    }
+    const day = await this.ensureDay(tripId, input.dayIndex);
     const entries = await this.db
       .select()
       .from(schema.entries)
       .where(eq(schema.entries.dayId, day.id))
       .orderBy(asc(schema.entries.position));
-    const pos = position == null ? entries.length : Math.max(0, Math.min(position, entries.length));
+    const pos =
+      input.position == null ? entries.length : Math.max(0, Math.min(input.position, entries.length));
+    const entryId = uuid();
     await this.db.transaction(async (tx) => {
+      // (dayId, position) 唯一索引逐行检查，+1 位移会与未更新的行相撞：
+      // 先把受影响行挪到安全区（+10001），插入后归一化回 0..n（同 moveEntry 同天分支的模式）
       await tx
         .update(schema.entries)
-        .set({ position: sql`${schema.entries.position} + 1` })
+        .set({ position: sql`${schema.entries.position} + 10001` })
         .where(and(eq(schema.entries.dayId, day.id), sql`${schema.entries.position} >= ${pos}`));
       await tx.insert(schema.entries).values({
-        id: uuid(),
+        id: entryId,
         tripId,
         dayId: day.id,
-        placeId,
+        entryType,
+        placeId: entryType === "place" ? input.placeId! : null,
         position: pos,
-        startTime: startTime ?? null,
+        startTime: input.startTime ?? (entryType === "transit" ? (input.departTime ?? null) : null),
+        note: input.note ?? null,
+        departTime: entryType === "transit" ? (input.departTime ?? null) : null,
+        arriveTime: entryType === "transit" ? (input.arriveTime ?? null) : null,
+        fromPlaceId: entryType === "transit" ? (input.fromPlaceId ?? null) : null,
+        toPlaceId: entryType === "transit" ? (input.toPlaceId ?? null) : null,
+        fromName: entryType === "transit" ? (input.fromName ?? null) : null,
+        toName: entryType === "transit" ? (input.toName ?? null) : null,
       });
+      await this.normalizePositionsTx(tx, day.id);
     });
     await this.touchTrip(tripId);
     await this.recalcDayLegs(tripId, day.id);
     await this.publishBundle(tripId);
-    return { dayId: day.id, position: pos };
+    return { entryId, dayId: day.id, position: pos };
+  }
+
+  /**
+   * 编辑 entry（PATCH /api/entries/:id 与 MCP update_entry）。
+   * startTime/durationMin/note 两类通用；transit 时间/起讫字段仅 transit entry 可改。
+   * transit 改 departTime 而未显式给 startTime 时同步 startTime（保持时间轴排序语义）。
+   */
+  async updateEntry(entryId: string, input: UpdateEntryInput) {
+    const [entry] = await this.db.select().from(schema.entries).where(eq(schema.entries.id, entryId));
+    if (!entry) throw new ServiceError(404, `entry ${entryId} not found`);
+    const transitFields = [
+      input.departTime,
+      input.arriveTime,
+      input.fromPlaceId,
+      input.toPlaceId,
+      input.fromName,
+      input.toName,
+    ];
+    if (entry.entryType !== "transit" && transitFields.some((v) => v !== undefined)) {
+      throw new ServiceError(422, "departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName 仅 transit entry 可编辑");
+    }
+    for (const pid of [input.fromPlaceId, input.toPlaceId]) {
+      if (!pid) continue;
+      const [place] = await this.db
+        .select({ id: schema.places.id })
+        .from(schema.places)
+        .where(and(eq(schema.places.id, pid), eq(schema.places.tripId, entry.tripId)));
+      if (!place) throw new ServiceError(404, `place ${pid} not found in trip ${entry.tripId}`);
+    }
+    const patch: Partial<typeof schema.entries.$inferInsert> = {};
+    if (input.startTime !== undefined) patch.startTime = input.startTime ?? null;
+    if (input.note !== undefined) patch.note = input.note ?? null;
+    if (input.durationMin !== undefined) patch.durationMin = input.durationMin ?? null;
+    if (entry.entryType === "transit") {
+      if (input.departTime !== undefined) {
+        patch.departTime = input.departTime ?? null;
+        if (input.startTime === undefined) patch.startTime = input.departTime ?? null;
+      }
+      if (input.arriveTime !== undefined) patch.arriveTime = input.arriveTime ?? null;
+      if (input.fromPlaceId !== undefined) patch.fromPlaceId = input.fromPlaceId ?? null;
+      if (input.toPlaceId !== undefined) patch.toPlaceId = input.toPlaceId ?? null;
+      if (input.fromName !== undefined) patch.fromName = input.fromName ?? null;
+      if (input.toName !== undefined) patch.toName = input.toName ?? null;
+      // 起讫不变量与 add 侧一致：patch 合并后起点/讫点各自至少留一个（place 引用或自由文本）
+      const effective = <K extends "fromPlaceId" | "toPlaceId" | "fromName" | "toName">(key: K) =>
+        key in patch ? (patch[key] as string | null) : entry[key];
+      if (!effective("fromPlaceId") && !effective("fromName")) {
+        throw new ServiceError(422, "transit entry 的起点不能全清：至少保留 fromPlaceId 或 fromName");
+      }
+      if (!effective("toPlaceId") && !effective("toName")) {
+        throw new ServiceError(422, "transit entry 的讫点不能全清：至少保留 toPlaceId 或 toName");
+      }
+    }
+    if (Object.keys(patch).length === 0) {
+      const [row] = await this.db.select().from(schema.entries).where(eq(schema.entries.id, entryId));
+      return toEntryDto(row);
+    }
+    const [row] = await this.db
+      .update(schema.entries)
+      .set(patch)
+      .where(eq(schema.entries.id, entryId))
+      .returning();
+    await this.touchTrip(entry.tripId);
+    await this.recalcDayLegs(entry.tripId, entry.dayId);
+    await this.publishBundle(entry.tripId);
+    return toEntryDto(row);
   }
 
   async removeEntry(entryId: string) {
@@ -439,18 +581,30 @@ export class TripService {
         .where(eq(schema.entries.dayId, day.id))
         .orderBy(asc(schema.entries.position));
       const pos = Math.max(0, Math.min(position, entries.length));
-      await this.db
-        .update(schema.entries)
-        .set({ position: sql`${schema.entries.position} + 1` })
-        .where(and(eq(schema.entries.dayId, day.id), sql`${schema.entries.position} >= ${pos}`));
-      await this.db.insert(schema.entries).values({
-        id: entryId,
-        tripId: entry.tripId,
-        dayId: day.id,
-        placeId: entry.placeId,
-        position: pos,
-        startTime: entry.startTime,
-        note: entry.note,
+      // 同样的唯一索引撞行问题：事务内先挪安全区再归一化
+      await this.db.transaction(async (tx) => {
+        await tx
+          .update(schema.entries)
+          .set({ position: sql`${schema.entries.position} + 10001` })
+          .where(and(eq(schema.entries.dayId, day.id), sql`${schema.entries.position} >= ${pos}`));
+        await tx.insert(schema.entries).values({
+          id: entryId,
+          tripId: entry.tripId,
+          dayId: day.id,
+          placeId: entry.placeId,
+          entryType: entry.entryType,
+          position: pos,
+          startTime: entry.startTime,
+          durationMin: entry.durationMin,
+          note: entry.note,
+          departTime: entry.departTime,
+          arriveTime: entry.arriveTime,
+          fromPlaceId: entry.fromPlaceId,
+          toPlaceId: entry.toPlaceId,
+          fromName: entry.fromName,
+          toName: entry.toName,
+        });
+        await this.normalizePositionsTx(tx, day.id);
       });
     }
     await this.touchTrip(entry.tripId);
@@ -534,6 +688,10 @@ export class TripService {
    * 变更某天 entry / 换酒店后重算该天交通段。
    * 酒店锚点按天解析（见 getDayHotelAnchors）：普通日首尾同为当晚酒店，
    * 换酒店日首 = 旧酒店、尾 = 新酒店；无覆盖酒店的天不锚定（仅景点间移动）。
+   * transit entry（大交通）参与锚定：起讫引用行程内 place 时走真实坐标展开成端点节点；
+   * 首个 entry 是带坐标的 transit 到达 → 替代酒店首锚点成为当天起点；
+   * 末个 entry 是带坐标的 transit 离开 → 替代酒店尾锚点收口当天。
+   * 同一 transit entry 的 from→to 节点间是大交通段本身（不走路由 provider，时长取 depart/arrive 差）。
    * 手动 mode 覆盖（modeOverride）按端点配对保留，重算不冲掉。
    */
   async recalcDayLegs(tripId: string, dayId: string) {
@@ -553,22 +711,63 @@ export class TripService {
     const placeIds = [
       ...new Set(
         [
-          ...entries.map((e) => e.placeId),
-          ...(anchors.startPlaceId ? [anchors.startPlaceId] : []),
-          ...(anchors.endPlaceId ? [anchors.endPlaceId] : []),
-        ],
+          ...entries.flatMap((e) => [e.placeId, e.fromPlaceId, e.toPlaceId]),
+          anchors.startPlaceId,
+          anchors.endPlaceId,
+        ].filter((x): x is string => x != null),
       ),
     ];
     const places = placeIds.length
       ? await this.db.select().from(schema.places).where(inArray(schema.places.id, placeIds))
       : [];
     const placeById = new Map(places.map((p) => [p.id, p]));
+    const coordOfPlace = (pid: string | null): LngLat | null => {
+      if (!pid) return null;
+      const p = placeById.get(pid);
+      return p ? { lng: Number(p.lng), lat: Number(p.lat) } : null;
+    };
 
-    // 端点链：entry（行程内）或 place（酒店首/尾锚点，换酒店日可不同）
-    const chain: Array<{ entryId: string | null; placeId: string }> = [];
-    if (anchors.startPlaceId) chain.push({ entryId: null, placeId: anchors.startPlaceId });
-    for (const e of entries) chain.push({ entryId: e.id, placeId: e.placeId });
-    if (anchors.endPlaceId) chain.push({ entryId: null, placeId: anchors.endPlaceId });
+    // 端点链节点：entry（行程内）或 place（酒店首/尾锚点，换酒店日可不同）。
+    // transit 节点带 transitEntryId/transitEndpoint 标记，用于识别大交通段本身。
+    type ChainNode = {
+      entryId: string | null;
+      placeId: string | null;
+      coord: LngLat;
+      transitEntryId?: string;
+      transitEndpoint?: "from" | "to";
+    };
+    const transitNodes = (e: (typeof entries)[number]): ChainNode[] => {
+      const from = coordOfPlace(e.fromPlaceId);
+      const to = coordOfPlace(e.toPlaceId);
+      const nodes: ChainNode[] = [];
+      if (from) nodes.push({ entryId: e.id, placeId: null, coord: from, transitEntryId: e.id, transitEndpoint: "from" });
+      if (to && e.toPlaceId !== e.fromPlaceId) {
+        nodes.push({ entryId: e.id, placeId: null, coord: to, transitEntryId: e.id, transitEndpoint: "to" });
+      }
+      return nodes;
+    };
+    const first = entries[0];
+    const last = entries[entries.length - 1];
+    const skipStartAnchor = first?.entryType === "transit" && transitNodes(first).length > 0;
+    const skipEndAnchor = last?.entryType === "transit" && transitNodes(last).length > 0;
+
+    const chain: ChainNode[] = [];
+    if (anchors.startPlaceId && !skipStartAnchor) {
+      const c = coordOfPlace(anchors.startPlaceId);
+      if (c) chain.push({ entryId: null, placeId: anchors.startPlaceId, coord: c });
+    }
+    for (const e of entries) {
+      if (e.entryType === "transit") {
+        chain.push(...transitNodes(e));
+      } else {
+        const c = coordOfPlace(e.placeId);
+        if (c) chain.push({ entryId: e.id, placeId: null, coord: c });
+      }
+    }
+    if (anchors.endPlaceId && !skipEndAnchor) {
+      const c = coordOfPlace(anchors.endPlaceId);
+      if (c) chain.push({ entryId: null, placeId: anchors.endPlaceId, coord: c });
+    }
 
     // 重算前收集手动覆盖：key = 端点配对（entry 或酒店 place）
     const endpointKey = (entryId: string | null, placeId: string | null) =>
@@ -587,25 +786,43 @@ export class TripService {
       }
     }
 
+    const entryById = new Map(entries.map((e) => [e.id, e]));
     await this.db.delete(schema.transportLegs).where(eq(schema.transportLegs.dayId, dayId));
     for (let i = 0; i + 1 < chain.length; i++) {
       const from = chain[i];
       const to = chain[i + 1];
-      const fromPlace = placeById.get(from.placeId);
-      const toPlace = placeById.get(to.placeId);
-      if (!fromPlace || !toPlace) continue;
-      const a = { lng: Number(fromPlace.lng), lat: Number(fromPlace.lat) };
-      const b = { lng: Number(toPlace.lng), lat: Number(toPlace.lat) };
-      const fromId = from.entryId ? null : from.placeId;
-      const toId = to.entryId ? null : to.placeId;
+      const a = from.coord;
+      const b = to.coord;
       const override =
-        overrides.get(`${endpointKey(from.entryId, fromId)}->${endpointKey(to.entryId, toId)}`) ?? null;
-      const mode = override ?? (haversineM(a, b) < 2000 ? ("walk" as const) : ("drive" as const));
-      let result;
-      try {
-        result = await geo.route(a, b, mode, trip?.destinationCity);
-      } catch {
-        result = fallbackRoute(a, b, mode);
+        overrides.get(`${endpointKey(from.entryId, from.placeId)}->${endpointKey(to.entryId, to.placeId)}`) ?? null;
+      // 同一 transit entry 的 from→to：大交通段本身，不调路由 provider
+      const isTransitRide =
+        from.transitEntryId != null &&
+        from.transitEntryId === to.transitEntryId &&
+        from.transitEndpoint === "from" &&
+        to.transitEndpoint === "to";
+      let mode: TransportMode;
+      let distanceM: number | null;
+      let durationS: number | null;
+      let polyline: LngLat[] | null;
+      if (isTransitRide) {
+        const entryRow = entryById.get(from.transitEntryId!);
+        mode = override ?? "transit";
+        distanceM = Math.round(haversineM(a, b));
+        durationS = transitDurationS(entryRow?.departTime ?? null, entryRow?.arriveTime ?? null) ?? Math.round((distanceM * 1.3) / 8.5);
+        polyline = [a, b];
+      } else {
+        mode = override ?? (haversineM(a, b) < 2000 ? "walk" : "drive");
+        let result;
+        try {
+          result = await geo.route(a, b, mode, trip?.destinationCity);
+        } catch {
+          result = fallbackRoute(a, b, mode);
+        }
+        mode = override ?? result.mode;
+        distanceM = result.distanceM;
+        durationS = result.durationS;
+        polyline = result.polyline;
       }
       await this.db.insert(schema.transportLegs).values({
         id: uuid(),
@@ -613,14 +830,14 @@ export class TripService {
         dayId,
         fromEntryId: from.entryId,
         toEntryId: to.entryId,
-        fromPlaceId: fromId,
-        toPlaceId: toId,
+        fromPlaceId: from.placeId,
+        toPlaceId: to.placeId,
         seq: i,
-        mode: override ?? result.mode,
+        mode,
         modeOverride: override,
-        distanceM: result.distanceM,
-        durationS: result.durationS,
-        polyline: result.polyline,
+        distanceM,
+        durationS,
+        polyline,
         computedAt: new Date(),
       });
     }
@@ -672,23 +889,25 @@ export class TripService {
     );
   }
 
-  /** 重排建议（不落库）：按天取酒店锚点——同酒店往返按环路优化，换酒店日按「旧酒店→…→新酒店」定端路径优化，无锚点保持首点为起点 */
+  /** 重排建议（不落库）：按天取酒店锚点——同酒店往返按环路优化，换酒店日按「旧酒店→…→新酒店」定端路径优化，无锚点保持首点为起点。
+   *  transit entry 时间固定不参与重排，保持原位；仅 place entry 参与优化。 */
   async suggestDayOrder(tripId: string, dayIndex: number) {
     const trip = await this.getTrip(tripId);
     const day = await this.ensureDay(tripId, dayIndex);
-    const entries = await this.db
+    const allEntries = await this.db
       .select()
       .from(schema.entries)
       .where(eq(schema.entries.dayId, day.id))
       .orderBy(asc(schema.entries.position));
+    const entries = allEntries.filter((e) => e.entryType !== "transit" && e.placeId != null);
     if (entries.length < 3) {
       throw new ServiceError(422, `day ${dayIndex} 只有 ${entries.length} 个地点（<3），无需重排`);
     }
-    const placeIds = [...new Set(entries.map((e) => e.placeId))];
+    const placeIds = [...new Set(entries.map((e) => e.placeId!))];
     const places = await this.db.select().from(schema.places).where(inArray(schema.places.id, placeIds));
     const placeById = new Map(places.map((p) => [p.id, p]));
     const entryCoords = entries.map((e) => {
-      const p = placeById.get(e.placeId)!;
+      const p = placeById.get(e.placeId!)!;
       return { lng: Number(p.lng), lat: Number(p.lat) };
     });
     const anchors = await this.getDayHotelAnchors(tripId, dayIndex);
@@ -744,7 +963,13 @@ export class TripService {
       after = orderTotalDuration(optimizedIdx, matrix);
     }
     const describe = (idx: number[]) =>
-      idx.map((i) => ({ entryId: entries[i].id, name: placeById.get(entries[i].placeId)!.name }));
+      idx.map((i) => ({ entryId: entries[i].id, name: placeById.get(entries[i].placeId!)!.name }));
+    // transit entry 保持原位：优化后的 place 顺序填回非 transit 槽位，entryIds 含全部 entry（reorderDay 要求全量）
+    const optimizedPlaceIds = optimizedIdx.map((i) => entries[i].id);
+    let cursor = 0;
+    const mergedEntryIds = allEntries.map((e) =>
+      e.entryType !== "transit" && e.placeId != null ? optimizedPlaceIds[cursor++] : e.id,
+    );
     return {
       dayIndex,
       hotelAnchored,
@@ -753,22 +978,25 @@ export class TripService {
       beforeTotalS: before,
       afterTotalS: after,
       savedS: Math.max(0, before - after),
-      entryIds: optimizedIdx.map((i) => entries[i].id),
+      entryIds: mergedEntryIds,
       alreadyOptimal: before - after < 60,
     };
   }
 
-  /** 顺路度分析（不落库）：把 place 插入某天每个位置的时间增量 + 最优位置。酒店锚点按天解析，换酒店日首尾锚点不同 */
+  /** 顺路度分析（不落库）：把 place 插入某天每个位置的时间增量 + 最优位置。酒店锚点按天解析，换酒店日首尾锚点不同。
+   *  transit entry 不参与插入分析（时间固定、不产生顺路增量），position 语义按 place entry 序列计。 */
   async analyzeDetour(tripId: string, placeId: string, dayIndex: number) {
     const [place] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!place) throw new ServiceError(404, `place ${placeId} not found`);
     const trip = await this.getTrip(tripId);
     const day = await this.ensureDay(tripId, dayIndex);
-    const entries = await this.db
-      .select()
-      .from(schema.entries)
-      .where(eq(schema.entries.dayId, day.id))
-      .orderBy(asc(schema.entries.position));
+    const entries = (
+      await this.db
+        .select()
+        .from(schema.entries)
+        .where(eq(schema.entries.dayId, day.id))
+        .orderBy(asc(schema.entries.position))
+    ).filter((e) => e.entryType !== "transit" && e.placeId != null);
 
     const anchors = await this.getDayHotelAnchors(tripId, dayIndex);
     const anchorPlaceIds = [
@@ -788,7 +1016,7 @@ export class TripService {
       };
     }
 
-    const placeIds = [...new Set([...entries.map((e) => e.placeId), placeId, ...anchorPlaceIds])];
+    const placeIds = [...new Set([...entries.map((e) => e.placeId!), placeId, ...anchorPlaceIds])];
     const places = await this.db.select().from(schema.places).where(inArray(schema.places.id, placeIds));
     const placeById = new Map(places.map((p) => [p.id, p]));
     const target = placeById.get(placeId)!;
@@ -800,7 +1028,7 @@ export class TripService {
 
     // 坐标矩阵：同酒店锚点 [酒店, ...entries, 目标]；换酒店日 [旧酒店, ...entries, 新酒店, 目标]；无锚点 [...entries, 目标]
     const entryCoords = entries.map((e) => {
-      const p = placeById.get(e.placeId)!;
+      const p = placeById.get(e.placeId!)!;
       return { lng: Number(p.lng), lat: Number(p.lat) };
     });
     const coordOf = (p?: { lng: string; lat: string } | null) =>
@@ -828,7 +1056,7 @@ export class TripService {
       // 插在 position k = 跟在原链路第 k-1 个 entry 后面；k=0 时锚定酒店则"从（首锚点）酒店出发后"
       afterEntryName:
         o.position > 0
-          ? placeById.get(entries[o.position - 1].placeId)!.name
+          ? placeById.get(entries[o.position - 1].placeId!)!.name
           : hotelAnchored
             ? hotelName
             : null,
@@ -842,6 +1070,78 @@ export class TripService {
       bestPosition: best.position,
       bestIncrementS: best.incrementS,
     };
+  }
+
+  /**
+   * 区域聚类建议（只建议不落库）：把未排期的非酒店地点（候选 + 锁定、未进任何一天行程、
+   * 也不作为 transit 起讫点）按驾车时长矩阵 k-medoids 聚成 1-4 片，建议「每天一片」——按各天当前负载把簇分配给天数（少的优先）。
+   */
+  async suggestDayClusters(tripId: string): Promise<SuggestDayClustersResult> {
+    const trip = await this.getTrip(tripId);
+    const dayCount = await this.getTripDayCount(trip);
+    const [places, allEntries, dayRows] = await Promise.all([
+      this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId)),
+      this.db.select().from(schema.entries).where(eq(schema.entries.tripId, tripId)),
+      this.db.select().from(schema.days).where(eq(schema.days.tripId, tripId)).orderBy(asc(schema.days.dayIndex)),
+    ]);
+    // 未排期 = 未作为任何 entry 的地点、也未作为 transit 起讫点（车站/机场已被大交通占用，不参与聚类）
+    const scheduledPlaceIds = new Set(
+      allEntries
+        .flatMap((e) => [e.placeId, e.fromPlaceId, e.toPlaceId])
+        .filter((x): x is string => x != null),
+    );
+    const unscheduled = places.filter((p) => p.category !== "hotel" && !scheduledPlaceIds.has(p.id));
+    if (unscheduled.length < 2) {
+      return {
+        clusters: [],
+        unscheduledCount: unscheduled.length,
+        dayCount,
+        note: `未排期地点只有 ${unscheduled.length} 个（<2），无需聚类`,
+      };
+    }
+    // 簇数：2-4 片，受天数与点数约束（每天一片，别把一天塞太满）
+    const k = Math.max(1, Math.min(4, Math.ceil(unscheduled.length / 3), dayCount));
+    const coords: LngLat[] = unscheduled.map((p) => ({ lng: Number(p.lng), lat: Number(p.lat) }));
+    const matrix = await this.buildDurationMatrix(trip.geoProvider, coords);
+    const assignment = kMedoids(matrix, k);
+
+    // 各天当前负载（entry 数）：簇按大小降序分给负载最轻的天
+    const dayIndexById = new Map(dayRows.map((d) => [d.id, d.dayIndex]));
+    const loadByDay = new Map<number, number>();
+    for (const e of allEntries) {
+      const di = dayIndexById.get(e.dayId);
+      if (di != null) loadByDay.set(di, (loadByDay.get(di) ?? 0) + 1);
+    }
+    const daysByLoad = Array.from({ length: dayCount }, (_, i) => i + 1).sort(
+      (a, b) => (loadByDay.get(a) ?? 0) - (loadByDay.get(b) ?? 0) || a - b,
+    );
+
+    const groups = new Map<number, number[]>();
+    assignment.forEach((c, i) => {
+      const list = groups.get(c) ?? [];
+      list.push(i);
+      groups.set(c, list);
+    });
+    const sortedGroups = [...groups.values()].sort((a, b) => b.length - a.length);
+    const clusters = sortedGroups.map((memberIdx, clusterIndex) => {
+      const members = memberIdx.map((i) => unscheduled[i]);
+      const centroid = {
+        lng: members.reduce((s, p) => s + Number(p.lng), 0) / members.length,
+        lat: members.reduce((s, p) => s + Number(p.lat), 0) / members.length,
+      };
+      return {
+        clusterIndex,
+        places: members.map((p) => ({
+          id: p.id,
+          name: p.name,
+          category: p.category as DayCluster["places"][number]["category"],
+          location: { lng: Number(p.lng), lat: Number(p.lat) },
+        })),
+        centroid,
+        suggestedDayIndex: daysByLoad[clusterIndex] ?? null,
+      };
+    });
+    return { clusters, unscheduledCount: unscheduled.length, dayCount };
   }
 
   // ---------- 酒店 ----------

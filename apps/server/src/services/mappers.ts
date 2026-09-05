@@ -60,6 +60,8 @@ export function toPlaceDto(row: PlaceRow): PlaceDto {
     durationMin: row.durationMin,
     priceCny: row.priceCny,
     bookingInfo: row.bookingInfo,
+    openingHours: row.openingHours,
+    bookingStatus: row.bookingStatus as PlaceDto["bookingStatus"],
     status: row.status as PlaceDto["status"],
     createdBy: row.createdBy as PlaceDto["createdBy"],
     createdAt: iso(row.createdAt),
@@ -75,10 +77,18 @@ export function toEntryDto(row: EntryRow): EntryDto {
     id: row.id,
     dayId: row.dayId,
     tripId: row.tripId,
+    entryType: row.entryType as EntryDto["entryType"],
     placeId: row.placeId,
     position: row.position,
     startTime: row.startTime,
     note: row.note,
+    durationMin: row.durationMin,
+    departTime: row.departTime,
+    arriveTime: row.arriveTime,
+    fromPlaceId: row.fromPlaceId,
+    toPlaceId: row.toPlaceId,
+    fromName: row.fromName,
+    toName: row.toName,
   };
 }
 

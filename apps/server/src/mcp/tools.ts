@@ -79,6 +79,52 @@ const AddPlaceToDayInput = z.object({
     .optional(),
 });
 
+/** 大交通节点（航班/高铁/城际移动）：起讫点各给 place 引用或自由文本之一 */
+const AddTransitEntryInput = z.object({
+  dayIndex: z.number().int().min(1),
+  position: z.number().int().min(0).nullable().optional(),
+  departTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .nullable()
+    .optional(),
+  arriveTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .nullable()
+    .optional(),
+  fromPlaceId: z.string().nullable().optional(),
+  toPlaceId: z.string().nullable().optional(),
+  fromName: z.string().min(1).max(120).nullable().optional(),
+  toName: z.string().min(1).max(120).nullable().optional(),
+  note: z.string().max(2000).nullable().optional(),
+});
+
+const UpdateEntryInput = z.object({
+  entryId: z.string(),
+  startTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .nullable()
+    .optional(),
+  durationMin: z.number().int().min(0).max(24 * 60).nullable().optional(),
+  note: z.string().max(2000).nullable().optional(),
+  departTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .nullable()
+    .optional(),
+  arriveTime: z
+    .string()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .nullable()
+    .optional(),
+  fromPlaceId: z.string().nullable().optional(),
+  toPlaceId: z.string().nullable().optional(),
+  fromName: z.string().min(1).max(120).nullable().optional(),
+  toName: z.string().min(1).max(120).nullable().optional(),
+});
+
 const MoveEntryInput = z.object({
   entryId: z.string(),
   dayIndex: z.number().int().min(1),
@@ -181,7 +227,9 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
         userUiContext: uiContext,
         hint:
           `字段含义：entries[].position 为天内顺序（0 起）；dayIndex 从 1 开始。` +
+          ` entries[].entryType：place=地点节点，transit=大交通节点（航班/高铁，带 departTime/arriveTime 与 fromName/toName 或 fromPlaceId/toPlaceId 起讫点）。` +
           ` places[].status：candidate=候选池（待用户确认），locked=用户已锁定（agent 不可改/删，只排 locked 的地点进每日行程）。` +
+          ` places[].openingHours 为营业时间（排天硬约束），bookingStatus 为预订状态（none|pending|booked）。` +
           (overseas
             ? ` 本行程是海外目的地（${bundle.trip.destinationCity}，${bundle.trip.geoProvider} provider）：search_poi 时用英文或当地语言名称（如 "Sydney Opera House"）效果最好。`
             : ""),
@@ -239,7 +287,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_place",
     {
       description:
-        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）和 durationMin（建议游玩时长）。金额单位为行程币种。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上锁定（status=locked）后才用 add_place_to_day 排天。**",
+        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）、durationMin（建议游玩时长）和 openingHours（营业时间自由文本，如「09:00-17:00 周一闭馆」——排天硬约束，务必尽力填写）。金额单位为行程币种。bookingStatus（none|pending|booked）可填但以用户在界面上的标记为准。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上锁定（status=locked）后才用 add_place_to_day 排天。**",
       inputSchema: McpCreatePlaceSchema.shape,
     },
     async (input) => {
@@ -257,7 +305,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "update_place",
     {
       description:
-        "更新地点信息（备注、游玩时长、价格等）。只需要传要改的字段。注意：status=locked（用户已锁定）的地点不可修改——请用户在界面上解锁。",
+        "更新地点信息（备注、游玩时长、价格、openingHours 营业时间、bookingStatus 预订状态等）。只需要传要改的字段。bookingStatus 可由你更新（如你已核实可订/已订），但以用户在界面上的标记为准。注意：status=locked（用户已锁定）的地点不可修改——请用户在界面上解锁。",
       inputSchema: UpdatePlaceWithIdSchema.shape,
     },
     async ({ placeId, ...patch }) => {
@@ -335,8 +383,50 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     async ({ placeId, dayIndex, position, startTime }) => {
       ctx.markMcpObserved();
       try {
-        const result = await tripService.addEntry(tripId, placeId, dayIndex, position ?? null, startTime ?? null);
+        const result = await tripService.addEntry(tripId, {
+          entryType: "place",
+          placeId,
+          dayIndex,
+          position: position ?? null,
+          startTime: startTime ?? null,
+        });
         return json({ ok: true, ...result });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "add_transit_entry",
+    {
+      description:
+        "添加大交通节点（transit entry：航班/高铁/城际移动，如「家 → 萧山机场」「杭州东站 → 市区酒店」）到某一天。起讫点各给一种：fromPlaceId/toPlaceId（行程内地点，走真实坐标参与当天路线锚定，推荐先 search_poi 建好站点 place）或 fromName/toName（自由文本，如「家」「浦东机场」，不产生交通段）。departTime/arriveTime 尽量给（HH:MM）——到达日的 arriveTime 约束当天可排容量，离开日的 departTime 是当天收口（最后一个景点要预留赶车缓冲）。到达 transit 排在当天第一位、离开 transit 排在当天最后一位。",
+      inputSchema: AddTransitEntryInput.shape,
+    },
+    async (input) => {
+      ctx.markMcpObserved();
+      try {
+        const result = await tripService.addEntry(tripId, { entryType: "transit", ...input });
+        return json({ ok: true, ...result });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "update_entry",
+    {
+      description:
+        "修改某天行程中的条目：startTime（HH:MM）、durationMin（该次停留时长覆盖，分钟）、note；transit entry 还可改 departTime/arriveTime 与起讫点（fromPlaceId/toPlaceId/fromName/toName，传 null 清除）。",
+      inputSchema: UpdateEntryInput.shape,
+    },
+    async ({ entryId, ...patch }) => {
+      ctx.markMcpObserved();
+      try {
+        const entry = await tripService.updateEntry(entryId, patch);
+        return json({ ok: true, entry });
       } catch (err) {
         return toolError(err);
       }
@@ -448,6 +538,24 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
       ctx.markMcpObserved();
       try {
         const suggestion = await tripService.suggestDayOrder(tripId, dayIndex);
+        return json({ ok: true, suggestion });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "suggest_day_clusters",
+    {
+      description:
+        "区域聚类建议（只建议不落库）：把还没排进任何一天的非酒店地点按地理位置聚成 1-4 片，并按各天负载建议「每天一片」。候选多、准备排天时先调这个拿分区方案，再逐天 add_place_to_day。",
+      inputSchema: {},
+    },
+    async () => {
+      ctx.markMcpObserved();
+      try {
+        const suggestion = await tripService.suggestDayClusters(tripId);
         return json({ ok: true, suggestion });
       } catch (err) {
         return toolError(err);

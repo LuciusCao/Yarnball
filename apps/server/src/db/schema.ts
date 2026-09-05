@@ -59,6 +59,10 @@ export const places = pgTable(
     durationMin: integer("duration_min"),
     priceCny: integer("price_cny"),
     bookingInfo: text("booking_info"),
+    /** 营业时间（v1 自由文本，如「09:00-17:00 周一闭馆」） */
+    openingHours: text("opening_hours"),
+    /** 预订状态流转：none | pending | booked（以用户界面标记为准） */
+    bookingStatus: text("booking_status").notNull().default("none"),
     createdBy: text("created_by").notNull().default("human"), // human | agent
     /** 候选状态机：candidate | locked；human 手动创建在 service 层置 locked */
     status: text("status").notNull().default("candidate"),
@@ -90,12 +94,23 @@ export const entries = pgTable(
     dayId: text("day_id")
       .notNull()
       .references(() => days.id, { onDelete: "cascade" }),
-    placeId: text("place_id")
-      .notNull()
-      .references(() => places.id, { onDelete: "cascade" }),
+    /** entryType=place 时非空；transit 可为 null（纯自由文本起讫点） */
+    placeId: text("place_id").references(() => places.id, { onDelete: "cascade" }),
+    /** place=常规地点节点；transit=大交通节点（航班/高铁/城际移动），不建新表 */
+    entryType: text("entry_type").notNull().default("place"),
     position: integer("position").notNull(),
     startTime: text("start_time"), // HH:MM
+    /** 单条停留时长覆盖（分钟）；null = 用 place.durationMin */
+    durationMin: integer("duration_min"),
     note: text("note"),
+    // ---- transit entry 字段（entryType=transit 时有意义） ----
+    departTime: text("depart_time"), // HH:MM
+    arriveTime: text("arrive_time"), // HH:MM
+    /** 起点：行程内地点（参与路线锚定走真实坐标）；引用地点删除时退回纯文本 */
+    fromPlaceId: text("from_place_id").references(() => places.id, { onDelete: "set null" }),
+    toPlaceId: text("to_place_id").references(() => places.id, { onDelete: "set null" }),
+    fromName: text("from_name"),
+    toName: text("to_name"),
   },
   (t) => [
     index("entries_day_idx").on(t.dayId),

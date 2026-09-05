@@ -54,7 +54,8 @@ export function buildDayTimeline(
   const items: TimelineItem[] = [];
   let cursor = DAY_START_MIN;
   for (const entry of entries) {
-    const place = placeById.get(entry.placeId);
+    // transit entry 可能没有关联 place（纯文本起讫点），M12 落地前不在时间轴渲染
+    const place = entry.placeId ? placeById.get(entry.placeId) : undefined;
     if (!place) continue;
     const explicit = parseHHMM(entry.startTime);
     const startMin = explicit ?? cursor;
