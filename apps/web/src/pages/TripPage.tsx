@@ -1,41 +1,48 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
-  BedDouble,
   CalendarDays,
   CalendarCheck,
   Crosshair,
   Link2,
+  Lock,
+  LockOpen,
   PanelRightClose,
   PanelRightOpen,
   Search,
-  UtensilsCrossed,
+  Sparkles,
+  Star,
+  Trash2,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { formatMoney, type BudgetSummary, type ChatSessionDto } from "@yarnball/shared";
+import { formatMoney, type BudgetSummary, type ChatSessionDto, type PlaceDto } from "@yarnball/shared";
 import { api } from "../api/client";
 import { useTripStore } from "../stores/tripStore";
+import { Badge } from "../components/ui/badge";
 import { MapCanvas, dayColor } from "../features/map/MapCanvas";
 import { ItineraryPanel } from "../features/itinerary/ItineraryPanel";
 import { ChatPanel } from "../features/chat/ChatPanel";
-import { HotelPanel } from "../features/hotel/HotelPanel";
+import { CandidatesPanel } from "../features/candidates/CandidatesPanel";
+import { candidatesApi } from "../features/candidates/api";
+import { getPlaceStatus } from "../features/candidates/placeStatus";
 import { SearchAddPanel } from "../features/map/SearchAddPanel";
-import { DiningPanel } from "../features/dining/DiningPanel";
 import { BudgetStrip } from "../features/budget/BudgetStrip";
 
 /**
  * 行程页 —— macOS Tahoe（Liquid Glass）布局：地图全屏打底，一切 UI 都是玻璃浮层。
  */
 
-type LeftPanel = "itinerary" | "hotel" | "dining" | "search";
+type LeftPanel = "itinerary" | "candidates" | "search";
 
 const LEFT_PANEL_META: Record<LeftPanel, { label: string; Icon: LucideIcon }> = {
   itinerary: { label: "行程", Icon: CalendarDays },
-  hotel: { label: "酒店", Icon: BedDouble },
-  dining: { label: "美食", Icon: UtensilsCrossed },
+  candidates: { label: "候选池", Icon: Star },
   search: { label: "添加地点", Icon: Search },
 };
+
+/** 设置抽屉由 M2（features/settings）挂载；合并前用全局事件解耦对接 */
+const OPEN_SETTINGS_EVENT = "yarnball:open-settings";
 
 export function TripPage() {
   const { tripId } = useParams<{ tripId: string }>();
@@ -133,6 +140,43 @@ export function TripPage() {
     }
   }
 
+  /** 地点操作进行中（选中卡片的锁定/删除按钮防重入） */
+  const [placeBusy, setPlaceBusy] = useState(false);
+
+  /** 打开设置抽屉：M2 的设置入口监听该事件；M2 未合并时事件无人消费，静默降级 */
+  const openSettings = useCallback(() => {
+    window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT));
+  }, []);
+
+  /** 锁定/解锁地点：写后依赖 SSE bundle 全量刷新，再主动 load 兜底 */
+  async function togglePlaceLock(place: PlaceDto) {
+    const next = getPlaceStatus(place) === "locked" ? "candidate" : "locked";
+    setPlaceBusy(true);
+    try {
+      await candidatesApi.setPlaceStatus(place.id, next);
+      if (tripId) await load(tripId);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setPlaceBusy(false);
+    }
+  }
+
+  async function deletePlace(place: PlaceDto) {
+    if (!confirm(`删除「${place.name}」？已排入的日程也会一并移除。`)) return;
+    setPlaceBusy(true);
+    try {
+      await candidatesApi.deletePlace(place.id);
+      setSelectedPlaceId(null);
+      toast.success(`已删除「${place.name}」`);
+      if (tripId) await load(tripId);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setPlaceBusy(false);
+    }
+  }
+
   const refreshSessions = useCallback(async () => {
     if (!tripId) return;
     const { sessions } = await api.chatSessions(tripId);
@@ -155,6 +199,7 @@ export function TripPage() {
     selectedPlaceId != null
       ? bundle.places.find((p) => p.id === selectedPlaceId) ?? null
       : null;
+  const scheduledPlaceIds = new Set(bundle.entries.map((e) => e.placeId));
   const days = [...bundle.days].sort((a, b) => a.dayIndex - b.dayIndex);
   const leftPanels = Object.entries(LEFT_PANEL_META) as [LeftPanel, { label: string; Icon: LucideIcon }][];
   const activeLeftMeta = leftPanel != null ? LEFT_PANEL_META[leftPanel] : null;
@@ -171,6 +216,7 @@ export function TripPage() {
           hotelArea={hotelArea}
           selectedPlaceId={selectedPlaceId}
           onSelectPlace={(id) => setSelectedPlaceId(id)}
+          onOpenSettings={openSettings}
         />
       </div>
 
@@ -242,7 +288,7 @@ export function TripPage() {
         </div>
       )}
 
-      {/* 左上（Day chips 下方）：选中地点信息卡 */}
+      {/* 左上（Day chips 下方）：选中地点信息卡（可操作：锁定/解锁/删除） ===== */}
       {selectedPlace && (
         <div className="glass panel-in absolute left-4 top-[104px] z-10 max-w-xs rounded-2xl p-3.5">
           <div className="flex items-start justify-between gap-2">
@@ -259,6 +305,22 @@ export function TripPage() {
               ✕
             </button>
           </div>
+          {/* 状态徽章：已排期 > 已锁定 > 候选；agent 建的地点带推荐标记 */}
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {scheduledPlaceIds.has(selectedPlace.id) ? (
+              <Badge variant="blue">已排期</Badge>
+            ) : getPlaceStatus(selectedPlace) === "locked" ? (
+              <Badge variant="orange">已锁定</Badge>
+            ) : (
+              <Badge variant="secondary">候选</Badge>
+            )}
+            {selectedPlace.createdBy === "agent" && (
+              <Badge variant="blue">
+                <Sparkles className="size-3" />
+                agent 推荐
+              </Badge>
+            )}
+          </div>
           {selectedPlace.priceCny != null && (
             <p className="mt-1.5 text-sm font-semibold text-orange-600">
               {formatMoney(selectedPlace.priceCny, trip.currency)}
@@ -274,10 +336,41 @@ export function TripPage() {
           {selectedPlace.notes && (
             <p className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-slate-500">{selectedPlace.notes}</p>
           )}
+          {/* 操作行：已排期地点不再提供锁定开关（排期即已确认） */}
+          <div className="mt-2.5 flex items-center gap-1.5 border-t border-slate-900/8 pt-2.5">
+            {!scheduledPlaceIds.has(selectedPlace.id) && (
+              <button
+                disabled={placeBusy}
+                onClick={() => void togglePlaceLock(selectedPlace)}
+                className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                  getPlaceStatus(selectedPlace) === "locked"
+                    ? "bg-amber-500/15 text-amber-700 hover:bg-amber-500/25"
+                    : "bg-slate-900/8 text-slate-600 hover:bg-slate-900/15"
+                }`}
+              >
+                {getPlaceStatus(selectedPlace) === "locked" ? (
+                  <>
+                    <LockOpen className="size-3" /> 解锁
+                  </>
+                ) : (
+                  <>
+                    <Lock className="size-3" /> 锁定
+                  </>
+                )}
+              </button>
+            )}
+            <button
+              disabled={placeBusy}
+              onClick={() => void deletePlace(selectedPlace)}
+              className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-500 transition-colors hover:bg-red-100/80 hover:text-red-600 disabled:opacity-50"
+            >
+              <Trash2 className="size-3" /> 删除
+            </button>
+          </div>
         </div>
       )}
 
-      {/* 左下：数据面板 dock（行程/酒店/美食/添加），常驻一小条，点击展开 ===== */}
+      {/* 左下：数据面板 dock（行程/候选池/添加），常驻一小条，点击展开 ===== */}
       {leftPanel != null && activeLeftMeta != null && (
         <div className="glass-deep panel-in absolute bottom-[68px] left-4 z-10 flex h-[min(52vh,500px)] w-[360px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
           <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
@@ -308,10 +401,16 @@ export function TripPage() {
                   onDataChanged={() => void load(trip.id)}
                 />
               )}
-              {leftPanel === "hotel" && (
-                <HotelPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
+              {leftPanel === "candidates" && (
+                <CandidatesPanel
+                  tripId={trip.id}
+                  bundle={bundle}
+                  hotelArea={hotelArea}
+                  selectedPlaceId={selectedPlaceId}
+                  onSelectPlace={setSelectedPlaceId}
+                  onDataChanged={() => void load(trip.id)}
+                />
               )}
-              {leftPanel === "dining" && <DiningPanel bundle={bundle} />}
               {leftPanel === "search" && (
                 <SearchAddPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
               )}

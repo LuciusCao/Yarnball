@@ -149,11 +149,12 @@ export class MapLibreRenderer implements MapRenderer {
       this.sourceIds.push("hotel-area-src");
     }
 
-    // markers：Tahoe 风玻璃胶囊徽标（选中态高亮环）
+    // markers：Tahoe 风玻璃胶囊徽标（选中态高亮环；候选半透明）
     for (const spec of specs.markers) {
       const selected = spec.placeId === selectedPlaceId;
       const el = document.createElement("button");
       el.className = "border-none bg-transparent p-0 cursor-pointer flex flex-col items-center";
+      el.style.opacity = String(spec.opacity);
       el.innerHTML = `
         <div style="white-space:nowrap;font-size:12px;font-weight:600;padding:3px 10px;border-radius:9999px;background:linear-gradient(180deg,${spec.color}f2,${spec.color}d9);color:#fff;box-shadow:0 2px 8px rgba(15,23,42,.3),inset 0 1px 0 rgba(255,255,255,.45)${
           selected ? ";outline:3px solid rgba(37,99,235,.45)" : ""

@@ -1,4 +1,5 @@
 import type { LngLat, TripBundle } from "@yarnball/shared";
+import { getPlaceStatus } from "../candidates/placeStatus";
 
 /**
  * 地图 overlay 数据层 —— 引擎无关（AMap / MapLibre 共用）。
@@ -10,8 +11,10 @@ export interface MarkerSpec {
   position: LngLat;
   /** 徽标文本，如 "D1·2 Sydney Opera House" 或 "🏨 ..." */
   label: string;
-  /** 背景色（天色/酒店色/散点灰） */
+  /** 背景色（天色/酒店色/锁定金/候选灰） */
   color: string;
+  /** 不透明度：候选=半透明（未确认），锁定/已排期=1 */
+  opacity: number;
   /** 点击回调标识 */
   placeId: string;
 }
@@ -48,7 +51,10 @@ export const DAY_COLORS = [
 ];
 
 export const HOTEL_COLOR = "#dc2626";
-export const UNSCHEDULED_COLOR = "#64748b";
+/** 未排期地点按 status 分色：候选=灰（半透明），锁定=金色实心 */
+export const CANDIDATE_COLOR = "#94a3b8"; // slate-400
+export const LOCKED_COLOR = "#d97706"; // amber-600
+export const CANDIDATE_OPACITY = 0.55;
 
 export function dayColor(dayIndex: number): string {
   return DAY_COLORS[(dayIndex - 1) % DAY_COLORS.length];
@@ -94,6 +100,7 @@ export function buildOverlaySpecs(
         position: place.location,
         label: `D${day.dayIndex}·${i + 1} ${place.name}`,
         color,
+        opacity: 1,
         placeId: place.id,
       });
     });
@@ -131,22 +138,26 @@ export function buildOverlaySpecs(
       const place = placeById.get(cand.placeId);
       if (!place) continue;
       const isSel = cand.placeId === selectedHotelPlaceId;
+      const locked = getPlaceStatus(place) === "locked";
       markers.push({
         id: `h-${cand.id}`,
         position: place.location,
         label: `${isSel ? "✓ " : ""}${place.name}${cand.pricePerNight ? ` · ${cand.pricePerNight}/晚` : ""}`,
-        color: isSel ? HOTEL_COLOR : "#78716c",
+        color: isSel ? HOTEL_COLOR : locked ? LOCKED_COLOR : CANDIDATE_COLOR,
+        opacity: isSel || locked ? 1 : CANDIDATE_OPACITY,
         placeId: place.id,
       });
     }
-    // 未编排散点（agent 刚建的 / 用户收藏的）
+    // 未编排散点（agent 刚建的 / 用户收藏的）：候选灰半透明，锁定金色实心
     for (const place of bundle.places) {
       if (scheduledPlaceIds.has(place.id) || hotelPlaceIds.has(place.id)) continue;
+      const locked = getPlaceStatus(place) === "locked";
       markers.push({
         id: `p-${place.id}`,
         position: place.location,
         label: place.name,
-        color: UNSCHEDULED_COLOR,
+        color: locked ? LOCKED_COLOR : CANDIDATE_COLOR,
+        opacity: locked ? 1 : CANDIDATE_OPACITY,
         placeId: place.id,
       });
     }
