@@ -6,6 +6,7 @@ import {
   CreateHotelCandidateInputSchema,
   CreatePlaceInputSchema,
   LngLatSchema,
+  SelectHotelInputSchema,
   UpdatePlaceInputSchema,
 } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
@@ -109,9 +110,8 @@ const AnalyzeDetourInput = z.object({
 
 const SuggestDayOrderInput = z.object({ dayIndex: z.number().int().min(1) });
 
-const SelectHotelInput = z.object({
-  candidateId: z.string().nullable(),
-});
+// 多酒店：checkInDay/checkOutDay 可选（1-based 闭开区间），缺省由服务端建议未被覆盖的天段
+const SelectHotelInput = SelectHotelInputSchema;
 
 // agent 不可经 add/update_place 直接指定 status：建点一律 candidate，锁定走 lock_place（或用户界面操作）
 const McpCreatePlaceSchema = CreatePlaceInputSchema.omit({ status: true });
@@ -476,14 +476,15 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
   server.registerTool(
     "select_hotel",
     {
-      description: "选定酒店（传候选 id）或取消选择（传 null）。",
+      description:
+        "选定酒店并指定住宿天数区间（checkInDay/checkOutDay，1-based 天序号，闭开区间：覆盖第 checkInDay 到 checkOutDay-1 晚）。缺省时自动建议尚未被其他酒店覆盖的天段。支持多酒店：跨城市/长行程可选定多家，各覆盖一段天数，区间不得重叠；换酒店日 = 旧酒店 checkOutDay = 新酒店 checkInDay。candidateId 传 null 取消全部选定。",
       inputSchema: SelectHotelInput.shape,
     },
-    async ({ candidateId }) => {
+    async ({ candidateId, checkInDay, checkOutDay }) => {
       ctx.markMcpObserved();
       try {
-        await tripService.selectHotel(tripId, candidateId);
-        return json({ ok: true });
+        const range = await tripService.selectHotel(tripId, candidateId, { checkInDay, checkOutDay });
+        return json({ ok: true, ...(range ?? {}) });
       } catch (err) {
         return toolError(err);
       }

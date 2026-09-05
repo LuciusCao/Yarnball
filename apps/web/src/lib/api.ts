@@ -5,6 +5,7 @@ import type {
   CreateAgentInput,
   PlaceDto,
   PlaceStatus,
+  SelectHotelInput,
   SettingsDto,
   SetLegModeInput,
   TransportMode,
@@ -52,6 +53,27 @@ export const api = {
     request<{ ok: true }>(`/legs/${legId}/mode`, {
       method: "PATCH",
       body: JSON.stringify({ mode } satisfies SetLegModeInput),
+    }),
+
+  // ---------- 多酒店选定 ----------
+
+  /**
+   * 选定酒店（POST /api/trips/:tripId/select-hotel）。
+   * checkInDay/checkOutDay 为 1-based 闭开区间（覆盖第 checkInDay..checkOutDay-1 晚），
+   * 缺省由服务端智能建议未被覆盖的天段；同一行程已选定酒店区间不得重叠。
+   * 返回最终生效的天区间。
+   */
+  selectHotel: (tripId: string, input: SelectHotelInput) =>
+    request<{ ok: true; checkInDay?: number; checkOutDay?: number }>(
+      `/trips/${tripId}/select-hotel`,
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+
+  /** 取消单个酒店的选定（POST /api/trips/:tripId/unselect-hotel） */
+  unselectHotel: (tripId: string, candidateId: string) =>
+    request<{ ok: true }>(`/trips/${tripId}/unselect-hotel`, {
+      method: "POST",
+      body: JSON.stringify({ candidateId }),
     }),
 
   // ---------- 设置 ----------
