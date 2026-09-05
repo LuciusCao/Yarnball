@@ -1,5 +1,4 @@
 import type { LngLat, TripBundle } from "@yarnball/shared";
-import { getPlaceStatus } from "../candidates/placeStatus";
 
 /**
  * 地图 overlay 数据层 —— 引擎无关（AMap / MapLibre 共用）。
@@ -138,7 +137,7 @@ export function buildOverlaySpecs(
       const place = placeById.get(cand.placeId);
       if (!place) continue;
       const isSel = cand.placeId === selectedHotelPlaceId;
-      const locked = getPlaceStatus(place) === "locked";
+      const locked = place.status === "locked";
       markers.push({
         id: `h-${cand.id}`,
         position: place.location,
@@ -151,7 +150,7 @@ export function buildOverlaySpecs(
     // 未编排散点（agent 刚建的 / 用户收藏的）：候选灰半透明，锁定金色实心
     for (const place of bundle.places) {
       if (scheduledPlaceIds.has(place.id) || hotelPlaceIds.has(place.id)) continue;
-      const locked = getPlaceStatus(place) === "locked";
+      const locked = place.status === "locked";
       markers.push({
         id: `p-${place.id}`,
         position: place.location,

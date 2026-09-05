@@ -13,9 +13,9 @@ import {
 import { toast } from "sonner";
 import { formatMoney, type PlaceCategory, type PlaceDto, type TripBundle } from "@yarnball/shared";
 import { api } from "../../api/client";
+import { api as uxApi } from "../../lib/api";
 import { Badge } from "../../components/ui/badge";
 import { candidatesApi } from "./api";
-import { getPlaceStatus } from "./placeStatus";
 
 /**
  * 候选池面板 —— 所有「未排期」地点的大本营（整合原 HotelPanel 的候选管理 + DiningPanel 的清单）。
@@ -71,10 +71,10 @@ export function CandidatesPanel({
   const hotelCandByPlaceId = new Map(bundle.hotelCandidates.map((h) => [h.placeId, h]));
 
   async function toggleLock(place: PlaceDto) {
-    const next = getPlaceStatus(place) === "locked" ? "candidate" : "locked";
+    const next = place.status === "locked" ? "candidate" : "locked";
     setBusy(true);
     try {
-      await candidatesApi.setPlaceStatus(place.id, next);
+      await uxApi.setPlaceStatus(place.id, next);
       onDataChanged();
     } catch (err) {
       toast.error((err as Error).message);
@@ -165,8 +165,7 @@ export function CandidatesPanel({
 
             <div className="space-y-2">
               {places.map((place) => {
-                const status = getPlaceStatus(place);
-                const locked = status === "locked";
+                const locked = place.status === "locked";
                 const hotelCand = hotelCandByPlaceId.get(place.id);
                 const isSelectedHotel =
                   hotelCand != null && bundle.trip.selectedHotelCandidateId === hotelCand.id;

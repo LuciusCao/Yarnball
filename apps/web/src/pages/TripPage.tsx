@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 import { formatMoney, type BudgetSummary, type ChatSessionDto, type PlaceDto } from "@yarnball/shared";
 import { api } from "../api/client";
+import { api as uxApi } from "../lib/api";
 import { useTripStore } from "../stores/tripStore";
 import { Badge } from "../components/ui/badge";
 import { MapCanvas, dayColor } from "../features/map/MapCanvas";
@@ -25,7 +26,6 @@ import { ItineraryPanel } from "../features/itinerary/ItineraryPanel";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import { CandidatesPanel } from "../features/candidates/CandidatesPanel";
 import { candidatesApi } from "../features/candidates/api";
-import { getPlaceStatus } from "../features/candidates/placeStatus";
 import { SearchAddPanel } from "../features/map/SearchAddPanel";
 import { BudgetStrip } from "../features/budget/BudgetStrip";
 
@@ -150,10 +150,10 @@ export function TripPage() {
 
   /** 锁定/解锁地点：写后依赖 SSE bundle 全量刷新，再主动 load 兜底 */
   async function togglePlaceLock(place: PlaceDto) {
-    const next = getPlaceStatus(place) === "locked" ? "candidate" : "locked";
+    const next = place.status === "locked" ? "candidate" : "locked";
     setPlaceBusy(true);
     try {
-      await candidatesApi.setPlaceStatus(place.id, next);
+      await uxApi.setPlaceStatus(place.id, next);
       if (tripId) await load(tripId);
     } catch (err) {
       toast.error((err as Error).message);
@@ -309,7 +309,7 @@ export function TripPage() {
           <div className="mt-1.5 flex flex-wrap gap-1">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
               <Badge variant="blue">已排期</Badge>
-            ) : getPlaceStatus(selectedPlace) === "locked" ? (
+            ) : selectedPlace.status === "locked" ? (
               <Badge variant="orange">已锁定</Badge>
             ) : (
               <Badge variant="secondary">候选</Badge>
@@ -343,12 +343,12 @@ export function TripPage() {
                 disabled={placeBusy}
                 onClick={() => void togglePlaceLock(selectedPlace)}
                 className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
-                  getPlaceStatus(selectedPlace) === "locked"
+                  selectedPlace.status === "locked"
                     ? "bg-amber-500/15 text-amber-700 hover:bg-amber-500/25"
                     : "bg-slate-900/8 text-slate-600 hover:bg-slate-900/15"
                 }`}
               >
-                {getPlaceStatus(selectedPlace) === "locked" ? (
+                {selectedPlace.status === "locked" ? (
                   <>
                     <LockOpen className="size-3" /> 解锁
                   </>
