@@ -29,6 +29,13 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  * - entry 之间显示交通段（模式图标 + 时长 + 距离），可手动切换 步行/驾车（M1 leg override 端点）
  * - 每天头部显示当晚住宿（多酒店，M10：取覆盖该天的已选定酒店）；
  *   换酒店日显示「离店 A → 入住 B」提示
+ * - 酒店端点节点（M17）：每天首渲染「从 X 酒店出发」、尾渲染「返回 X 酒店」，
+ *   数据取 legs 首/末段的 from/toPlaceId（服务端按选定酒店锚定当天首尾，M9/M11）；
+ *   用酒店图标 + hotelpin 虚线卡片区别于普通 entry；出发/到店时刻随时间轴推算（~ 前缀 = 估算），
+ *   首段交通时长挂在出发节点下方。大交通收口的头/尾天（机场落地/离开）服务端不锚定，节点自然不出现
+ * - 无覆盖酒店的天（M17）：天头部显示「当晚未安排住宿」+「去候选池选定」引导
+ *   （onOpenCandidates 由 TripPage 传入；只读分享页只有文案没有按钮）。
+ *   注意 锁定 ≠ 选定：只有「选定」（带 checkInDay/checkOutDay 住宿区间）的酒店才参与路线锚定
  * - Day 筛选 tabs（M15，TripPage 传入 visibleDay/onVisibleDayChange 时启用）：
  *   面板顶部「全部/D1/D2…」，选中天过滤面板并同步地图聚焦
  * - readOnly（分享页）：隐藏一切编辑操作
@@ -48,6 +55,8 @@ interface ItineraryPanelProps {
    */
   visibleDay?: number | null;
   onVisibleDayChange?: (dayIndex: number | null) => void;
+  /** 打开候选池面板（M17：无覆盖酒店天的「去候选池选定」引导；TripPage 传入，分享页不传则只显示文案） */
+  onOpenCandidates?: () => void;
 }
 
 export function ItineraryPanel({
@@ -59,6 +68,7 @@ export function ItineraryPanel({
   readOnly = false,
   visibleDay = null,
   onVisibleDayChange,
+  onOpenCandidates,
 }: ItineraryPanelProps) {
   const [busy, setBusy] = useState(false);
   const placeById = new Map(bundle.places.map((p) => [p.id, p]));
@@ -230,6 +240,13 @@ export function ItineraryPanel({
           prevNightStay && prevNightStay.candidateId !== nightStay?.candidateId
             ? prevNightStay
             : null;
+        // 酒店端点锚定段（M17）：首段 fromPlaceId 指向酒店（酒店→首 entry），末段 toPlaceId 指向酒店
+        // （末 entry→酒店）；换酒店日首=旧酒店、尾=新酒店。无选定酒店覆盖的天没有这两段
+        const dayLegs = bundle.legs
+          .filter((l) => l.dayId === day.id)
+          .sort((a, b) => a.seq - b.seq);
+        const startLeg = dayLegs.find((l) => l.fromPlaceId != null) ?? null;
+        const endLeg = [...dayLegs].reverse().find((l) => l.toPlaceId != null) ?? null;
         return (
           <section key={day.id} className="border-b border-slate-900/8 p-3">
             <header className="mb-2 flex items-center gap-2">
@@ -257,8 +274,8 @@ export function ItineraryPanel({
               )}
             </header>
 
-            {/* 住宿行：平时「当晚住宿：X」，换酒店日「离店 A → 入住 B」 */}
-            {(nightStay || switchFrom) && (
+            {/* 住宿行：平时「当晚住宿：X」，换酒店日「离店 A → 入住 B」；无覆盖时给「去候选池选定」引导（M17） */}
+            {nightStay || switchFrom ? (
               <p className="mb-1.5 flex items-center gap-1 text-[11px] text-slate-400">
                 <BedDouble className="size-3 shrink-0" />
                 {switchFrom ? (
@@ -269,6 +286,22 @@ export function ItineraryPanel({
                 ) : nightStay ? (
                   <span>当晚住宿：{renderStayName(nightStay)}</span>
                 ) : null}
+                {!nightStay && !readOnly && onOpenCandidates && (
+                  <SelectHotelGuide onClick={onOpenCandidates} />
+                )}
+              </p>
+            ) : (
+              <p className="mb-1.5 flex items-center gap-1 text-[11px] text-slate-400">
+                <BedDouble className="size-3 shrink-0" />
+                <span>
+                  当晚未安排住宿
+                  <span className="text-slate-300">
+                    （锁定的酒店还需「选定」并设置入离店天，才会锚定当天首尾）
+                  </span>
+                </span>
+                {!readOnly && onOpenCandidates && (
+                  <SelectHotelGuide onClick={onOpenCandidates} />
+                )}
               </p>
             )}
 
@@ -278,6 +311,29 @@ export function ItineraryPanel({
                   {nightStay
                     ? `当天暂无行程（当晚住宿：${placeName(nightStay.placeId)}）`
                     : "当天暂无行程"}
+                </li>
+              )}
+              {/* 酒店出发节点（M17）：首段 leg（酒店→首 entry）存在时渲染，时刻 = 首站开始 - 首段时长 */}
+              {startLeg?.fromPlaceId != null && (
+                <li>
+                  <HotelAnchorRow
+                    direction="depart"
+                    name={placeName(startLeg.fromPlaceId)}
+                    timeMin={
+                      timeline.length > 0
+                        ? timeline[0].startMin - Math.round((startLeg.durationS ?? 0) / 60)
+                        : null
+                    }
+                    estimated={timeline[0]?.estimated ?? true}
+                    onSelect={() => onSelectPlace(startLeg.fromPlaceId!)}
+                  />
+                  <LegRow
+                    leg={startLeg}
+                    toHotel={false}
+                    readOnly={readOnly}
+                    busy={busy}
+                    onOverride={overrideMode}
+                  />
                 </li>
               )}
               {timeline.map((item, i) => {
@@ -397,7 +453,6 @@ export function ItineraryPanel({
                       <LegRow
                         leg={leg}
                         toHotel={toHotel}
-                        hotelName={leg.toPlaceId != null ? placeName(leg.toPlaceId) : undefined}
                         readOnly={readOnly}
                         busy={busy}
                         onOverride={overrideMode}
@@ -406,6 +461,23 @@ export function ItineraryPanel({
                   </li>
                 );
               })}
+              {/* 返回酒店节点（M17）：末段 leg（末 entry→酒店）的时长在其上方 LegRow 展示，时刻 = 末站结束 + 末段时长 */}
+              {endLeg?.toPlaceId != null && (
+                <li>
+                  <HotelAnchorRow
+                    direction="return"
+                    name={placeName(endLeg.toPlaceId)}
+                    timeMin={
+                      timeline.length > 0
+                        ? timeline[timeline.length - 1].endMin +
+                          Math.round((endLeg.durationS ?? 0) / 60)
+                        : null
+                    }
+                    estimated={timeline[timeline.length - 1]?.estimated ?? true}
+                    onSelect={() => onSelectPlace(endLeg.toPlaceId!)}
+                  />
+                </li>
+              )}
             </ol>
           </section>
         );
@@ -550,18 +622,17 @@ function TransitRow({
   );
 }
 
-/** 交通段行：图标 + 时长 + 距离；非只读时可切换 步行/驾车（覆盖后不被自动重算冲掉） */
+/** 交通段行：图标 + 时长 + 距离；非只读时可切换 步行/驾车（覆盖后不被自动重算冲掉）。
+ *  返回酒店段（toHotel）的「返回 X 酒店」由 M17 的酒店端点节点承载，这里只保留交通信息且不提供覆盖切换 */
 function LegRow({
   leg,
   toHotel,
-  hotelName,
   readOnly,
   busy,
   onOverride,
 }: {
   leg: TransportLegDto;
   toHotel: boolean;
-  hotelName?: string;
   readOnly: boolean;
   busy: boolean;
   onOverride: (legId: string, mode: "walk" | "drive" | null) => Promise<void>;
@@ -570,9 +641,8 @@ function LegRow({
   const overridden = leg.modeOverride != null;
   return (
     <div className="group/leg flex items-center gap-1 py-0.5 pl-9 text-[11px] text-slate-400">
-      <TransportIcon mode={toHotel ? "hotel" : leg.mode} />
+      <TransportIcon mode={leg.mode} />
       <span>
-        {toHotel ? `返回 ${hotelName ?? "酒店"} · ` : ""}
         {formatDuration(leg.durationS)}
         {leg.distanceM != null ? ` · ${formatDistance(leg.distanceM)}` : ""}
       </span>
@@ -612,8 +682,62 @@ function LegRow({
   );
 }
 
+/** 酒店端点节点（M17）：每天首「从 X 酒店出发」/ 尾「返回 X 酒店」，点击在地图上选中酒店。
+ *  hotelpin 红 + 虚线卡片区别于普通 entry 与大交通卡；时刻 ~ 前缀 = 随时间轴推算的估算值 */
+function HotelAnchorRow({
+  direction,
+  name,
+  timeMin,
+  estimated,
+  onSelect,
+}: {
+  direction: "depart" | "return";
+  name: string;
+  timeMin: number | null;
+  estimated: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <div
+      className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-hotelpin/40 bg-hotelpin/8 px-2 py-1.5 transition-colors hover:bg-hotelpin/15"
+      onClick={onSelect}
+    >
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-hotelpin text-white">
+        <BedDouble className="size-3.5" />
+      </span>
+      <span className="flex min-w-0 flex-1 items-baseline text-sm font-medium text-slate-700">
+        <span className="shrink-0">{direction === "depart" ? "从 " : "返回 "}</span>
+        <span className="truncate">{name}</span>
+        {direction === "depart" ? <span className="shrink-0"> 出发</span> : null}
+      </span>
+      {timeMin != null && (
+        <span
+          className={`shrink-0 text-[11px] tabular-nums ${estimated ? "text-slate-300" : "text-slate-500"}`}
+          title={estimated ? "按停留时长与交通时间推算" : undefined}
+        >
+          {estimated ? "~" : ""}
+          {formatHHMM(timeMin)}
+          {direction === "depart" ? " 出发" : " 到店"}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** 「去候选池选定」引导钮（M17）：讲清 锁定 ≠ 选定——只有选定（带入住/离店天）的酒店才参与首尾锚定 */
+function SelectHotelGuide({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="只有「选定」酒店（带入住/离店天）才会作为当天行程的首尾锚点；候选池里仅「锁定」还不够"
+      className="shrink-0 rounded bg-slate-900/8 px-1.5 py-0.5 text-slate-500 transition-colors hover:bg-slate-900/15 hover:text-slate-700"
+    >
+      去候选池选定 →
+    </button>
+  );
+}
+
 function TransportIcon({ mode }: { mode: string }) {
-  if (mode === "hotel") return <BedDouble className="size-3 shrink-0 text-slate-400" />;
   if (mode === "walk") return <Footprints className="size-3 shrink-0 text-slate-400" />;
   if (mode === "transit") return <Bus className="size-3 shrink-0 text-slate-400" />;
   return <Car className="size-3 shrink-0 text-slate-400" />;

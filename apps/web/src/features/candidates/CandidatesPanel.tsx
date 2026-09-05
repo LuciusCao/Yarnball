@@ -36,6 +36,7 @@ import {
  * 区间互相冲突的选项禁用并提示（服务端同样校验，见 M9 契约）。
  * 预订状态（M11）：每项显示 无需预订/待预订/已预订 徽章，locked 地点可点选流转；
  * 待预订的锁定地点卡片高亮并在顶部汇总提醒。营业时间（openingHours）有值即展示。
+ * 锁定但未选定的酒店带「已锁定·未选定住宿天」提示徽标（M17：锁定 ≠ 选定，后者才参与路线锚定）。
  * 数据刷新：操作后走 SSE bundle 全量快照 + 主动 load 兜底，不做本地增量。
  */
 
@@ -310,6 +311,15 @@ export function CandidatesPanel({
                               </Badge>
                             )}
                             {locked && <Badge variant="locked">已锁定</Badge>}
+                            {/* 锁定但未选定的酒店（M17）：锁定 ≠ 选定，只有选定（带入离店天）才参与行程首尾锚定 */}
+                            {key === "hotel" && hotelCand && locked && !isSelectedHotel && (
+                              <Badge
+                                variant="orange"
+                                title="点右侧「选定」并设置入住/离店天，酒店才会作为行程每天的首尾锚点"
+                              >
+                                已锁定·未选定住宿天
+                              </Badge>
+                            )}
                             {locked ? (
                               <button
                                 title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
