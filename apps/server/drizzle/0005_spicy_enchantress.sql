@@ -1,7 +1,8 @@
 ALTER TABLE "hotel_candidates" ADD COLUMN "selected" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 ALTER TABLE "hotel_candidates" ADD COLUMN "check_in_day" integer;--> statement-breakpoint
 ALTER TABLE "hotel_candidates" ADD COLUMN "check_out_day" integer;--> statement-breakpoint
--- 存量回填：trips.selected_hotel_candidate_id 单选 → 覆盖全部天的 stay（闭开区间 [1, 天数+1)）。
+-- 存量回填：trips.selected_hotel_candidate_id 单选 → 覆盖前 N-1 晚的 stay（闭开区间 [1, N)）。
+-- N 天行程 = N-1 晚（最后一天离店不住），与预算口径一致；最后一天无覆盖 → 无锚点，符合预期。
 -- 天数取 max(已有 days 最大 dayIndex, 日期范围天数, 1)。selected_hotel_candidate_id 列保留为兼容镜像，由 service 层继续同步。
 UPDATE "hotel_candidates" hc
 SET "selected" = true,
@@ -14,7 +15,7 @@ SET "selected" = true,
              ELSE 0
         END,
         1
-      ) + 1
+      )
       FROM "trips" t
       WHERE t."selected_hotel_candidate_id" = hc."id"
     )

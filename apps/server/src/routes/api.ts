@@ -46,6 +46,10 @@ export function createApi(
 
   api.onError((err, c) => {
     if (err instanceof ServiceError) return c.json({ error: err.message }, err.status as 400);
+    // zod 入参校验失败 → 400（此前一律 500，调用方无法区分是参数错还是服务端故障）
+    if (err instanceof z.ZodError) {
+      return c.json({ error: err.issues.map((i) => i.message).join("; ") }, 400);
+    }
     console.error("[api] unhandled:", err);
     return c.json({ error: "internal error" }, 500);
   });

@@ -295,7 +295,7 @@ export type CreateHotelCandidateInput = z.infer<
 /**
  * 选定酒店（POST /api/trips/:tripId/select-hotel 与 MCP select_hotel）。
  * 天序号为 1-based 闭开区间 [checkInDay, checkOutDay)：覆盖第 checkInDay..checkOutDay-1 晚。
- * 缺省时服务端智能建议（覆盖尚未被其他已选定酒店覆盖的最长连续天段）；
+ * checkInDay/checkOutDay 必须同给或同缺（同缺时服务端智能建议覆盖尚未被覆盖的最长连续天段）；
  * 同一行程已选定酒店的天数区间不得重叠。candidateId=null 表示取消全部选定（兼容旧契约）。
  */
 export const SelectHotelInputSchema = z
@@ -303,6 +303,9 @@ export const SelectHotelInputSchema = z
     candidateId: z.string().nullable(),
     checkInDay: z.number().int().min(1).optional(),
     checkOutDay: z.number().int().min(2).optional(),
+  })
+  .refine((v) => (v.checkInDay == null) === (v.checkOutDay == null), {
+    message: "checkInDay 与 checkOutDay 必须同时提供或同时省略",
   })
   .refine(
     (v) =>
@@ -439,6 +442,7 @@ export const BudgetSummarySchema = z.object({
   currency: z.string(),
   budgetCny: z.number().nullable(),
   travelerCount: z.number(),
+  /** 晚数：有已选定酒店时 = 覆盖晚数合计（与 hotelCny 计费口径一致）；无覆盖时 = 行程天数-1（N 天行程 N-1 晚，末日离店不住） */
   nights: z.number(),
   hotelSelected: z.boolean(),
   hotelCny: z.number().nullable(),

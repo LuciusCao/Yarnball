@@ -899,6 +899,10 @@ export class TripService {
 
     let checkInDay = days?.checkInDay;
     let checkOutDay = days?.checkOutDay;
+    // REST 由 SelectHotelInputSchema 保证同给同缺；MCP 走 shape 注册不跑对象级 refine，这里兜底
+    if ((checkInDay == null) !== (checkOutDay == null)) {
+      throw new ServiceError(422, "checkInDay 与 checkOutDay 必须同时提供或同时省略（同缺时自动建议未被覆盖的天段）");
+    }
     if (checkInDay == null || checkOutDay == null) {
       // 缺省智能建议：尚未被其他已选定酒店覆盖的最长连续天段
       const covered = new Set<number>();
@@ -1043,16 +1047,18 @@ export class TripService {
       .where(eq(schema.days.tripId, tripId));
     const places = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
 
-    // 晚数：日期范围优先，退回天数，至少 1
-    let nights = Math.max(dayRows.length, 1);
+    // 行程天数：日期范围优先（含首尾 = 日期差+1），退回已建天数
+    let tripDays = Math.max(dayRows.length, 1);
     if (trip.startDate && trip.endDate) {
       const diff = Math.round(
         (new Date(trip.endDate).getTime() - new Date(trip.startDate).getTime()) / 86_400_000,
-      );
-      if (Number.isFinite(diff) && diff > 0) nights = diff;
+      ) + 1;
+      if (Number.isFinite(diff) && diff > 0) tripDays = diff;
     }
 
-    // 住宿费：各已选定酒店 × 各自覆盖晚数（checkOutDay - checkInDay）求和
+    // 住宿费：各已选定酒店 × 各自覆盖晚数（checkOutDay - checkInDay）求和。
+    // 晚数口径与计费一致：N 天行程 = N-1 晚（最后一天离店不住）；
+    // 有已选定酒店时 nights = 覆盖晚数合计，无覆盖时显示 天数-1 供参考。
     const selectedHotels = await this.db
       .select()
       .from(schema.hotelCandidates)
@@ -1061,15 +1067,18 @@ export class TripService {
       );
     let hotelCny: number | null = null;
     let hotelSelected = false;
+    let coveredNightsTotal = 0;
     for (const cand of selectedHotels) {
       hotelSelected = true;
-      if (cand.pricePerNight == null) continue;
       const coveredNights =
         cand.checkInDay != null && cand.checkOutDay != null
           ? Math.max(0, cand.checkOutDay - cand.checkInDay)
-          : nights;
+          : 0;
+      coveredNightsTotal += coveredNights;
+      if (cand.pricePerNight == null) continue;
       hotelCny = (hotelCny ?? 0) + cand.pricePerNight * coveredNights;
     }
+    const nights = hotelSelected ? coveredNightsTotal : Math.max(0, tripDays - 1);
 
     let diningCny = 0;
     let ticketsCny = 0;
