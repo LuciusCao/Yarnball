@@ -3,7 +3,7 @@ import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
 import type { ChatMessageDto, ChatSessionDto, TripDto } from "@yarnball/shared";
 import { toast } from "sonner";
-import { AlertTriangle, Brain, Check, Clock, ListChecks, Loader2, SendHorizontal, ShieldCheck, Unplug, X } from "lucide-react";
+import { AlertTriangle, Brain, CalendarClock, Check, Clock, ListChecks, Loader2, SendHorizontal, ShieldCheck, Unplug, X } from "lucide-react";
 import { api } from "../../api/client";
 import { Button } from "../../components/ui/button";
 import { Textarea, Select } from "../../components/ui/input";
@@ -28,6 +28,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   const [agentId, setAgentId] = useState("");
   const [input, setInput] = useState("");
   const [starting, setStarting] = useState(false);
+  const [planning, setPlanning] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeSession = useMemo(
@@ -89,6 +90,41 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
     }
   }
 
+  /**
+   * 「规划每日行程」引导：拉当前 bundle，把已锁定/候选地点摘要组装成预制指令，
+   * 走现有发送链路发给 agent。place.status 由 M1 引入，合入前防御性按候选处理。
+   */
+  async function planDays() {
+    if (!activeSession) return;
+    setPlanning(true);
+    try {
+      const { bundle } = await api.getBundle(trip.id);
+      const statusOf = (p: (typeof bundle.places)[number]) =>
+        (p as { status?: string }).status ?? "candidate";
+      const locked = bundle.places.filter((p) => statusOf(p) === "locked");
+      const candidates = bundle.places.filter((p) => statusOf(p) !== "locked");
+      if (locked.length === 0 && candidates.length === 0) {
+        toast.info("还没有地点。先让 agent 解析攻略，或在「添加地点」里手动加几个。");
+        return;
+      }
+      const fmt = (list: typeof bundle.places) =>
+        list
+          .map((p) => `${p.name}${p.durationMin ? `（约${p.durationMin}分钟）` : ""}`)
+          .join("、") || "（无）";
+      const text = [
+        `请帮我规划这次「${bundle.trip.destinationCity}」之行的每日行程。`,
+        `已锁定（必须排入）：${fmt(locked)}`,
+        `候选地点（按顺路和体验取舍）：${fmt(candidates)}`,
+        `当前已有 ${bundle.days.length} 天日程框架。要求：每天从 09:00 开始，为每个地点写入 startTime，交通段自动计算；排完后简述安排思路。`,
+      ].join("\n");
+      await api.sendPrompt(activeSession.id, text);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setPlanning(false);
+    }
+  }
+
   async function closeSession() {
     if (!activeSession) return;
     await api.closeChatSession(activeSession.id);
@@ -121,6 +157,15 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
           </Button>
         </div>
         {starting && <p className="text-xs text-slate-400">正在启动 agent 子进程…</p>}
+        {/* 规划引导（空态置灰）：连接 agent 后一键把已锁定/候选地点发给 agent 排程 */}
+        <button
+          disabled
+          title="先连接 agent，再让它规划每日行程"
+          className="flex items-center gap-1.5 rounded-full border border-slate-300/50 px-3 py-1.5 text-xs text-slate-400 opacity-60"
+        >
+          <CalendarClock className="size-3.5" />
+          规划每日行程（先连接 agent）
+        </button>
       </div>
     );
   }
@@ -184,6 +229,16 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
       {/* 输入 */}
       <div className="border-t border-slate-900/8 p-3">
+        {/* 规划引导：把已锁定/候选地点摘要组装成预制指令发给 agent */}
+        <button
+          onClick={() => void planDays()}
+          disabled={running || planning}
+          title="把当前已锁定/候选地点发给 agent，让它排每日行程（含 startTime 与交通段）"
+          className="mb-2 flex items-center gap-1.5 rounded-full border border-blue-300/60 bg-blue-500/8 px-3 py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-500/15 disabled:opacity-50"
+        >
+          {planning ? <Loader2 className="size-3.5 animate-spin" /> : <CalendarClock className="size-3.5" />}
+          规划每日行程
+        </button>
         <div className="relative">
           <Textarea
             value={input}
