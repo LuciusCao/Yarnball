@@ -40,7 +40,7 @@ Hono Server                                     │
 ```
 
 - **ACP client**（`@agentclientprotocol/sdk`）：每会话一个 agent 子进程；permission 四层策略（Yarnball 工具自动批准 → 只读 kind 自动批准 → allow-all → 停靠 UI 120s）；terminal 协议五方法（kimi 的 Bash/Grep 依赖）；bootstrap prompt（钉死「坐标必须来自 search_poi」纪律 + 海外英文搜索提示）；压缩转录回放恢复
-- **MCP server**（`@modelcontextprotocol/sdk`，stateless streamable HTTP）：每请求从 header 重解析 scoped token，绑定到会话的 trip；14 个工具（get_trip_context / search_poi / add_place / add_place_to_day / analyze_detour / suggest_day_order / reorder_day / add_hotel_candidate / select_hotel …）
+- **MCP server**（`@modelcontextprotocol/sdk`，stateless streamable HTTP）：每请求从 header 重解析 scoped token，绑定到会话的 trip；20 个工具（get_trip_context / search_poi / add_place / add_place_to_day / add_transit_entry / update_entry / analyze_detour / suggest_day_order / suggest_day_clusters / lock_place / unlock_place / add_hotel_candidate / select_hotel …）
 - **顺路引擎**：provider 距离矩阵 + 最近邻 + 2-opt 重排；插入位置全枚举的时间增量分析；交通段自动计算（<2km 步行 / 其余驾车，真实路径 polyline）
 - **UI**：全屏地图打底，mac 毛玻璃浮层（traffic lights：红=隐藏 / 黄=收成竖条 / 绿=展开），Day 筛选 chips，酒店推荐区域圆
 - **防编造校验**：agent 建点时坐标必须落在目的城市附近（国内 150km / 海外 300km），越界拒绝并引导先 search_poi
