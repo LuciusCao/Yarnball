@@ -29,6 +29,13 @@ interface ChatPanelProps {
   selectedPlaceId: string | null;
 }
 
+/** 空态引导示例话术：未连接时静态展示；已连接空会话时点击填入输入框 */
+const EXAMPLE_PROMPTS = [
+  "这是我从攻略里复制的行程，帮我解析成地点",
+  "帮我推荐几家住宿区域附近的酒店",
+  "把想去的餐厅列给我，我挑几家锁定",
+] as const;
+
 export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }: ChatPanelProps) {
   // GET /api/agents 现在返回全部注册 agent（含 disabled，带 command/args）——只保留 enabled
   const [agents, setAgents] = useState<AgentRegistryDto[]>([]);
@@ -215,6 +222,18 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
           </div>
         )}
         {starting && <p className="text-xs text-slate-400">正在启动 agent 子进程…</p>}
+        {/* 示例话术 chips：未连接时静态预览，告诉用户连上后能说什么 */}
+        <div className="flex max-w-[280px] flex-col items-center gap-1.5">
+          <p className="text-[11px] text-slate-400">连接后可以这样说：</p>
+          {EXAMPLE_PROMPTS.map((text) => (
+            <span
+              key={text}
+              className="rounded-full border border-slate-300/60 bg-white/50 px-3 py-1 text-[11px] text-slate-500"
+            >
+              {text}
+            </span>
+          ))}
+        </div>
         {/* 规划引导（空态置灰）：连接 agent 后一键把已锁定/候选地点发给 agent 排程 */}
         <button
           disabled
@@ -272,6 +291,23 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
       {/* 消息流 */}
       <div className="flex-1 space-y-2 overflow-y-auto p-3">
+        {/* 已连接的空会话：引导第一条消息，chips 点击填入输入框 */}
+        {messages.length === 0 && !running && (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+            <p className="text-xs text-slate-500">
+              把你的攻略文本直接粘贴给我，我会解析成地点放进候选池。
+            </p>
+            {EXAMPLE_PROMPTS.map((text) => (
+              <button
+                key={text}
+                onClick={() => setInput(text)}
+                className="rounded-full border border-scheduled/30 bg-scheduled/8 px-3 py-1 text-[11px] text-scheduled transition-colors hover:bg-scheduled/15"
+              >
+                {text}
+              </button>
+            ))}
+          </div>
+        )}
         {messages.map((m) => (
           <MessageBubble
             key={m.id}
@@ -287,12 +323,12 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
       {/* 输入 */}
       <div className="border-t border-slate-900/8 p-3">
-        {/* 规划引导：把已锁定/候选地点摘要组装成预制指令发给 agent */}
+        {/* 规划引导（主行动点）：把已锁定/候选地点摘要组装成预制指令发给 agent */}
         <button
           onClick={() => void planDays()}
           disabled={running || planning}
           title="把当前已锁定/候选地点发给 agent，让它排每日行程（含 startTime 与交通段）"
-          className="mb-2 flex items-center gap-1.5 rounded-full border border-blue-300/60 bg-blue-500/8 px-3 py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-500/15 disabled:opacity-50"
+          className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-xl bg-brand px-3 py-2 text-xs font-medium text-white shadow-sm transition-colors hover:bg-brand-hover disabled:opacity-50"
         >
           {planning ? <Loader2 className="size-3.5 animate-spin" /> : <CalendarClock className="size-3.5" />}
           规划每日行程
@@ -318,7 +354,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
             onClick={() => void send()}
             disabled={running || !input.trim()}
             title="发送"
-            className="absolute bottom-2.5 right-2 flex size-8 items-center justify-center rounded-full bg-blue-600 text-white shadow transition-all enabled:hover:bg-blue-500 disabled:opacity-40"
+            className="absolute bottom-2.5 right-2 flex size-8 items-center justify-center rounded-full bg-brand text-white shadow transition-all enabled:hover:bg-brand-hover disabled:opacity-40"
           >
             <SendHorizontal className="size-4" />
           </button>
@@ -346,7 +382,7 @@ function MessageBubble({
     case "user_text":
       return (
         <div className="flex justify-end">
-          <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-blue-600 px-3 py-2 text-sm text-white shadow">
+          <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-brand px-3 py-2 text-sm text-white shadow">
             {String(message.content.text ?? "")}
           </div>
         </div>

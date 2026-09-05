@@ -337,7 +337,7 @@ export function TripPage() {
 
       {/* 左上（Day chips 下方）：选中地点信息卡（可操作：锁定/解锁/删除） ===== */}
       {selectedPlace && (
-        <div className="glass panel-in absolute left-4 top-[104px] z-10 max-w-xs rounded-2xl p-3.5">
+        <div className="glass panel-in rounded-card absolute left-4 top-[104px] z-10 max-w-xs p-3.5 shadow-card">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-slate-900">
@@ -352,14 +352,14 @@ export function TripPage() {
               ✕
             </button>
           </div>
-          {/* 状态徽章：已排期 > 已锁定 > 候选；agent 建的地点带推荐标记 */}
+          {/* 状态徽章：已排期 > 已锁定 > 候选（消费 M13 令牌变体）；agent 建的地点带推荐标记 */}
           <div className="mt-1.5 flex flex-wrap gap-1">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
-              <Badge variant="blue">已排期</Badge>
+              <Badge variant="scheduled">已排期</Badge>
             ) : selectedPlace.status === "locked" ? (
-              <Badge variant="orange">已锁定</Badge>
+              <Badge variant="locked">已锁定</Badge>
             ) : (
-              <Badge variant="secondary">候选</Badge>
+              <Badge variant="candidate">候选</Badge>
             )}
             {selectedPlace.createdBy === "agent" && (
               <Badge variant="blue">
@@ -446,7 +446,7 @@ export function TripPage() {
                 onClick={() => void togglePlaceLock(selectedPlace)}
                 className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
                   selectedPlace.status === "locked"
-                    ? "bg-amber-500/15 text-amber-700 hover:bg-amber-500/25"
+                    ? "bg-locked/10 text-locked hover:bg-locked/20"
                     : "bg-slate-900/8 text-slate-600 hover:bg-slate-900/15"
                 }`}
               >
@@ -525,12 +525,15 @@ export function TripPage() {
           <button
             key={key}
             onClick={() => setLeftPanel(leftPanel === key ? null : key)}
-            title={meta.label}
-            className={`flex items-center justify-center rounded-full p-2 transition-colors ${
-              leftPanel === key ? "bg-slate-900/10 text-slate-900" : "text-slate-500 hover:bg-slate-900/5"
+            title={leftPanel === key ? `收起${meta.label}面板` : `展开${meta.label}面板`}
+            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+              leftPanel === key
+                ? "bg-slate-900 text-white shadow-sm"
+                : "text-slate-500 hover:bg-slate-900/5 hover:text-slate-800"
             }`}
           >
-            <meta.Icon className="size-4" />
+            <meta.Icon className="size-3.5" />
+            {meta.label}
           </button>
         ))}
       </div>
