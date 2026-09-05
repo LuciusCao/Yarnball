@@ -3,13 +3,17 @@ import type {
   AgentAvailability,
   AgentRegistryDto,
   CreateAgentInput,
+  EntryDto,
   PlaceDto,
   PlaceStatus,
   SelectHotelInput,
   SettingsDto,
   SetLegModeInput,
+  SuggestDayClustersResult,
   TransportMode,
   UpdateAgentInput,
+  UpdateEntryInput,
+  UpdatePlaceInput,
   UpdateSettingsInput,
 } from "@yarnball/shared";
 
@@ -43,10 +47,44 @@ export const api = {
 
   /** 排地点到某天，可带 startTime（HH:MM）（POST /api/trips/:tripId/entries） */
   addEntry: (tripId: string, input: AddEntryInput) =>
-    request<{ dayId: string; position: number }>(`/trips/${tripId}/entries`, {
+    request<{ entryId: string; dayId: string; position: number }>(`/trips/${tripId}/entries`, {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  /**
+   * 创建大交通节点（POST /api/trips/:tripId/entries，entryType=transit）。
+   * 起讫点各给 fromPlaceId（行程内地点，走真实坐标锚定）或 fromName（自由文本）之一，讫点同理。
+   */
+  addTransitEntry: (
+    tripId: string,
+    input: Omit<AddEntryInput, "entryType" | "placeId">,
+  ) =>
+    request<{ entryId: string; dayId: string; position: number }>(`/trips/${tripId}/entries`, {
+      method: "POST",
+      body: JSON.stringify({ ...input, entryType: "transit" }),
+    }),
+
+  /**
+   * 编辑 entry（PATCH /api/entries/:id）：startTime/durationMin/note 通用；
+   * departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName 仅 transit entry（传 null 清除）。
+   */
+  updateEntry: (entryId: string, input: UpdateEntryInput) =>
+    request<{ entry: EntryDto }>(`/entries/${entryId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+
+  /** 编辑地点字段（PATCH /api/places/:id）：含 openingHours（营业时间）/bookingStatus（预订状态）等 */
+  updatePlace: (placeId: string, input: UpdatePlaceInput) =>
+    request<{ place: PlaceDto }>(`/places/${placeId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+
+  /** 区域聚类建议（GET /api/trips/:tripId/suggest-clusters，只建议不落库）：未排期地点聚成 1-4 片，建议每天一片 */
+  suggestDayClusters: (tripId: string) =>
+    request<{ suggestion: SuggestDayClustersResult }>(`/trips/${tripId}/suggest-clusters`),
 
   /** 手动覆盖交通段方式；mode=null 清除覆盖（PATCH /api/legs/:id/mode） */
   setLegMode: (legId: string, mode: TransportMode | null) =>

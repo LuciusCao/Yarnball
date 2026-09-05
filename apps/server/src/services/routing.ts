@@ -186,6 +186,83 @@ export function insertionIncrements(
 }
 
 /**
+ * k-medoids 聚类（PAM swap）：输入时长/距离矩阵，返回每个点的簇下标（0..k-1）。
+ * 确定性：farthest-first 初始化（首 medoid 取离所有点总距离最远的边缘点）。
+ */
+export function kMedoids(matrix: number[][], k: number): number[] {
+  const n = matrix.length;
+  if (n === 0) return [];
+  if (k <= 1) return new Array(n).fill(0);
+  if (k >= n) return [...Array(n).keys()];
+  const medoids: number[] = [];
+  let first = 0;
+  let bestSum = -1;
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let j = 0; j < n; j++) s += matrix[i][j];
+    if (s > bestSum) {
+      bestSum = s;
+      first = i;
+    }
+  }
+  medoids.push(first);
+  while (medoids.length < k) {
+    let cand = -1;
+    let bestD = -1;
+    for (let i = 0; i < n; i++) {
+      if (medoids.includes(i)) continue;
+      let d = Infinity;
+      for (const m of medoids) d = Math.min(d, matrix[i][m]);
+      if (d > bestD) {
+        bestD = d;
+        cand = i;
+      }
+    }
+    medoids.push(cand);
+  }
+  const assign = (med: number[]) =>
+    matrix.map((row) => {
+      let bi = 0;
+      let bd = Infinity;
+      for (let c = 0; c < med.length; c++) {
+        const d = row[med[c]];
+        if (d < bd) {
+          bd = d;
+          bi = c;
+        }
+      }
+      return bi;
+    });
+  const cost = (med: number[]) => {
+    const a = assign(med);
+    let s = 0;
+    for (let i = 0; i < n; i++) s += matrix[i][med[a[i]]];
+    return s;
+  };
+  let cur = [...medoids];
+  let curCost = cost(cur);
+  let improved = true;
+  let guard = 0;
+  while (improved && guard++ < 30) {
+    improved = false;
+    for (let mi = 0; mi < cur.length; mi++) {
+      for (let i = 0; i < n; i++) {
+        if (cur.includes(i)) continue;
+        const cand = [...cur];
+        cand[mi] = i;
+        const c = cost(cand);
+        if (c < curCost - 1e-9) {
+          cur = cand;
+          curCost = c;
+          improved = true;
+        }
+      }
+    }
+  }
+  return assign(cur);
+}
+
+/**
  * 路径优化：下标 0 为起点锚点（旧酒店），下标 n-1 为终点锚点（新酒店），
  * 两端固定，优化中间途经点顺序（换酒店日用；同酒店往返走 optimizeLoopOrder）。
  * 返回 [0, ...途经顺序, n-1]。

@@ -91,7 +91,8 @@ export function buildOverlaySpecs(
     const entries = dayEntries.get(day.id) ?? [];
 
     entries.forEach((entry, i) => {
-      const place = placeById.get(entry.placeId);
+      // transit entry 可能没有关联 place（纯文本起讫点），M12 落地前不在地图渲染
+      const place = entry.placeId ? placeById.get(entry.placeId) : undefined;
       if (!place) return;
       markers.push({
         id: `e-${entry.id}`,
