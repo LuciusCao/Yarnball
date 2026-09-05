@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Check, KeyRound, Pencil, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
+import type { AgentAvailability, SettingsDto, UpdateSettingsInput } from "@yarnball/shared";
 import { cn } from "../../lib/utils";
+import { api } from "../../lib/api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
@@ -15,12 +17,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../../components/ui/dialog";
-import {
-  settingsApi,
-  type AgentCliStatus,
-  type AppSettings,
-  type UpdateSettingsInput,
-} from "./api";
 
 /** 高德三个 key 的表单字段定义 */
 const AMAP_FIELDS = [
@@ -34,13 +30,13 @@ type AmapFieldKey = (typeof AMAP_FIELDS)[number]["key"];
 /** agent 编辑表单状态（id 为空表示新建） */
 interface AgentFormState {
   id: string | null;
-  name: string;
+  label: string;
   command: string;
   argsText: string; // 空格分隔，提交时拆开
   enabled: boolean;
 }
 
-const EMPTY_FORM: AgentFormState = { id: null, name: "", command: "", argsText: "", enabled: true };
+const EMPTY_FORM: AgentFormState = { id: null, label: "", command: "", argsText: "", enabled: true };
 
 /** 设置抽屉：高德密钥 + agent CLI 管理，从右侧滑出 */
 export function SettingsDrawer({
@@ -50,7 +46,7 @@ export function SettingsDrawer({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [settings, setSettings] = useState<SettingsDto | null>(null);
   // 三个 key 的输入值（留空 = 保持不变）；cleared 记录用户点了「清除」的字段
   const [keyInputs, setKeyInputs] = useState<Record<AmapFieldKey, string>>({
     amapJsKey: "",
@@ -60,17 +56,17 @@ export function SettingsDrawer({
   const [clearedKeys, setClearedKeys] = useState<Set<AmapFieldKey>>(new Set());
   const [savingKeys, setSavingKeys] = useState(false);
 
-  const [agents, setAgents] = useState<AgentCliStatus[]>([]);
+  const [agents, setAgents] = useState<AgentAvailability[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [form, setForm] = useState<AgentFormState | null>(null);
   const [savingAgent, setSavingAgent] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<AgentCliStatus | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AgentAvailability | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   async function reload() {
     const [settingsRes, agentsRes] = await Promise.allSettled([
-      settingsApi.getSettings(),
-      settingsApi.detectAgents(),
+      api.getSettings(),
+      api.detectAgents(),
     ]);
     if (settingsRes.status === "fulfilled") {
       setSettings(settingsRes.value.settings);
@@ -82,7 +78,7 @@ export function SettingsDrawer({
     } else {
       // detect 失败时退化为纯列表（无可用性圆点）
       try {
-        const { agents } = await settingsApi.listAgents();
+        const { agents } = await api.listAgents();
         setAgents(agents.map((a) => ({ ...a, available: false })));
       } catch (err) {
         toast.error("加载 agent 列表失败", { description: (err as Error).message });
@@ -102,7 +98,7 @@ export function SettingsDrawer({
   async function redetect() {
     setDetecting(true);
     try {
-      const { agents } = await settingsApi.detectAgents();
+      const { agents } = await api.detectAgents();
       setAgents(agents);
     } catch (err) {
       toast.error("检测失败", { description: (err as Error).message });
@@ -114,7 +110,8 @@ export function SettingsDrawer({
   async function saveKeys() {
     const payload: UpdateSettingsInput = {};
     for (const { key } of AMAP_FIELDS) {
-      if (clearedKeys.has(key)) payload[key] = "";
+      // null = 清除 DB 覆盖回退环境变量（契约语义）
+      if (clearedKeys.has(key)) payload[key] = null;
       else if (keyInputs[key].trim()) payload[key] = keyInputs[key].trim();
     }
     if (Object.keys(payload).length === 0) {
@@ -123,7 +120,7 @@ export function SettingsDrawer({
     }
     setSavingKeys(true);
     try {
-      const { settings } = await settingsApi.updateSettings(payload);
+      const { settings } = await api.updateSettings(payload);
       setSettings(settings);
       setKeyInputs({ amapJsKey: "", amapServerKey: "", amapJsSecret: "" });
       setClearedKeys(new Set());
@@ -136,21 +133,21 @@ export function SettingsDrawer({
   }
 
   async function saveAgent() {
-    if (!form || !form.name.trim() || !form.command.trim()) return;
+    if (!form || !form.label.trim() || !form.command.trim()) return;
     setSavingAgent(true);
     const input = {
-      name: form.name.trim(),
+      label: form.label.trim(),
       command: form.command.trim(),
       args: form.argsText.split(/\s+/).filter(Boolean),
       enabled: form.enabled,
     };
     try {
       if (form.id) {
-        await settingsApi.updateAgent(form.id, input);
-        toast.success(`已更新「${input.name}」`);
+        await api.updateAgent(form.id, input);
+        toast.success(`已更新「${input.label}」`);
       } else {
-        await settingsApi.createAgent(input);
-        toast.success(`已添加「${input.name}」`);
+        await api.createAgent(input);
+        toast.success(`已添加「${input.label}」`);
       }
       setForm(null);
       await redetect();
@@ -161,11 +158,11 @@ export function SettingsDrawer({
     }
   }
 
-  async function toggleAgent(agent: AgentCliStatus, enabled: boolean) {
+  async function toggleAgent(agent: AgentAvailability, enabled: boolean) {
     // 乐观更新
     setAgents((prev) => prev.map((a) => (a.id === agent.id ? { ...a, enabled } : a)));
     try {
-      await settingsApi.updateAgent(agent.id, { enabled });
+      await api.updateAgent(agent.id, { enabled });
     } catch (err) {
       setAgents((prev) => prev.map((a) => (a.id === agent.id ? { ...a, enabled: !enabled } : a)));
       toast.error("更新失败", { description: (err as Error).message });
@@ -176,9 +173,15 @@ export function SettingsDrawer({
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await settingsApi.deleteAgent(deleteTarget.id);
-      setAgents((prev) => prev.filter((a) => a.id !== deleteTarget.id));
-      toast.success(`已删除「${deleteTarget.name}」`);
+      const { disabled } = await api.deleteAgent(deleteTarget.id);
+      if (disabled) {
+        // 有历史会话引用：服务端只停用不删除，刷新列表同步状态
+        toast.success(`「${deleteTarget.label}」有历史会话引用，已改为停用`);
+        await redetect();
+      } else {
+        setAgents((prev) => prev.filter((a) => a.id !== deleteTarget.id));
+        toast.success(`已删除「${deleteTarget.label}」`);
+      }
       setDeleteTarget(null);
     } catch (err) {
       toast.error("删除失败", { description: (err as Error).message });
@@ -213,25 +216,19 @@ export function SettingsDrawer({
                 <h2 className="text-sm font-semibold text-slate-800">高德地图密钥</h2>
               </div>
               <p className="mb-4 text-xs leading-relaxed text-slate-400">
-                仅国内行程需要；海外行程走开源地图引擎，无需配置。保存在服务端数据库，优先级高于环境变量。
+                仅国内行程需要；海外行程走开源地图引擎，无需配置。保存在服务端数据库，优先级高于环境变量；清除后回退环境变量。
               </p>
               <div className="space-y-3.5">
                 {AMAP_FIELDS.map(({ key, label, hint }) => {
                   const configured = Boolean(settings?.[key]);
+                  // 只有 DB 覆盖的值才能从界面上清除；env 兜底值清除无意义
+                  const overridden = Boolean(settings?.overridden[key]);
                   const cleared = clearedKeys.has(key);
                   return (
                     <div key={key}>
                       <div className="mb-1 flex items-center justify-between">
                         <Label htmlFor={`settings-${key}`}>{label}</Label>
-                        {configured && !cleared ? (
-                          <button
-                            type="button"
-                            onClick={() => setClearedKeys((prev) => new Set(prev).add(key))}
-                            className="text-xs text-slate-400 transition-colors hover:text-red-500"
-                          >
-                            已配置 · 清除
-                          </button>
-                        ) : cleared ? (
+                        {cleared ? (
                           <button
                             type="button"
                             onClick={() =>
@@ -245,6 +242,16 @@ export function SettingsDrawer({
                           >
                             保存后清除 · 撤销
                           </button>
+                        ) : overridden ? (
+                          <button
+                            type="button"
+                            onClick={() => setClearedKeys((prev) => new Set(prev).add(key))}
+                            className="text-xs text-slate-400 transition-colors hover:text-red-500"
+                          >
+                            已配置 · 清除
+                          </button>
+                        ) : configured ? (
+                          <span className="text-xs text-slate-400">来自环境变量</span>
                         ) : (
                           <span className="text-xs text-slate-300">未配置</span>
                         )}
@@ -313,23 +320,23 @@ export function SettingsDrawer({
                       )}
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-slate-800">{agent.name}</p>
+                      <p className="truncate text-sm font-medium text-slate-800">{agent.label}</p>
                       <p className="truncate font-mono text-xs text-slate-400">
                         {agent.command} {agent.args.join(" ")}
                       </p>
                     </div>
                     <Switch
-                      aria-label={`启用 ${agent.name}`}
+                      aria-label={`启用 ${agent.label}`}
                       checked={agent.enabled}
                       onCheckedChange={(enabled) => toggleAgent(agent, enabled)}
                     />
                     <button
                       type="button"
-                      aria-label={`编辑 ${agent.name}`}
+                      aria-label={`编辑 ${agent.label}`}
                       onClick={() =>
                         setForm({
                           id: agent.id,
-                          name: agent.name,
+                          label: agent.label,
                           command: agent.command,
                           argsText: agent.args.join(" "),
                           enabled: agent.enabled,
@@ -341,7 +348,7 @@ export function SettingsDrawer({
                     </button>
                     <button
                       type="button"
-                      aria-label={`删除 ${agent.name}`}
+                      aria-label={`删除 ${agent.label}`}
                       onClick={() => setDeleteTarget(agent)}
                       className="rounded-lg p-1.5 text-slate-300 transition-colors hover:bg-red-50 hover:text-red-500"
                     >
@@ -359,13 +366,13 @@ export function SettingsDrawer({
                   </p>
                   <div className="grid grid-cols-2 gap-2.5">
                     <div>
-                      <Label htmlFor="agent-name" className="mb-1 block text-xs">
+                      <Label htmlFor="agent-label" className="mb-1 block text-xs">
                         名称
                       </Label>
                       <Input
-                        id="agent-name"
-                        value={form.name}
-                        onChange={(e) => setForm({ ...form, name: e.target.value })}
+                        id="agent-label"
+                        value={form.label}
+                        onChange={(e) => setForm({ ...form, label: e.target.value })}
                         placeholder="Kimi Code"
                         className="h-8 text-xs"
                       />
@@ -414,7 +421,7 @@ export function SettingsDrawer({
                         variant="primary"
                         size="sm"
                         onClick={saveAgent}
-                        disabled={savingAgent || !form.name.trim() || !form.command.trim()}
+                        disabled={savingAgent || !form.label.trim() || !form.command.trim()}
                       >
                         <Check />
                         {savingAgent ? "保存中…" : "保存"}
@@ -444,7 +451,7 @@ export function SettingsDrawer({
           <DialogHeader>
             <DialogTitle>删除 agent？</DialogTitle>
             <DialogDescription>
-              「{deleteTarget?.name}」（{deleteTarget?.command}）将从注册列表中移除。
+              「{deleteTarget?.label}」（{deleteTarget?.command}）将从注册列表中移除；若有历史会话引用则改为停用。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

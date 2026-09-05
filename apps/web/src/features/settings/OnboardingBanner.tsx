@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, Circle, KeyRound, TerminalSquare, X } from "lucide-react";
 import { cn } from "../../lib/utils";
-import { settingsApi } from "./api";
+import { api } from "../../lib/api";
 
 const DISMISS_KEY = "yarnball:onboarding-dismissed";
 
@@ -31,14 +31,13 @@ export function OnboardingBanner({
     (async () => {
       try {
         const [{ settings }, { agents }] = await Promise.all([
-          settingsApi.getSettings(),
-          settingsApi.detectAgents(),
+          api.getSettings(),
+          api.detectAgents(),
         ]);
         if (cancelled) return;
         setStatus({
-          amapReady: Boolean(
-            settings.amapJsKey && settings.amapServerKey && settings.amapJsSecret,
-          ),
+          // 服务端已合并 DB 覆盖 + env 后判定三 key 是否齐备
+          amapReady: settings.amapConfigured,
           agentReady: agents.some((a) => a.enabled && a.available),
         });
       } catch {
