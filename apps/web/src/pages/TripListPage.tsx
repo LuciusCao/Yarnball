@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Globe2, MapPin, MoreHorizontal, Plus, Settings, Sparkles, Trash2 } from "lucide-react";
+import {
+  CalendarDays,
+  Globe2,
+  MapPin,
+  MoreHorizontal,
+  Plus,
+  Settings,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import type { TripDto } from "@yarnball/shared";
 import { api } from "../api/client";
@@ -8,7 +17,6 @@ import { OnboardingBanner } from "../features/settings/OnboardingBanner";
 import { SettingsDrawer } from "../features/settings/SettingsDrawer";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Badge } from "../components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -24,10 +32,41 @@ import {
   DropdownMenuTrigger,
 } from "../components/ui/dropdown-menu";
 
+/** 卡片封面渐变池：按行程 id 稳定取色，保证同一行程每次渲染色调一致 */
+const COVER_GRADIENTS = [
+  "from-sky-500 via-blue-500 to-indigo-600",
+  "from-amber-400 via-orange-400 to-rose-500",
+  "from-emerald-400 via-teal-500 to-cyan-600",
+  "from-fuchsia-400 via-purple-500 to-indigo-600",
+  "from-rose-400 via-pink-500 to-orange-400",
+  "from-cyan-400 via-sky-500 to-blue-600",
+];
+
+function coverGradient(tripId: string): string {
+  let hash = 0;
+  for (const ch of tripId) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+  return COVER_GRADIENTS[Math.abs(hash) % COVER_GRADIENTS.length];
+}
+
+/** 最近编辑的相对时间（「x 分钟前」，超过一周落回日期） */
+function formatRelativeTime(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} 天前`;
+  return new Date(iso).toLocaleDateString("zh-CN");
+}
+
 /** 行程列表页：创建 + 管理（删除） */
 export function TripListPage() {
   const navigate = useNavigate();
   const [trips, setTrips] = useState<TripDto[]>([]);
+  /** 每个行程的天数/地点数（list 接口不含统计，并行拉 bundle 汇总；本地数据量小可接受） */
+  const [stats, setStats] = useState<Record<string, { days: number; places: number }>>({});
   const [title, setTitle] = useState("");
   const [city, setCity] = useState("");
   const [creating, setCreating] = useState(false);
@@ -69,7 +108,18 @@ export function TripListPage() {
 
   async function refresh() {
     const { trips } = await api.listTrips();
+    // 最近编辑的排前面
+    trips.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     setTrips(trips);
+    // 汇总天数/地点数：失败的行程跳过（卡片回落到只显示元信息）
+    const results = await Promise.allSettled(trips.map((t) => api.getBundle(t.id)));
+    const next: Record<string, { days: number; places: number }> = {};
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") {
+        next[trips[i].id] = { days: r.value.bundle.days.length, places: r.value.bundle.places.length };
+      }
+    });
+    setStats(next);
   }
 
   useEffect(() => {
@@ -105,9 +155,9 @@ export function TripListPage() {
 
   return (
     <div className="min-h-full bg-gradient-to-b from-slate-50 via-white to-blue-50/40">
-      <div className="mx-auto max-w-3xl px-6 py-14">
+      <div className="mx-auto max-w-4xl px-6 py-12">
         {/* 头部 */}
-        <header className="relative mb-10">
+        <header className="relative mb-8">
           <Button
             variant="outline"
             size="sm"
@@ -122,7 +172,7 @@ export function TripListPage() {
             Agent-native 行程编辑器
           </div>
           <h1 className="text-3xl font-bold tracking-tight text-slate-900">毛线团 Yarnball</h1>
-          <p className="mt-2 text-sm leading-relaxed text-slate-500">
+          <p className="mt-2 max-w-xl text-sm leading-relaxed text-slate-500">
             把攻略文本变成地图上的行程 —— 连接你自己的 agent，粘贴小红书 / 博客 / 酒店候选，
             它来解析地点、编排路线、分析顺路。
           </p>
@@ -135,7 +185,7 @@ export function TripListPage() {
         />
 
         {/* 创建 */}
-        <section className="mb-10 rounded-2xl border border-slate-200/80 bg-white/80 p-5 shadow-sm backdrop-blur">
+        <section className="mb-8 rounded-card border border-slate-200/80 bg-white/80 p-4 shadow-card backdrop-blur">
           <div className="flex flex-wrap gap-2.5">
             <Input
               value={title}
@@ -159,7 +209,7 @@ export function TripListPage() {
                 autoComplete="off"
               />
               {suggestOpen && suggestions.length > 0 && (
-                <div className="absolute left-0 top-full z-20 mt-1.5 w-72 overflow-hidden rounded-xl border border-white/60 bg-white/95 p-1.5 shadow-xl backdrop-blur-2xl">
+                <div className="absolute left-0 top-full z-20 mt-1.5 w-72 overflow-hidden rounded-box border border-white/60 bg-white/95 p-1.5 shadow-xl backdrop-blur-2xl">
                   {suggestions.map((s, i) => (
                     <button
                       key={`${s.name}-${i}`}
@@ -193,36 +243,58 @@ export function TripListPage() {
 
         {/* 列表 */}
         {trips.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-slate-300 bg-white/50 py-16 text-center">
+          <div className="rounded-card border border-dashed border-slate-300 bg-white/50 py-16 text-center">
             <Globe2 className="mx-auto mb-3 size-10 text-slate-300" />
             <p className="text-sm font-medium text-slate-500">还没有行程</p>
             <p className="mt-1 text-xs text-slate-400">创建一个，然后连接你的 agent 开始编排。</p>
           </div>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2">
             {trips.map((trip) => (
               <div
                 key={trip.id}
-                className="group relative overflow-hidden rounded-2xl border border-slate-200/80 bg-white/80 shadow-sm backdrop-blur transition-all hover:-translate-y-0.5 hover:border-blue-300 hover:shadow-lg"
+                className="group relative overflow-hidden rounded-card border border-slate-200/80 bg-white shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card-hover"
               >
-                {/* 顶部装饰条 */}
-                <div className="h-1.5 w-full bg-gradient-to-r from-blue-500 via-cyan-400 to-emerald-400 opacity-70" />
-                <Link to={`/trip/${trip.id}`} className="block p-4 pr-11">
-                  <p className="truncate font-semibold text-slate-900">{trip.title}</p>
-                  <div className="mt-1.5 flex items-center gap-2">
-                    <Badge variant="blue">{trip.destinationCity}</Badge>
-                    {trip.geoProvider === "osm" && <Badge variant="success">海外</Badge>}
+                {/* 渐变封面：目的地色条 + 城市名，顶替「admin 列表」观感 */}
+                <Link to={`/trip/${trip.id}`} className="block">
+                  <div
+                    className={`relative flex h-20 items-end bg-gradient-to-br ${coverGradient(trip.id)} px-4 pb-2.5`}
+                  >
+                    <div className="flex items-center gap-2 text-white">
+                      <MapPin className="size-4 opacity-80" />
+                      <span className="text-sm font-semibold tracking-wide drop-shadow-sm">
+                        {trip.destinationCity}
+                      </span>
+                      {trip.geoProvider === "osm" && (
+                        <span className="rounded-full bg-white/25 px-2 py-0.5 text-[10px] font-medium backdrop-blur-sm">
+                          海外
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <p className="mt-2 text-xs text-slate-400">
-                    创建于 {new Date(trip.createdAt).toLocaleDateString("zh-CN")}
-                  </p>
+                  <div className="p-4 pr-11">
+                    <p className="truncate font-semibold text-slate-900">{trip.title}</p>
+                    <div className="mt-2 flex items-center gap-3 text-xs text-slate-500">
+                      <span className="inline-flex items-center gap-1">
+                        <CalendarDays className="size-3.5 text-slate-400" />
+                        {stats[trip.id] ? `${stats[trip.id].days} 天` : "— 天"}
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <MapPin className="size-3.5 text-slate-400" />
+                        {stats[trip.id] ? `${stats[trip.id].places} 个地点` : "— 个地点"}
+                      </span>
+                    </div>
+                    <p className="mt-2.5 text-xs text-slate-400">
+                      最近编辑 · {formatRelativeTime(trip.updatedAt)}
+                    </p>
+                  </div>
                 </Link>
                 {/* 更多菜单 */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
                       aria-label="行程操作"
-                      className="absolute right-2.5 top-3.5 rounded-lg p-1.5 text-slate-300 opacity-0 transition-all hover:bg-slate-100 hover:text-slate-600 focus:opacity-100 group-hover:opacity-100"
+                      className="absolute right-2.5 top-2.5 rounded-lg bg-black/15 p-1.5 text-white/90 opacity-0 backdrop-blur-sm transition-all hover:bg-black/30 focus:opacity-100 group-hover:opacity-100"
                     >
                       <MoreHorizontal className="size-4" />
                     </button>

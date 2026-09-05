@@ -246,14 +246,21 @@ export function SettingsDrawer({
                           <button
                             type="button"
                             onClick={() => setClearedKeys((prev) => new Set(prev).add(key))}
-                            className="text-xs text-slate-400 transition-colors hover:text-red-500"
+                            className="inline-flex items-center gap-1.5 text-xs text-slate-400 transition-colors hover:text-red-500"
                           >
+                            <span className="size-1.5 rounded-full bg-available" />
                             已配置 · 清除
                           </button>
                         ) : configured ? (
-                          <span className="text-xs text-slate-400">来自环境变量</span>
+                          <span className="inline-flex items-center gap-1.5 text-xs text-slate-400">
+                            <span className="size-1.5 rounded-full bg-available" />
+                            来自环境变量
+                          </span>
                         ) : (
-                          <span className="text-xs text-slate-300">未配置</span>
+                          <span className="inline-flex items-center gap-1.5 text-xs text-slate-400">
+                            <span className="size-1.5 rounded-full bg-slate-300" />
+                            未配置
+                          </span>
                         )}
                       </div>
                       <Input
@@ -303,20 +310,20 @@ export function SettingsDrawer({
 
               <div className="space-y-2">
                 {agents.length === 0 && form == null && (
-                  <p className="rounded-xl border border-dashed border-slate-200 py-6 text-center text-xs text-slate-400">
+                  <p className="rounded-box border border-dashed border-slate-200 py-6 text-center text-xs text-slate-400">
                     还没有注册 agent CLI
                   </p>
                 )}
                 {agents.map((agent) => (
                   <div
                     key={agent.id}
-                    className="flex items-center gap-3 rounded-xl border border-slate-200/80 bg-white/80 px-3 py-2.5"
+                    className="flex items-center gap-3 rounded-box border border-slate-200/80 bg-white/80 px-3.5 py-3"
                   >
                     <span
                       title={agent.available ? "命令可用" : "未检测到命令"}
                       className={cn(
                         "size-2 shrink-0 rounded-full",
-                        agent.available ? "bg-emerald-500" : "bg-slate-300",
+                        agent.available ? "bg-available" : "bg-slate-300",
                       )}
                     />
                     <div className="min-w-0 flex-1">
@@ -360,7 +367,7 @@ export function SettingsDrawer({
 
               {/* 新建 / 编辑表单 */}
               {form ? (
-                <div className="mt-3 space-y-3 rounded-xl border border-blue-200/70 bg-blue-50/40 p-3.5">
+                <div className="mt-3 space-y-3 rounded-box border border-blue-200/70 bg-blue-50/40 p-3.5">
                   <p className="text-xs font-medium text-slate-600">
                     {form.id ? "编辑 agent" : "新建 agent"}
                   </p>

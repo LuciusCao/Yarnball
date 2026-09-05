@@ -1,6 +1,36 @@
 @import "tailwindcss";
 @import "maplibre-gl/dist/maplibre-gl.css";
 
+/* ===== 设计令牌（Tailwind 4 @theme） =====
+ * 状态色系与 features/map/overlaySpecs.ts 的颜色常量一一对应，改色要两边同步。
+ * 生成的工具类：bg-candidate / text-locked / border-scheduled / rounded-card / shadow-card 等。
+ * static：即使当前页面暂未用到某个令牌（候选灰/锁定金等由其他面板消费），变量也始终输出。
+ */
+@theme static {
+  /* 状态色 */
+  --color-candidate: #94a3b8; /* 候选灰（未确认地点，slate-400） */
+  --color-locked: #d97706; /* 锁定金（已确认待排期，amber-600） */
+  --color-scheduled: #2563eb; /* 已排期蓝（D1 编号色，blue-600） */
+  --color-hotelpin: #dc2626; /* 已选定酒店红（red-600） */
+  --color-available: #10b981; /* 可用绿（emerald-500，设置页状态圆点） */
+
+  /* 品牌主色（同已排期蓝，保持地图编号与 UI 主行动色一致） */
+  --color-brand: #2563eb;
+  --color-brand-hover: #1d4ed8;
+
+  /* 圆角节奏：卡 16px / 容器 12px / 控件 8px */
+  --radius-card: 1rem;
+  --radius-box: 0.75rem;
+
+  /* 阴影节奏：卡片常态 / 悬浮 */
+  --shadow-card:
+    0 1px 2px rgba(15, 23, 42, 0.06),
+    0 4px 16px rgba(15, 23, 42, 0.05);
+  --shadow-card-hover:
+    0 4px 8px rgba(15, 23, 42, 0.06),
+    0 16px 40px rgba(15, 23, 42, 0.12);
+}
+
 html,
 body,
 #root {
