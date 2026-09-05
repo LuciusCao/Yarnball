@@ -1,6 +1,7 @@
 /**
- * 候选池写操作补充 —— M1 契约单点在 ../../lib/api.ts：
- * 锁定/解锁（setPlaceStatus）已切到那里；这里只保留 lib/api 尚未覆盖的删除端点。
+ * 候选池写操作补充 —— 契约单点在 ../../lib/api.ts：
+ * 锁定/解锁（setPlaceStatus）、多酒店选定（selectHotel/unselectHotel）都在那里；
+ * 这里只保留 lib/api 尚未覆盖的删除端点。
  */
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

@@ -1,4 +1,5 @@
 import type { LngLat, TripBundle } from "@yarnball/shared";
+import { getSelectedStays } from "../candidates/hotelStays";
 
 /**
  * 地图 overlay 数据层 —— 引擎无关（AMap / MapLibre 共用）。
@@ -75,10 +76,8 @@ export function buildOverlaySpecs(
   }
 
   const hotelPlaceIds = new Set(bundle.hotelCandidates.map((h) => h.placeId));
-  const selectedHotelPlaceId =
-    bundle.trip.selectedHotelCandidateId != null
-      ? bundle.hotelCandidates.find((h) => h.id === bundle.trip.selectedHotelCandidateId)?.placeId ?? null
-      : null;
+  // 已选定酒店（多酒店，M10）：selected=true 的候选集合，legacy 镜像字段在 getSelectedStays 内兜底
+  const selectedHotelPlaceIds = new Set(getSelectedStays(bundle).map((s) => s.placeId));
   const scheduledPlaceIds = new Set(bundle.entries.map((e) => e.placeId));
 
   const markers: MarkerSpec[] = [];
@@ -136,7 +135,7 @@ export function buildOverlaySpecs(
     for (const cand of bundle.hotelCandidates) {
       const place = placeById.get(cand.placeId);
       if (!place) continue;
-      const isSel = cand.placeId === selectedHotelPlaceId;
+      const isSel = selectedHotelPlaceIds.has(cand.placeId);
       const locked = place.status === "locked";
       markers.push({
         id: `h-${cand.id}`,
