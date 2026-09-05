@@ -42,6 +42,24 @@ const uuid = () => randomUUID();
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
+/** 并发限流器：同一时刻最多 concurrency 个任务在执行，其余排队（限制外部路由 API 并发，礼貌流量） */
+function createLimiter(concurrency: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  return async function limit<T>(task: () => Promise<T>): Promise<T> {
+    if (active >= concurrency) {
+      await new Promise<void>((resolve) => queue.push(resolve));
+    }
+    active++;
+    try {
+      return await task();
+    } finally {
+      active--;
+      queue.shift()?.();
+    }
+  };
+}
+
 export class ServiceError extends Error {
   constructor(
     public status: number,
@@ -72,6 +90,9 @@ function transitDurationS(departTime: string | null, arriveTime: string | null):
 }
 
 export class TripService {
+  /** 路由调用的全局限流（跨天/跨段共享）：选定酒店全量重算时多天的路线请求都经它排队 */
+  private routeLimit = createLimiter(5);
+
   constructor(
     private db: Db,
     private bus: EventBus,
@@ -368,7 +389,7 @@ export class TripService {
       await this.syncSelectedHotelMirror(tripId);
       await this.recalcAllDayLegs(tripId);
     } else {
-      for (const { dayId } of affectedDays) await this.recalcDayLegs(tripId, dayId);
+      await Promise.all(affectedDays.map(({ dayId }) => this.recalcDayLegs(tripId, dayId)));
     }
     await this.publishBundle(tripId);
   }
@@ -608,8 +629,11 @@ export class TripService {
       });
     }
     await this.touchTrip(entry.tripId);
-    await this.recalcDayLegs(entry.tripId, day.id);
-    if (day.id !== entry.dayId) await this.recalcDayLegs(entry.tripId, entry.dayId);
+    // 跨天移动时两天都要重算，并行（外部路由并发由 routeLimit 收口）
+    await Promise.all([
+      this.recalcDayLegs(entry.tripId, day.id),
+      day.id !== entry.dayId ? this.recalcDayLegs(entry.tripId, entry.dayId) : Promise.resolve(),
+    ]);
     await this.publishBundle(entry.tripId);
   }
 
@@ -787,59 +811,65 @@ export class TripService {
     }
 
     const entryById = new Map(entries.map((e) => [e.id, e]));
-    await this.db.delete(schema.transportLegs).where(eq(schema.transportLegs.dayId, dayId));
-    for (let i = 0; i + 1 < chain.length; i++) {
-      const from = chain[i];
-      const to = chain[i + 1];
-      const a = from.coord;
-      const b = to.coord;
-      const override =
-        overrides.get(`${endpointKey(from.entryId, from.placeId)}->${endpointKey(to.entryId, to.placeId)}`) ?? null;
-      // 同一 transit entry 的 from→to：大交通段本身，不调路由 provider
-      const isTransitRide =
-        from.transitEntryId != null &&
-        from.transitEntryId === to.transitEntryId &&
-        from.transitEndpoint === "from" &&
-        to.transitEndpoint === "to";
-      let mode: TransportMode;
-      let distanceM: number | null;
-      let durationS: number | null;
-      let polyline: LngLat[] | null;
-      if (isTransitRide) {
-        const entryRow = entryById.get(from.transitEntryId!);
-        mode = override ?? "transit";
-        distanceM = Math.round(haversineM(a, b));
-        durationS = transitDurationS(entryRow?.departTime ?? null, entryRow?.arriveTime ?? null) ?? Math.round((distanceM * 1.3) / 8.5);
-        polyline = [a, b];
-      } else {
-        mode = override ?? (haversineM(a, b) < 2000 ? "walk" : "drive");
-        let result;
-        try {
-          result = await geo.route(a, b, mode, trip?.destinationCity);
-        } catch {
-          result = fallbackRoute(a, b, mode);
+    // 先并行计算所有段的路线（geo.route 走外部 API，是主要耗时；经全局限流器控制并发），
+    // 算完再删旧插新——避免串行 await 把 N 段路线变成 N 倍单次延迟，也缩短库内无 legs 的窗口
+    const legRows = await Promise.all(
+      chain.slice(0, -1).map(async (from, i) => {
+        const to = chain[i + 1];
+        const a = from.coord;
+        const b = to.coord;
+        const override =
+          overrides.get(`${endpointKey(from.entryId, from.placeId)}->${endpointKey(to.entryId, to.placeId)}`) ?? null;
+        // 同一 transit entry 的 from→to：大交通段本身，不调路由 provider
+        const isTransitRide =
+          from.transitEntryId != null &&
+          from.transitEntryId === to.transitEntryId &&
+          from.transitEndpoint === "from" &&
+          to.transitEndpoint === "to";
+        let mode: TransportMode;
+        let distanceM: number | null;
+        let durationS: number | null;
+        let polyline: LngLat[] | null;
+        if (isTransitRide) {
+          const entryRow = entryById.get(from.transitEntryId!);
+          mode = override ?? "transit";
+          distanceM = Math.round(haversineM(a, b));
+          durationS = transitDurationS(entryRow?.departTime ?? null, entryRow?.arriveTime ?? null) ?? Math.round((distanceM * 1.3) / 8.5);
+          polyline = [a, b];
+        } else {
+          mode = override ?? (haversineM(a, b) < 2000 ? "walk" : "drive");
+          let result;
+          try {
+            result = await this.routeLimit(() => geo.route(a, b, mode, trip?.destinationCity));
+          } catch {
+            result = fallbackRoute(a, b, mode);
+          }
+          mode = override ?? result.mode;
+          distanceM = result.distanceM;
+          durationS = result.durationS;
+          polyline = result.polyline;
         }
-        mode = override ?? result.mode;
-        distanceM = result.distanceM;
-        durationS = result.durationS;
-        polyline = result.polyline;
-      }
-      await this.db.insert(schema.transportLegs).values({
-        id: uuid(),
-        tripId,
-        dayId,
-        fromEntryId: from.entryId,
-        toEntryId: to.entryId,
-        fromPlaceId: from.placeId,
-        toPlaceId: to.placeId,
-        seq: i,
-        mode,
-        modeOverride: override,
-        distanceM,
-        durationS,
-        polyline,
-        computedAt: new Date(),
-      });
+        return {
+          id: uuid(),
+          tripId,
+          dayId,
+          fromEntryId: from.entryId,
+          toEntryId: to.entryId,
+          fromPlaceId: from.placeId,
+          toPlaceId: to.placeId,
+          seq: i,
+          mode,
+          modeOverride: override,
+          distanceM,
+          durationS,
+          polyline,
+          computedAt: new Date(),
+        };
+      }),
+    );
+    await this.db.delete(schema.transportLegs).where(eq(schema.transportLegs.dayId, dayId));
+    for (const row of legRows) {
+      await this.db.insert(schema.transportLegs).values(row);
     }
   }
 
@@ -859,13 +889,13 @@ export class TripService {
     await this.publishBundle(leg.tripId);
   }
 
-  /** 行程全部天的 legs 重算（换酒店/删除酒店地点用） */
+  /** 行程全部天的 legs 重算（换酒店/删除酒店地点用）。多天并行，外部路由并发由 routeLimit 全局收口 */
   private async recalcAllDayLegs(tripId: string) {
     const dayRows = await this.db
       .select({ id: schema.days.id })
       .from(schema.days)
       .where(eq(schema.days.tripId, tripId));
-    for (const d of dayRows) await this.recalcDayLegs(tripId, d.id);
+    await Promise.all(dayRows.map((d) => this.recalcDayLegs(tripId, d.id)));
   }
 
   // ---------- 顺路分析（MCP / 前端共用） ----------
