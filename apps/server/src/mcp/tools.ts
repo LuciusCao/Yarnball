@@ -7,20 +7,20 @@ import {
   CreatePlaceInputSchema,
   LngLatSchema,
   UpdatePlaceInputSchema,
-} from "@tripmapper/shared";
+} from "@yarnball/shared";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { ServiceError, type TripService } from "../services/tripService.js";
 import { amap, getProvider } from "../services/geo.js";
 
 /**
- * MCP 工具面：暴露 TripMapper 行程数据结构给用户 agent。
+ * MCP 工具面：暴露毛线团（Yarnball）行程数据结构给用户 agent。
  * 每个 chat session 一个 token；每次工具调用从请求头解析出 session，
  * 再绑定到该 session 关联的 trip —— agent 永远只能操作当前会话的行程。
  */
 
-export const SESSION_ID_HEADER = "x-tripmapper-session-id";
-export const MCP_SERVER_NAME = "tripmapper";
+export const SESSION_ID_HEADER = "x-yarnball-session-id";
+export const MCP_SERVER_NAME = "yarnball";
 
 // ---------- token ----------
 
@@ -139,7 +139,7 @@ async function tripGeoInfo(ctx: ToolContext) {
   return { trip, provider, bias };
 }
 
-export function registerTripMapperTools(server: McpServer, ctx: ToolContext) {
+export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
   const { tripService, tripId } = ctx;
 
   server.registerTool(

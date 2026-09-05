@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { formatDistance, formatDuration, type TripBundle } from "@tripmapper/shared";
+import { formatDistance, formatDuration, type TripBundle } from "@yarnball/shared";
 import { toast } from "sonner";
 import { BedDouble, Bus, Car, Footprints, Zap } from "lucide-react";
 import { api } from "../../api/client";

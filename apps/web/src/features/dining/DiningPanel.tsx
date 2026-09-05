@@ -1,4 +1,4 @@
-import { formatMoney, type TripBundle } from "@tripmapper/shared";
+import { formatMoney, type TripBundle } from "@yarnball/shared";
 import { CalendarCheck, UtensilsCrossed } from "lucide-react";
 
 /**

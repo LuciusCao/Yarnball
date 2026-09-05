@@ -1,4 +1,4 @@
-import type { ChatMessageDto } from "@tripmapper/shared";
+import type { ChatMessageDto } from "@yarnball/shared";
 import type * as acp from "@agentclientprotocol/sdk";
 
 /**

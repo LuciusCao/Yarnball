@@ -15,7 +15,7 @@ import type {
   LngLat,
   TripBundle,
   UpdatePlaceInput,
-} from "@tripmapper/shared";
+} from "@yarnball/shared";
 import { TRIPS_CHANNEL, tripChannel, type EventBus } from "../events.js";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";

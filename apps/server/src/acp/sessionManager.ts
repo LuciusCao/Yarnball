@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
-import type { ChatMessageDto } from "@tripmapper/shared";
+import type { ChatMessageDto } from "@yarnball/shared";
 import { asc, eq } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
@@ -141,7 +141,7 @@ export class SessionHandle {
     const sessionId = this.sessionRow.id;
     await this.setStatus("starting");
 
-    this.cwd = await mkdtemp(join(tmpdir(), `tripmapper-${sessionId.slice(0, 8)}-`));
+    this.cwd = await mkdtemp(join(tmpdir(), `yarnball-${sessionId.slice(0, 8)}-`));
     const child = spawn(this.agentSpec.command, this.agentSpec.args, {
       cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
@@ -167,7 +167,7 @@ export class SessionHandle {
     });
 
     const clientApp = acp
-      .client({ name: "tripmapper" })
+      .client({ name: "yarnball" })
       .onRequest(acp.methods.client.session.requestPermission, (ctx) => this.onRequestPermission(ctx))
       .onRequest(acp.methods.client.terminal.create, (ctx) => this.createTerminal(ctx))
       .onRequest(acp.methods.client.terminal.output, (ctx) => this.terminalOutput(ctx))
@@ -185,7 +185,7 @@ export class SessionHandle {
         const initResult = await ctx.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
           clientCapabilities: { terminal: true },
-          clientInfo: { name: "tripmapper", title: "TripMapper", version: "0.1.0" },
+          clientInfo: { name: "yarnball", title: "Yarnball", version: "0.1.0" },
         });
 
         const { token } = await this.mintAndStoreToken();
@@ -363,7 +363,7 @@ export class SessionHandle {
       throw err;
     } finally {
       await this.setStatus("idle").catch(() => {});
-      // MCP 冒烟：整个会话从未见过 TripMapper 工具调用 → 一次性提示
+      // MCP 冒烟：整个会话从未见过毛线团工具调用 → 一次性提示
       if (!this.mcpToolCallSeen && !this.mcpHintSent) {
         this.mcpHintSent = true;
         await this.appendMessage({ ...mcpHintMessage() });
@@ -431,7 +431,7 @@ export class SessionHandle {
             rawInput: update.rawInput ?? null,
           },
         });
-        if (isTripMapperToolCallTitle(update.title)) {
+        if (isYarnballToolCallTitle(update.title)) {
           this.mcpToolCallSeen = true;
           this.markMcpObserved(this.sessionRow.id);
         }
@@ -740,6 +740,6 @@ function killProcessGroup(record: TerminalRecord) {
   }
 }
 
-function isTripMapperToolCallTitle(title: string | undefined): boolean {
-  return !!title && (title.startsWith("tripmapper") || title.startsWith("tripmapper:"));
+function isYarnballToolCallTitle(title: string | undefined): boolean {
+  return !!title && (title.startsWith("yarnball") || title.startsWith("yarnball:"));
 }

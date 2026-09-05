@@ -1,4 +1,4 @@
-import type { LngLat, PoiCandidate, TransportMode } from "@tripmapper/shared";
+import type { LngLat, PoiCandidate, TransportMode } from "@yarnball/shared";
 import { env } from "../env.js";
 
 /**
@@ -306,7 +306,7 @@ const PHOTON_BASE = "https://photon.komoot.io/api";
 const NOMINATIM_BASE = "https://nominatim.openstreetmap.org";
 const OSRM_CAR = "https://routing.openstreetmap.de/routed-car";
 const OSRM_FOOT = "https://routing.openstreetmap.de/routed-foot";
-const OSM_UA = "TripMapper/0.1 (self-hosted travel planner)";
+const OSM_UA = "Yarnball/0.1 (self-hosted travel planner)";
 
 interface PhotonFeature {
   geometry: { coordinates: [number, number] };

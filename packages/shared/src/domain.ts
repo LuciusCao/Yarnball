@@ -1,5 +1,5 @@
 /**
- * TripMapper 领域模型 —— zod schema 单一定义点。
+ * 毛线团（Yarnball）领域模型 —— zod schema 单一定义点。
  * 服务端（REST 入参校验、MCP 工具入参、DB 行映射）与前端（API 类型）共用。
  */
 import { z } from "zod";

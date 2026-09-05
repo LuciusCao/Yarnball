@@ -9,7 +9,7 @@ import {
   CreateTripInputSchema,
   ReorderDayInputSchema,
   UpdatePlaceInputSchema,
-} from "@tripmapper/shared";
+} from "@yarnball/shared";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { chatChannel, tripChannel, TRIPS_CHANNEL, type EventBus } from "../events.js";

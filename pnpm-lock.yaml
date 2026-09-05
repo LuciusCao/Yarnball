@@ -23,7 +23,7 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.20.1
         version: 1.30.0(zod@4.5.4)
-      '@tripmapper/shared':
+      '@yarnball/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       dotenv:
@@ -81,7 +81,7 @@ importers:
       '@tanstack/react-query':
         specifier: ^5.90.2
         version: 5.102.8(react@19.2.8)
-      '@tripmapper/shared':
+      '@yarnball/shared':
         specifier: workspace:*
         version: link:../../packages/shared
       class-variance-authority:

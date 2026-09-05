@@ -1,19 +1,19 @@
-name: tripmapper
+name: yarnball
 
 services:
   db:
     image: postgres:16-alpine
-    container_name: tripmapper-db
+    container_name: yarnball-db
     environment:
-      POSTGRES_USER: tripmapper
-      POSTGRES_PASSWORD: tripmapper
-      POSTGRES_DB: tripmapper
+      POSTGRES_USER: yarnball
+      POSTGRES_PASSWORD: yarnball
+      POSTGRES_DB: yarnball
     ports:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tripmapper"]
+      test: ["CMD-SHELL", "pg_isready -U yarnball"]
       interval: 2s
       timeout: 3s
       retries: 15

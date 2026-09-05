@@ -3,7 +3,7 @@ import type { PermissionOutcome, PendingPermission } from "./types.js";
 
 /**
  * Permission 四层决策序（对齐 agent-legion 验证过的策略）：
- * 1. TripMapper MCP 工具调用 → 自动批准（scoped token 已是权限边界）
+ * 1. 毛线团（Yarnball）MCP 工具调用 → 自动批准（scoped token 已是权限边界）
  * 2. 本地只读 kind（read/search）→ 自动批准
  * 3. session 级 allow-all → 自动批准
  * 4. 停靠 UI 等人答；120s 超时自动 deny
@@ -14,10 +14,10 @@ import type { PermissionOutcome, PendingPermission } from "./types.js";
 
 const READ_ONLY_KINDS = new Set(["read", "search"]);
 
-/** 工具卡片 title 形如 "tripmapper: add_place"（MCP server 名前缀） */
-export function isTripMapperMcpToolCall(toolCall: { title?: string | null }): boolean {
+/** 工具卡片 title 形如 "yarnball: add_place"（MCP server 名前缀） */
+export function isYarnballMcpToolCall(toolCall: { title?: string | null }): boolean {
   const title = toolCall.title ?? "";
-  return title.startsWith("tripmapper") || title.startsWith("tripmapper:");
+  return title.startsWith("yarnball") || title.startsWith("yarnball:");
 }
 
 export interface PermissionPolicyInput {
@@ -37,13 +37,13 @@ export function decidePermission(input: PermissionPolicyInput): PermissionDecisi
     if (first) return { action: "auto_approve", optionId: first.optionId, reason: "allow-all 已开启" };
   }
 
-  if (isTripMapperMcpToolCall(params.toolCall)) {
+  if (isYarnballMcpToolCall(params.toolCall)) {
     const first = allowOption(params);
     if (first) {
       return {
         action: "auto_approve",
         optionId: first.optionId,
-        reason: "TripMapper 行程工具（自动批准）",
+        reason: "毛线团行程工具（自动批准）",
       };
     }
   }

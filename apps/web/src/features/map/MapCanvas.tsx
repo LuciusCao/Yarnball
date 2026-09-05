@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { LngLat, TripBundle } from "@tripmapper/shared";
+import type { LngLat, TripBundle } from "@yarnball/shared";
 import { buildOverlaySpecs, dayColor } from "./overlaySpecs";
 import { AMapRenderer } from "./amapRenderer";
 import { MapLibreRenderer } from "./maplibreRenderer";

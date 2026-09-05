@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { PoiCandidate, TripBundle } from "@tripmapper/shared";
+import type { PoiCandidate, TripBundle } from "@yarnball/shared";
 import { toast } from "sonner";
 import { api } from "../../api/client";
 import { Button } from "../../components/ui/button";

@@ -12,7 +12,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "paths": {
-      "@tripmapper/shared": ["../../packages/shared/src/index.ts"]
+      "@yarnball/shared": ["../../packages/shared/src/index.ts"]
     }
   },
   "include": ["src", "vite.config.ts"]

@@ -3,7 +3,7 @@ import {
   formatMoney,
   TRIP_CURRENCIES,
   type BudgetSummary,
-} from "@tripmapper/shared";
+} from "@yarnball/shared";
 import { toast } from "sonner";
 import { ChevronDown, Info, Users, Wallet } from "lucide-react";
 import { api } from "../../api/client";

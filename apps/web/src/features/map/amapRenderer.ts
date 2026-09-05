@@ -1,5 +1,5 @@
 import AMapLoader from "@amap/amap-jsapi-loader";
-import type { LngLat } from "@tripmapper/shared";
+import type { LngLat } from "@yarnball/shared";
 import type { OverlaySpecs } from "./overlaySpecs";
 import type { MapRenderer } from "./MapCanvas";
 

@@ -1,20 +1,20 @@
 {
-  "name": "tripmapper",
+  "name": "yarnball",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@10.33.1",
   "scripts": {
-    "dev": "pnpm --parallel --filter @tripmapper/server --filter @tripmapper/web dev",
-    "dev:server": "pnpm --filter @tripmapper/server dev",
-    "dev:web": "pnpm --filter @tripmapper/web dev",
+    "dev": "pnpm --parallel --filter @yarnball/server --filter @yarnball/web dev",
+    "dev:server": "pnpm --filter @yarnball/server dev",
+    "dev:web": "pnpm --filter @yarnball/web dev",
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down",
-    "db:migrate": "pnpm --filter @tripmapper/server db:migrate",
-    "db:generate": "pnpm --filter @tripmapper/server db:generate",
+    "db:migrate": "pnpm --filter @yarnball/server db:migrate",
+    "db:generate": "pnpm --filter @yarnball/server db:generate",
     "build": "pnpm -r build",
-    "test": "pnpm --filter @tripmapper/server test",
-    "smoke": "pnpm --filter @tripmapper/server smoke"
+    "test": "pnpm --filter @yarnball/server test",
+    "smoke": "pnpm --filter @yarnball/server smoke"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

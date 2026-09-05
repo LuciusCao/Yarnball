@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
-import type { ChatMessageDto, ChatSessionDto, TripDto } from "@tripmapper/shared";
+import type { ChatMessageDto, ChatSessionDto, TripDto } from "@yarnball/shared";
 import { toast } from "sonner";
 import { AlertTriangle, Brain, Check, Clock, ListChecks, Loader2, SendHorizontal, ShieldCheck, Unplug, X } from "lucide-react";
 import { api } from "../../api/client";

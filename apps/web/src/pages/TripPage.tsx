@@ -13,7 +13,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { formatMoney, type BudgetSummary, type ChatSessionDto } from "@tripmapper/shared";
+import { formatMoney, type BudgetSummary, type ChatSessionDto } from "@yarnball/shared";
 import { api } from "../api/client";
 import { useTripStore } from "../stores/tripStore";
 import { MapCanvas, dayColor } from "../features/map/MapCanvas";

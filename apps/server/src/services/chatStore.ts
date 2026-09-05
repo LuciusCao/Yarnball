@@ -1,5 +1,5 @@
 import { asc, eq } from "drizzle-orm";
-import type { ChatMessageDto } from "@tripmapper/shared";
+import type { ChatMessageDto } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 
