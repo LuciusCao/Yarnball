@@ -4,6 +4,7 @@ import {
   CalendarDays,
   CalendarCheck,
   BedDouble,
+  Clock,
   Crosshair,
   Link2,
   Lock,
@@ -29,6 +30,12 @@ import { CandidatesPanel } from "../features/candidates/CandidatesPanel";
 import { candidatesApi } from "../features/candidates/api";
 import { HotelStayRangePicker } from "../features/candidates/HotelStayRangePicker";
 import { getSelectedStays, type HotelStayRange } from "../features/candidates/hotelStays";
+import {
+  BOOKING_STATUS_META,
+  bookingStatusOf,
+  nextBookingStatus,
+  openingHoursOf,
+} from "../features/candidates/booking";
 import { SearchAddPanel } from "../features/map/SearchAddPanel";
 import { BudgetStrip } from "../features/budget/BudgetStrip";
 
@@ -172,6 +179,19 @@ export function TripPage() {
       await candidatesApi.deletePlace(place.id);
       setSelectedPlaceId(null);
       toast.success(`已删除「${place.name}」`);
+      if (tripId) await load(tripId);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setPlaceBusy(false);
+    }
+  }
+
+  /** 预订状态点选流转（M11：PATCH /api/places/:id 带 bookingStatus）：所有 locked 地点可切换（含已排期）；写后靠 SSE 全量刷新 + 主动 load 兜底 */
+  async function cyclePlaceBooking(place: PlaceDto) {
+    setPlaceBusy(true);
+    try {
+      await uxApi.updatePlace(place.id, { bookingStatus: nextBookingStatus(bookingStatusOf(place)) });
       if (tripId) await load(tripId);
     } catch (err) {
       toast.error((err as Error).message);
@@ -347,7 +367,36 @@ export function TripPage() {
                 agent 推荐
               </Badge>
             )}
+            {/* 预订状态徽章（M11）：所有 locked 地点可点选流转（含已排期，与候选池一致） */}
+            {selectedPlace.status === "locked" ? (
+              <button
+                title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
+                disabled={placeBusy}
+                onClick={() => void cyclePlaceBooking(selectedPlace)}
+                className="disabled:opacity-50"
+              >
+                <Badge
+                  variant={BOOKING_STATUS_META[bookingStatusOf(selectedPlace)].badgeVariant}
+                  className="cursor-pointer"
+                >
+                  <CalendarCheck className="size-3" />
+                  {BOOKING_STATUS_META[bookingStatusOf(selectedPlace)].label}
+                </Badge>
+              </button>
+            ) : (
+              bookingStatusOf(selectedPlace) !== "none" && (
+                <Badge variant={BOOKING_STATUS_META[bookingStatusOf(selectedPlace)].badgeVariant}>
+                  {BOOKING_STATUS_META[bookingStatusOf(selectedPlace)].label}
+                </Badge>
+              )
+            )}
           </div>
+          {openingHoursOf(selectedPlace) && (
+            <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-500">
+              <Clock className="size-3 shrink-0 text-slate-400" />
+              {openingHoursOf(selectedPlace)}
+            </p>
+          )}
           {selectedPlace.priceCny != null && (
             <p className="mt-1.5 text-sm font-semibold text-orange-600">
               {formatMoney(selectedPlace.priceCny, trip.currency)}

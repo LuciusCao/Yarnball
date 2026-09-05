@@ -1,17 +1,31 @@
 import { useState } from "react";
 import { formatDistance, formatDuration, type TripBundle, type TransportLegDto } from "@yarnball/shared";
 import { toast } from "sonner";
-import { BedDouble, Bus, Car, Footprints, Zap } from "lucide-react";
+import { BedDouble, Bus, Car, Clock, Footprints, PlaneLanding, PlaneTakeoff, TrainFront, Zap } from "lucide-react";
 import { api } from "../../api/client";
 import { api as libApi } from "../../lib/api";
 import { DAY_COLORS } from "../map/MapCanvas";
-import { buildDayTimeline, formatHHMM } from "./timeline";
+import { buildDayTimeline, formatHHMM, type TimelineItem } from "./timeline";
+import {
+  TRANSIT_KIND_META,
+  transitKindOf,
+  transitRouteText,
+  type TransitKind,
+} from "./transit";
+import {
+  conflictsWithOpeningHours,
+  openingHoursOf,
+  parseOpeningHoursRange,
+} from "../candidates/booking";
 import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidates/hotelStays";
 
 /**
  * 行程面板：按天分组的时间轴。
  * - 每个 entry 显示时段：startTime（agent 写入）+ durationMin 推算结束；
  *   startTime 缺失时按「durationMin + 交通时长」从 09:00 起推算（~ 前缀弱化展示）
+ * - 大交通 entry（M11）渲染为特殊卡片：🛬抵达 / 🛫离开 / 🚄城市间，显示 departTime–arriveTime
+ *   与起讫名，可直接编辑时间（PATCH /api/entries/:id）；推算时作为硬锚点（到达日从落地时间起算）
+ * - 排期时段与营业时间（openingHours，能解析出时段时）完全无交叠给弱化警告；解析不了仅展示
  * - entry 之间显示交通段（模式图标 + 时长 + 距离），可手动切换 步行/驾车（M1 leg override 端点）
  * - 每天头部显示当晚住宿（多酒店，M10：取覆盖该天的已选定酒店）；
  *   换酒店日显示「离店 A → 入住 B」提示
@@ -91,6 +105,19 @@ export function ItineraryPanel({
     }
   }
 
+  /** 大交通卡时间编辑（M11：PATCH /api/entries/:id，lib/api 单点）；成功后靠 SSE 全量快照刷新 + 主动拉一次兜底 */
+  async function updateTransitTimes(entryId: string, departTime: string | null, arriveTime: string | null) {
+    setBusy(true);
+    try {
+      await libApi.updateEntry(entryId, { departTime, arriveTime });
+      onDataChanged();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   /** 手动覆盖交通段模式（M1：PATCH /api/legs/:id/mode，mode=null 清除覆盖）；成功后靠 SSE 全量快照刷新，这里再主动拉一次兜底 */
   async function overrideMode(legId: string, mode: "walk" | "drive" | null) {
     setBusy(true);
@@ -142,6 +169,12 @@ export function ItineraryPanel({
         const color = DAY_COLORS[(day.dayIndex - 1) % DAY_COLORS.length];
         const entries = dayEntries.get(day.id) ?? [];
         const timeline = buildDayTimeline(entries, placeById, legAfter);
+        // 地点计数只数 place entry，大交通节点不算「地点」
+        const placeCount = timeline.filter((t) => !t.transit).length;
+        // 时间轴序号同理：只给 place entry 编号，大交通卡不占号
+        const seqByEntryId = new Map<string, number>();
+        let seq = 0;
+        for (const t of timeline) if (!t.transit) seqByEntryId.set(t.entry.id, ++seq);
         // 当晚住宿（多酒店，M10）：覆盖该天的已选定酒店；与前一晚不同 = 换酒店日
         const nightStay = stayCoveringNight(stays, day.dayIndex);
         const prevNightStay = day.dayIndex > 1 ? stayCoveringNight(stays, day.dayIndex - 1) : null;
@@ -159,7 +192,7 @@ export function ItineraryPanel({
                 Day {day.dayIndex}
               </span>
               <span className="text-xs text-slate-400">
-                {entries.length} 个地点
+                {placeCount} 个地点
                 {day.date ? ` · ${day.date}` : ""}
                 {timeline.length > 0 &&
                   ` · ${timeline[0].estimated ? "~" : ""}${formatHHMM(timeline[0].startMin)} 起`}
@@ -199,17 +232,44 @@ export function ItineraryPanel({
                     : "当天暂无行程"}
                 </li>
               )}
-              {timeline.map(({ entry, place, startMin, endMin, estimated }, i) => {
+              {timeline.map((item, i) => {
+                const { entry, place, transit, startMin, endMin, estimated } = item;
                 const leg = legAfter.get(entry.id);
                 const toHotel = leg != null && leg.toPlaceId != null;
-                const selected = place.id === selectedPlaceId;
+                const selected = place != null && place.id === selectedPlaceId;
+                const hours = place ? openingHoursOf(place) : null;
+                const hoursRange = hours ? parseOpeningHoursRange(hours) : null;
+                // 排期时段与营业时段完全无交叠 = 明显冲突（解析不出时段时不告警，仅展示）
+                const hoursConflict =
+                  !transit && hoursRange != null && conflictsWithOpeningHours(hoursRange, startMin, endMin);
+                // 序号只数 place entry（大交通卡不占地点序号）；类别按 所处天/总天数 推断（首日=抵达，末日=离开）
+                const kind = transit
+                  ? (transitKindOf(entry, day.dayIndex, sortedDays.length) ?? "intercity")
+                  : null;
                 return (
                   <li key={entry.id}>
+                    {kind ? (
+                      <TransitRow
+                        key={`${entry.id}:${entry.departTime ?? ""}:${entry.arriveTime ?? ""}`}
+                        item={item}
+                        kind={kind}
+                        route={transitRouteText(entry, placeById) ?? place?.name ?? "大交通"}
+                        selected={selected}
+                        readOnly={readOnly}
+                        busy={busy}
+                        isFirst={i === 0}
+                        isLast={i === timeline.length - 1}
+                        onSelect={() => place && onSelectPlace(place.id)}
+                        onMove={(pos) => void move(entry.id, day.dayIndex, pos)}
+                        onRemove={() => void removeEntry(entry.id)}
+                        onSaveTimes={updateTransitTimes}
+                      />
+                    ) : (
                     <div
                       className={`group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 ${
                         selected ? "bg-blue-500/12 ring-1 ring-blue-300/60" : "hover:bg-slate-50"
                       }`}
-                      onClick={() => onSelectPlace(place.id)}
+                      onClick={() => place && onSelectPlace(place.id)}
                     >
                       {/* 时段：startTime 直取；缺失时按 09:00 起推算，~ 前缀表示是估算 */}
                       <span
@@ -227,13 +287,24 @@ export function ItineraryPanel({
                         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white"
                         style={{ background: color }}
                       >
-                        {i + 1}
+                        {seqByEntryId.get(entry.id)}
                       </span>
                       <span className="flex-1 truncate text-sm">
-                        {place.name}
-                        {place.durationMin ? (
+                        {place?.name ?? "（地点已删除）"}
+                        {place?.durationMin ? (
                           <span className="ml-1 text-xs text-slate-400">约{place.durationMin}分钟</span>
                         ) : null}
+                        {hours && (
+                          <span
+                            className={`ml-1 inline-flex items-center gap-0.5 text-[11px] ${
+                              hoursConflict ? "text-amber-600" : "text-slate-300"
+                            }`}
+                            title={`营业时间：${hours}`}
+                          >
+                            <Clock className="size-3" />
+                            {hoursConflict ? "可能在营业时间外" : null}
+                          </span>
+                        )}
                       </span>
                       {!readOnly && (
                         <span className="hidden shrink-0 gap-1 group-hover:flex">
@@ -273,6 +344,7 @@ export function ItineraryPanel({
                         </span>
                       )}
                     </div>
+                    )}
                     {leg && (
                       <LegRow
                         leg={leg}
@@ -290,6 +362,142 @@ export function ItineraryPanel({
           </section>
         );
       })}
+    </div>
+  );
+}
+
+/** 大交通卡（M11）：🛬抵达 / 🛫离开 / 🚄城市间，显示 departTime–arriveTime 与起讫名；非只读可直接编辑时间 */
+function TransitRow({
+  item,
+  kind,
+  route,
+  selected,
+  readOnly,
+  busy,
+  isFirst,
+  isLast,
+  onSelect,
+  onMove,
+  onRemove,
+  onSaveTimes,
+}: {
+  item: TimelineItem;
+  kind: TransitKind;
+  route: string;
+  selected: boolean;
+  readOnly: boolean;
+  busy: boolean;
+  isFirst: boolean;
+  isLast: boolean;
+  onSelect: () => void;
+  onMove: (position: number) => void;
+  onRemove: () => void;
+  onSaveTimes: (entryId: string, departTime: string | null, arriveTime: string | null) => Promise<void>;
+}) {
+  const { entry, place, startMin, endMin, estimated } = item;
+  const Icon = kind === "arrival" ? PlaneLanding : kind === "departure" ? PlaneTakeoff : TrainFront;
+  // 本地编辑态：失焦/回车提交；SSE 刷新后由父级按 entry.id+时间 重置 key 重挂载
+  const [depart, setDepart] = useState(entry.departTime ?? "");
+  const [arrive, setArrive] = useState(entry.arriveTime ?? "");
+
+  function commit() {
+    const nextDepart = depart || null;
+    const nextArrive = arrive || null;
+    if (nextDepart === entry.departTime && nextArrive === entry.arriveTime) {
+      return;
+    }
+    void onSaveTimes(entry.id, nextDepart, nextArrive);
+  }
+
+  return (
+    <div
+      className={`group flex items-center gap-2 rounded-lg border border-dashed px-2 py-1.5 ${
+        selected
+          ? "border-blue-300 bg-blue-500/12 ring-1 ring-blue-300/60"
+          : "border-slate-300/70 bg-slate-500/5 hover:bg-slate-500/10"
+      } ${place ? "cursor-pointer" : ""}`}
+      onClick={onSelect}
+    >
+      <span
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-700 text-white"
+        title={TRANSIT_KIND_META[kind].label}
+      >
+        <Icon className="size-3.5" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5 text-sm">
+          <span className="truncate font-medium text-slate-800">{route}</span>
+          <span className="shrink-0 rounded bg-slate-900/8 px-1 text-[10px] text-slate-500">
+            {TRANSIT_KIND_META[kind].label}
+          </span>
+        </span>
+        {/* 时刻：只读展示 HH:MM – HH:MM；可编辑时两个 time 输入，失焦提交 */}
+        {readOnly ? (
+          <span className={`text-[11px] tabular-nums ${estimated ? "text-slate-300" : "text-slate-500"}`}>
+            {estimated ? "~" : ""}
+            {formatHHMM(startMin)} – {formatHHMM(endMin)}
+          </span>
+        ) : (
+          <span className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500" onClick={(e) => e.stopPropagation()}>
+            <input
+              type="time"
+              value={depart}
+              disabled={busy}
+              onChange={(e) => setDepart(e.target.value)}
+              onBlur={commit}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              className="w-[76px] rounded border border-slate-300/60 bg-white/70 px-1 py-0.5 tabular-nums disabled:opacity-50"
+            />
+            –
+            <input
+              type="time"
+              value={arrive}
+              disabled={busy}
+              onChange={(e) => setArrive(e.target.value)}
+              onBlur={commit}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+              className="w-[76px] rounded border border-slate-300/60 bg-white/70 px-1 py-0.5 tabular-nums disabled:opacity-50"
+            />
+          </span>
+        )}
+      </span>
+      {!readOnly && (
+        <span className="hidden shrink-0 gap-1 group-hover:flex">
+          <button
+            title="上移"
+            disabled={busy || isFirst}
+            onClick={(e) => {
+              e.stopPropagation();
+              onMove(entry.position - 1);
+            }}
+            className="rounded px-1 text-xs text-slate-400 hover:bg-white/80 disabled:opacity-30"
+          >
+            ↑
+          </button>
+          <button
+            title="下移"
+            disabled={busy || isLast}
+            onClick={(e) => {
+              e.stopPropagation();
+              onMove(entry.position + 1);
+            }}
+            className="rounded px-1 text-xs text-slate-400 hover:bg-white/80 disabled:opacity-30"
+          >
+            ↓
+          </button>
+          <button
+            title="从这天移除"
+            disabled={busy}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove();
+            }}
+            className="rounded px-1 text-xs text-slate-400 hover:bg-red-100/80 hover:text-red-500 disabled:opacity-30"
+          >
+            ✕
+          </button>
+        </span>
+      )}
     </div>
   );
 }

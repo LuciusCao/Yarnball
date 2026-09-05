@@ -5,7 +5,9 @@ import type { EntryDto, PlaceDto, TransportLegDto } from "@yarnball/shared";
  * 规则：
  * - entry.startTime（agent 按 M1 契约写入，HH:MM）存在时直接用；
  * - 缺失时从 09:00 起，按「上一个 entry 的结束时间 + 交通段时长」顺推；
- * - 停留时长取 place.durationMin，缺省估 90 分钟。
+ * - 停留时长取 entry.durationMin（M11 单条覆盖）→ place.durationMin，缺省估 90 分钟。
+ * - 大交通 entry（entryType=transit，M11）的 departTime/arriveTime 是硬锚点：到达日的后续
+ *   entry 从落地时间起算（而不是 09:00）；起讫时刻都在且到达严格早于出发视为跨零点，到达顺延次日。
  */
 
 /** 每天推算的起点：09:00 */
@@ -34,11 +36,14 @@ export function formatHHMM(minutes: number): string {
 
 export interface TimelineItem {
   entry: EntryDto;
-  place: PlaceDto;
-  /** 开始/结束（当天分钟数） */
+  /** 大交通 entry 可能没有关联 place（纯自由文本起讫点），此时为 null */
+  place: PlaceDto | null;
+  /** entryType === "transit"（M11 大交通节点） */
+  transit: boolean;
+  /** 开始/结束（当天分钟数，跨零点可 >1440） */
   startMin: number;
   endMin: number;
-  /** true = startTime 缺失，由推算得出（UI 用 ~ 前缀弱化展示） */
+  /** true = 没有任何显式时刻，由推算得出（UI 用 ~ 前缀弱化展示） */
   estimated: boolean;
 }
 
@@ -54,14 +59,31 @@ export function buildDayTimeline(
   const items: TimelineItem[] = [];
   let cursor = DAY_START_MIN;
   for (const entry of entries) {
-    // transit entry 可能没有关联 place（纯文本起讫点），M12 落地前不在时间轴渲染
-    const place = entry.placeId ? placeById.get(entry.placeId) : undefined;
-    if (!place) continue;
-    const explicit = parseHHMM(entry.startTime);
-    const startMin = explicit ?? cursor;
-    const endMin = startMin + (place.durationMin ?? DEFAULT_STAY_MIN);
-    items.push({ entry, place, startMin, endMin, estimated: explicit == null });
-    // 下一站的最早开始 = 本站结束 + 交通时长（返回酒店段是当天收尾，不影响后续 entry，但当天也没后续了）
+    const transit = entry.entryType === "transit";
+    const place = entry.placeId ? (placeById.get(entry.placeId) ?? null) : null;
+    // 普通 entry 必须有 place；大交通 entry 允许无 place（起讫名在 entry 字段上）
+    if (!place && !transit) continue;
+
+    let startMin: number;
+    let endMin: number;
+    let estimated: boolean;
+    if (transit) {
+      // 大交通：departTime/arriveTime 硬锚点（transit 缺省 startTime 服务端已回填 departTime）；都缺才退回顺推
+      const depart = parseHHMM(entry.departTime ?? entry.startTime);
+      const arrive = parseHHMM(entry.arriveTime);
+      startMin = depart ?? arrive ?? cursor;
+      endMin = arrive ?? depart ?? startMin;
+      if (depart != null && arrive != null && arrive < depart) endMin += 1440;
+      estimated = depart == null && arrive == null;
+    } else {
+      const explicit = parseHHMM(entry.startTime);
+      startMin = explicit ?? cursor;
+      endMin = startMin + (entry.durationMin ?? place?.durationMin ?? DEFAULT_STAY_MIN);
+      estimated = explicit == null;
+    }
+    items.push({ entry, place, transit, startMin, endMin, estimated });
+    // 下一站的最早开始 = 本站结束 + 交通时长
+    // （大交通到达段同理：到达日 capacity 自然从落地时间起算；返回酒店段是当天收尾，不影响后续）
     const leg = legAfter.get(entry.id);
     cursor = endMin + Math.round((leg?.durationS ?? 0) / 60);
   }
