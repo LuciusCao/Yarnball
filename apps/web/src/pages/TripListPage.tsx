@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Globe2, MapPin, MoreHorizontal, Plus, Sparkles, Trash2 } from "lucide-react";
+import { Globe2, MapPin, MoreHorizontal, Plus, Settings, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { TripDto } from "@yarnball/shared";
 import { api } from "../api/client";
+import { OnboardingBanner } from "../features/settings/OnboardingBanner";
+import { SettingsDrawer } from "../features/settings/SettingsDrawer";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
@@ -31,6 +33,9 @@ export function TripListPage() {
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TripDto | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // 设置抽屉 + 引导条（抽屉关闭后递增 refreshKey 让引导条重新检测）
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [bannerRefreshKey, setBannerRefreshKey] = useState(0);
   // 城市联想
   const [suggestions, setSuggestions] = useState<
     { name: string; country: string | null; center: { lng: number; lat: number } }[]
@@ -102,7 +107,16 @@ export function TripListPage() {
     <div className="min-h-full bg-gradient-to-b from-slate-50 via-white to-blue-50/40">
       <div className="mx-auto max-w-3xl px-6 py-14">
         {/* 头部 */}
-        <header className="mb-10">
+        <header className="relative mb-10">
+          <Button
+            variant="outline"
+            size="sm"
+            className="absolute right-0 top-0"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings />
+            设置
+          </Button>
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-200/70 bg-blue-100/60 px-3 py-1 text-xs font-medium text-blue-700">
             <Sparkles className="size-3.5" />
             Agent-native 行程编辑器
@@ -113,6 +127,12 @@ export function TripListPage() {
             它来解析地点、编排路线、分析顺路。
           </p>
         </header>
+
+        {/* 首次使用引导（未配置密钥或无可用 agent 时显示） */}
+        <OnboardingBanner
+          refreshKey={bannerRefreshKey}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
 
         {/* 创建 */}
         <section className="mb-10 rounded-2xl border border-slate-200/80 bg-white/80 p-5 shadow-sm backdrop-blur">
@@ -219,6 +239,15 @@ export function TripListPage() {
           </div>
         )}
       </div>
+
+      {/* 设置抽屉 */}
+      <SettingsDrawer
+        open={settingsOpen}
+        onOpenChange={(open) => {
+          setSettingsOpen(open);
+          if (!open) setBannerRefreshKey((k) => k + 1);
+        }}
+      />
 
       {/* 删除确认 */}
       <Dialog open={deleteTarget != null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
