@@ -449,7 +449,7 @@ export function TripPage() {
         <div
           className={`glass-deep panel-in absolute bottom-[68px] left-4 z-10 flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
             dockMaximized
-              ? "h-[min(65vh,760px)] w-[min(520px,calc(100vw-2rem))]"
+              ? "h-[min(80vh,900px)] w-[min(640px,calc(100vw-2rem))]"
               : "h-[min(52vh,500px)] w-[360px]"
           }`}
         >
@@ -488,6 +488,7 @@ export function TripPage() {
                   onDataChanged={() => void load(trip.id)}
                   visibleDay={visibleDay}
                   onVisibleDayChange={setVisibleDay}
+                  onOpenCandidates={() => setLeftPanel("candidates")}
                 />
               )}
               {leftPanel === "candidates" && (
