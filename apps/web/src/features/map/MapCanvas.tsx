@@ -34,6 +34,8 @@ interface MapCanvasProps {
   hotelArea: { center: LngLat; radiusM: number } | null;
   selectedPlaceId: string | null;
   onSelectPlace: (placeId: string) => void;
+  /** 打开设置抽屉（缺高德 Key 时引导用户去配置）；未提供时退回 .env 文案 */
+  onOpenSettings?: () => void;
 }
 
 export function MapCanvas({
@@ -44,6 +46,7 @@ export function MapCanvas({
   hotelArea,
   selectedPlaceId,
   onSelectPlace,
+  onOpenSettings,
 }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<MapRenderer | null>(null);
@@ -151,8 +154,16 @@ export function MapCanvas({
       <div className="flex h-full items-center justify-center bg-slate-100 p-8 text-center text-sm text-slate-500">
         <div>
           <p className="mb-2 font-medium text-slate-700">国内行程需要高德地图 Key</p>
+          {onOpenSettings && (
+            <button
+              onClick={onOpenSettings}
+              className="mb-3 rounded-full bg-slate-900 px-4 py-1.5 text-xs font-medium text-white shadow transition-transform hover:scale-105"
+            >
+              打开设置，填写高德 Key
+            </button>
+          )}
           <p>
-            在 <code className="rounded bg-slate-200 px-1">.env</code> 里填写{" "}
+            也可以在 <code className="rounded bg-slate-200 px-1">.env</code> 里填写{" "}
             <code className="rounded bg-slate-200 px-1">AMAP_JS_KEY</code> 后重启服务。
             <br />
             （海外行程使用开源地图，无需任何 Key）
