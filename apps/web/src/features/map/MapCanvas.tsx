@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { KeyRound, MapPinOff, RefreshCw } from "lucide-react";
 import type { LngLat, TripBundle } from "@yarnball/shared";
 import { buildOverlaySpecs, dayColor } from "./overlaySpecs";
 import { AMapRenderer } from "./amapRenderer";
@@ -53,6 +54,8 @@ export function MapCanvas({
   const initErrorRef = useRef<string | null>(null);
   const fittedRef = useRef<string>("");
   const [initError, setInitError] = useState<string | null>(null);
+  /** 重试计数：+1 触发引擎重挂载（不刷新整页） */
+  const [retryCount, setRetryCount] = useState(0);
   /** 最新渲染输入（init 完成晚于 bundle 到达时，init 回调用它补画一帧） */
   const latestRef = useRef<{
     bundle: TripBundle | null;
@@ -119,9 +122,9 @@ export function MapCanvas({
       rendererRef.current = null;
       fittedRef.current = "";
     };
-    // bundle 不进依赖（初始化一次）；provider/key 变化才重建
+    // bundle 不进依赖（初始化一次）；provider/key 变化才重建；retryCount 变化=用户点了重试
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [provider, amapJsKey, amapJsSecret]);
+  }, [provider, amapJsKey, amapJsSecret, retryCount]);
 
   // overlay 重画
   useEffect(() => {
@@ -138,35 +141,54 @@ export function MapCanvas({
     }
   }, [bundle, visibleDayIndex, hotelArea, selectedPlaceId]);
 
-  if (initError) {
+  // 兜底一：缺高德 key —— 配置问题，引导去设置（区别于下面的引擎运行失败）
+  if (provider === "amap" && !amapJsKey) {
     return (
       <div className="flex h-full items-center justify-center bg-slate-100 p-8 text-center text-sm text-slate-500">
-        <div>
-          <p className="mb-2 font-medium text-slate-700">地图引擎加载失败</p>
-          <p className="text-xs">{initError}</p>
+        <div className="max-w-xs">
+          <KeyRound className="mx-auto mb-3 size-8 text-slate-300" />
+          <p className="mb-1.5 font-medium text-slate-700">国内行程需要高德地图 Key</p>
+          {onOpenSettings && (
+            <button
+              onClick={onOpenSettings}
+              className="mb-3 rounded-full bg-scheduled px-4 py-1.5 text-xs font-medium text-white shadow transition-transform hover:scale-105"
+            >
+              打开设置，填写高德 Key
+            </button>
+          )}
+          <p className="leading-relaxed">
+            也可以在 <code className="rounded bg-slate-200 px-1">.env</code> 里填写{" "}
+            <code className="rounded bg-slate-200 px-1">AMAP_JS_KEY</code> 后重启服务。
+            <br />
+            （海外行程使用开源地图，无需任何 Key）
+          </p>
         </div>
       </div>
     );
   }
 
-  if (provider === "amap" && !amapJsKey) {
+  // 兜底二：引擎加载失败 / WebGL 不可用 —— 可重试，重挂载地图组件而不是刷新整页
+  if (initError) {
     return (
       <div className="flex h-full items-center justify-center bg-slate-100 p-8 text-center text-sm text-slate-500">
-        <div>
-          <p className="mb-2 font-medium text-slate-700">国内行程需要高德地图 Key</p>
-          {onOpenSettings && (
-            <button
-              onClick={onOpenSettings}
-              className="mb-3 rounded-full bg-slate-900 px-4 py-1.5 text-xs font-medium text-white shadow transition-transform hover:scale-105"
-            >
-              打开设置，填写高德 Key
-            </button>
-          )}
-          <p>
-            也可以在 <code className="rounded bg-slate-200 px-1">.env</code> 里填写{" "}
-            <code className="rounded bg-slate-200 px-1">AMAP_JS_KEY</code> 后重启服务。
-            <br />
-            （海外行程使用开源地图，无需任何 Key）
+        <div className="max-w-xs">
+          <MapPinOff className="mx-auto mb-3 size-8 text-slate-300" />
+          <p className="mb-1.5 font-medium text-slate-700">地图引擎加载失败</p>
+          <p className="mb-4 text-xs leading-relaxed text-slate-400">
+            通常是浏览器 WebGL 不可用（显卡驱动 / 无痕模式限制）或地图服务暂时不可达。
+          </p>
+          <button
+            onClick={() => {
+              setInitError(null);
+              setRetryCount((c) => c + 1);
+            }}
+            className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-scheduled px-4 py-1.5 text-xs font-medium text-white shadow transition-transform hover:scale-105"
+          >
+            <RefreshCw className="size-3.5" />
+            重试
+          </button>
+          <p className="break-all font-mono text-[11px] leading-relaxed text-slate-400">
+            {initError}
           </p>
         </div>
       </div>
