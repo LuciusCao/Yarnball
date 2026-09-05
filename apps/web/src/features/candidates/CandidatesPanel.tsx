@@ -12,15 +12,21 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatMoney, type PlaceCategory, type PlaceDto, type TripBundle } from "@yarnball/shared";
-import { api } from "../../api/client";
 import { api as uxApi } from "../../lib/api";
 import { Badge } from "../../components/ui/badge";
 import { candidatesApi } from "./api";
+import { HotelStayRangePicker } from "./HotelStayRangePicker";
+import {
+  getSelectedStays,
+  largestFreeSpan,
+  type HotelStayRange,
+} from "./hotelStays";
 
 /**
  * 候选池面板 —— 所有「未排期」地点的大本营（整合原 HotelPanel 的候选管理 + DiningPanel 的清单）。
  * 按 酒店/景点/美食/其他 分组；每项可锁定（=确认要去，锁定后才排日程）、删除；
- * 酒店组保留「选定酒店」语义（trips.selectedHotelCandidateId 逻辑不变）。
+ * 酒店组支持选定多家酒店（M10 多酒店）：每家已选定酒店带 入住第N天/离店第M天 选择器，
+ * 区间互相冲突的选项禁用并提示（服务端同样校验，见 M9 契约）。
  * 数据刷新：操作后走 SSE bundle 全量快照 + 主动 load 兜底，不做本地增量。
  */
 
@@ -69,6 +75,11 @@ export function CandidatesPanel({
     }
   }
   const hotelCandByPlaceId = new Map(bundle.hotelCandidates.map((h) => [h.placeId, h]));
+  /** 多酒店（M10）：已选定住宿区间（含 legacy 单选定兜底），candidateId → stay */
+  const hotelStays = getSelectedStays(bundle);
+  const stayByCandidateId = new Map(hotelStays.map((s) => [s.candidateId, s]));
+  const placeNameById = new Map(bundle.places.map((p) => [p.id, p.name]));
+  const totalDays = bundle.days.length;
 
   async function toggleLock(place: PlaceDto) {
     const next = place.status === "locked" ? "candidate" : "locked";
@@ -97,9 +108,51 @@ export function CandidatesPanel({
     }
   }
 
-  async function selectHotel(candidateId: string | null) {
-    await api.selectHotel(tripId, candidateId).catch((err) => toast.error((err as Error).message));
-    onDataChanged();
+  /** 选定酒店：默认占未被覆盖的最长连续段；全程已覆盖则提示先调整已有酒店 */
+  async function selectHotel(candidateId: string) {
+    if (totalDays === 0) {
+      toast.warning("还没有行程天数，先让 agent 规划行程再选定酒店");
+      return;
+    }
+    const span = largestFreeSpan(hotelStays, totalDays);
+    if (!span) {
+      toast.warning("全程已被其他选定酒店覆盖，请先调整它们的入离店天");
+      return;
+    }
+    setBusy(true);
+    try {
+      await candidatesApi.selectHotelStay(tripId, candidateId, span);
+      onDataChanged();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unselectHotel(candidateId: string) {
+    setBusy(true);
+    try {
+      await candidatesApi.unselectHotelStay(tripId, candidateId);
+      onDataChanged();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 修改已选定酒店的入离店天；区间冲突由选择器禁用兜底，服务端拒绝时 toast */
+  async function updateStay(candidateId: string, range: HotelStayRange) {
+    setBusy(true);
+    try {
+      await candidatesApi.updateHotelStay(tripId, candidateId, range);
+      onDataChanged();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   const totalCount = GROUP_ORDER.reduce((n, key) => n + grouped[key].length, 0);
@@ -167,8 +220,8 @@ export function CandidatesPanel({
               {places.map((place) => {
                 const locked = place.status === "locked";
                 const hotelCand = hotelCandByPlaceId.get(place.id);
-                const isSelectedHotel =
-                  hotelCand != null && bundle.trip.selectedHotelCandidateId === hotelCand.id;
+                const stay = hotelCand ? stayByCandidateId.get(hotelCand.id) : undefined;
+                const isSelectedHotel = stay != null;
                 const price =
                   key === "hotel"
                     ? (hotelCand?.pricePerNight ?? place.priceCny)
@@ -215,6 +268,21 @@ export function CandidatesPanel({
                         {hotelCand?.notes && (
                           <p className="mt-1 text-xs text-slate-500">{hotelCand.notes}</p>
                         )}
+                        {isSelectedHotel && stay && (
+                          // 已选定酒店的入离店天（M10 多酒店）；阻止冒泡避免触发卡片选中
+                          <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
+                            <HotelStayRangePicker
+                              totalDays={totalDays}
+                              checkInDay={stay.checkInDay}
+                              checkOutDay={stay.checkOutDay}
+                              otherStays={hotelStays
+                                .filter((s) => s.candidateId !== stay.candidateId)
+                                .map((s) => ({ ...s, label: placeNameById.get(s.placeId) }))}
+                              disabled={busy}
+                              onChange={(range) => void updateStay(stay.candidateId, range)}
+                            />
+                          </div>
+                        )}
                         {place.sourceUrl && (
                           <a
                             href={place.sourceUrl}
@@ -233,7 +301,9 @@ export function CandidatesPanel({
                             disabled={busy}
                             onClick={(e) => {
                               e.stopPropagation();
-                              void selectHotel(isSelectedHotel ? null : hotelCand.id);
+                              void (isSelectedHotel
+                                ? unselectHotel(hotelCand.id)
+                                : selectHotel(hotelCand.id));
                             }}
                             className={`rounded-lg px-2.5 py-1 text-xs font-medium disabled:opacity-50 ${
                               isSelectedHotel

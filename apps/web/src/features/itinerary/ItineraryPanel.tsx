@@ -6,12 +6,15 @@ import { api } from "../../api/client";
 import { api as libApi } from "../../lib/api";
 import { DAY_COLORS } from "../map/MapCanvas";
 import { buildDayTimeline, formatHHMM } from "./timeline";
+import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidates/hotelStays";
 
 /**
  * 行程面板：按天分组的时间轴。
  * - 每个 entry 显示时段：startTime（agent 写入）+ durationMin 推算结束；
  *   startTime 缺失时按「durationMin + 交通时长」从 09:00 起推算（~ 前缀弱化展示）
  * - entry 之间显示交通段（模式图标 + 时长 + 距离），可手动切换 步行/驾车（M1 leg override 端点）
+ * - 每天头部显示当晚住宿（多酒店，M10：取覆盖该天的已选定酒店）；
+ *   换酒店日显示「离店 A → 入住 B」提示
  * - readOnly（分享页）：隐藏一切编辑操作
  */
 
@@ -50,12 +53,21 @@ export function ItineraryPanel({
       if (leg.fromEntryId) legAfter.set(leg.fromEntryId, leg);
     }
   }
-  /** 选定酒店（往返段标注用） */
-  const selectedHotel =
-    bundle.trip.selectedHotelCandidateId != null
-      ? bundle.hotelCandidates.find((h) => h.id === bundle.trip.selectedHotelCandidateId)
-      : undefined;
-  const hotelPlace = selectedHotel ? placeById.get(selectedHotel.placeId) : undefined;
+  /** 已选定酒店的住宿区间（多酒店，M10；含 legacy 单选定兜底） */
+  const stays = getSelectedStays(bundle);
+  const placeName = (placeId: string) => placeById.get(placeId)?.name ?? "酒店";
+
+  /** 住宿行里的酒店名：点击在地图上选中该地点 */
+  function renderStayName(stay: HotelStay) {
+    return (
+      <button
+        className="font-medium text-slate-500 underline decoration-dotted underline-offset-2 hover:text-blue-600"
+        onClick={() => onSelectPlace(stay.placeId)}
+      >
+        {placeName(stay.placeId)}
+      </button>
+    );
+  }
 
   async function move(entryId: string, dayIndex: number, position: number) {
     setBusy(true);
@@ -130,6 +142,13 @@ export function ItineraryPanel({
         const color = DAY_COLORS[(day.dayIndex - 1) % DAY_COLORS.length];
         const entries = dayEntries.get(day.id) ?? [];
         const timeline = buildDayTimeline(entries, placeById, legAfter);
+        // 当晚住宿（多酒店，M10）：覆盖该天的已选定酒店；与前一晚不同 = 换酒店日
+        const nightStay = stayCoveringNight(stays, day.dayIndex);
+        const prevNightStay = day.dayIndex > 1 ? stayCoveringNight(stays, day.dayIndex - 1) : null;
+        const switchFrom =
+          prevNightStay && prevNightStay.candidateId !== nightStay?.candidateId
+            ? prevNightStay
+            : null;
         return (
           <section key={day.id} className="border-b border-slate-900/8 p-3">
             <header className="mb-2 flex items-center gap-2">
@@ -157,10 +176,27 @@ export function ItineraryPanel({
               )}
             </header>
 
+            {/* 住宿行：平时「当晚住宿：X」，换酒店日「离店 A → 入住 B」 */}
+            {(nightStay || switchFrom) && (
+              <p className="mb-1.5 flex items-center gap-1 text-[11px] text-slate-400">
+                <BedDouble className="size-3 shrink-0" />
+                {switchFrom ? (
+                  <span>
+                    离店 {renderStayName(switchFrom)}
+                    {nightStay ? <> → 入住 {renderStayName(nightStay)}</> : "，当晚未安排住宿"}
+                  </span>
+                ) : nightStay ? (
+                  <span>当晚住宿：{renderStayName(nightStay)}</span>
+                ) : null}
+              </p>
+            )}
+
             <ol className="space-y-0">
               {entries.length === 0 && (
                 <li className="px-2 py-1.5 text-xs text-slate-400">
-                  {hotelPlace ? `当天暂无行程（酒店：${hotelPlace.name}）` : "当天暂无行程"}
+                  {nightStay
+                    ? `当天暂无行程（当晚住宿：${placeName(nightStay.placeId)}）`
+                    : "当天暂无行程"}
                 </li>
               )}
               {timeline.map(({ entry, place, startMin, endMin, estimated }, i) => {
@@ -241,7 +277,7 @@ export function ItineraryPanel({
                       <LegRow
                         leg={leg}
                         toHotel={toHotel}
-                        hotelName={hotelPlace?.name}
+                        hotelName={leg.toPlaceId != null ? placeName(leg.toPlaceId) : undefined}
                         readOnly={readOnly}
                         busy={busy}
                         onOverride={overrideMode}

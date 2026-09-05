@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import {
   CalendarDays,
   CalendarCheck,
+  BedDouble,
   Crosshair,
   Link2,
   Lock,
@@ -26,6 +27,8 @@ import { ItineraryPanel } from "../features/itinerary/ItineraryPanel";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import { CandidatesPanel } from "../features/candidates/CandidatesPanel";
 import { candidatesApi } from "../features/candidates/api";
+import { HotelStayRangePicker } from "../features/candidates/HotelStayRangePicker";
+import { getSelectedStays, type HotelStayRange } from "../features/candidates/hotelStays";
 import { SearchAddPanel } from "../features/map/SearchAddPanel";
 import { BudgetStrip } from "../features/budget/BudgetStrip";
 
@@ -177,6 +180,20 @@ export function TripPage() {
     }
   }
 
+  /** 已选定酒店的入离店天修改（多酒店，M10）：写后靠 SSE 全量刷新 + 主动 load 兜底 */
+  async function updateHotelStayRange(candidateId: string, range: HotelStayRange) {
+    if (!tripId) return;
+    setPlaceBusy(true);
+    try {
+      await candidatesApi.updateHotelStay(tripId, candidateId, range);
+      await load(tripId);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setPlaceBusy(false);
+    }
+  }
+
   const refreshSessions = useCallback(async () => {
     if (!tripId) return;
     const { sessions } = await api.chatSessions(tripId);
@@ -201,6 +218,16 @@ export function TripPage() {
       : null;
   const scheduledPlaceIds = new Set(bundle.entries.map((e) => e.placeId));
   const days = [...bundle.days].sort((a, b) => a.dayIndex - b.dayIndex);
+  /** 多酒店（M10）：选中地点是酒店时，取其已选定住宿区间用于展示/编辑入离店天 */
+  const hotelStays = getSelectedStays(bundle);
+  const selectedHotelCand =
+    selectedPlace != null
+      ? bundle.hotelCandidates.find((h) => h.placeId === selectedPlace.id) ?? null
+      : null;
+  const selectedStay =
+    selectedHotelCand != null
+      ? hotelStays.find((s) => s.candidateId === selectedHotelCand.id) ?? null
+      : null;
   const leftPanels = Object.entries(LEFT_PANEL_META) as [LeftPanel, { label: string; Icon: LucideIcon }][];
   const activeLeftMeta = leftPanel != null ? LEFT_PANEL_META[leftPanel] : null;
 
@@ -332,6 +359,32 @@ export function TripPage() {
               <CalendarCheck className="mt-0.5 size-3 shrink-0" />
               {selectedPlace.bookingInfo}
             </p>
+          )}
+          {/* 酒店：已选定时显示并可编辑入离店天（多酒店，M10） */}
+          {selectedHotelCand && (
+            <div className="mt-1.5 rounded-lg bg-red-500/8 px-2 py-1.5 text-[11px] text-slate-600">
+              <p className="flex items-center gap-1">
+                <BedDouble className="size-3 shrink-0 text-slate-400" />
+                {selectedStay ? "已选定住宿" : "酒店候选（未选定，可在候选池选定）"}
+              </p>
+              {selectedStay && days.length > 0 && (
+                <div className="mt-1">
+                  <HotelStayRangePicker
+                    totalDays={days.length}
+                    checkInDay={selectedStay.checkInDay}
+                    checkOutDay={selectedStay.checkOutDay}
+                    otherStays={hotelStays
+                      .filter((s) => s.candidateId !== selectedStay.candidateId)
+                      .map((s) => ({
+                        ...s,
+                        label: bundle.places.find((p) => p.id === s.placeId)?.name,
+                      }))}
+                    disabled={placeBusy}
+                    onChange={(range) => void updateHotelStayRange(selectedStay.candidateId, range)}
+                  />
+                </div>
+              )}
+            </div>
           )}
           {selectedPlace.notes && (
             <p className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-slate-500">{selectedPlace.notes}</p>
