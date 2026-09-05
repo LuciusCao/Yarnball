@@ -56,7 +56,6 @@ export function CandidatesPanel({
   const [busy, setBusy] = useState(false);
   const cur = bundle.trip.currency;
   const scheduledPlaceIds = new Set(bundle.entries.map((e) => e.placeId));
-  const placeById = new Map(bundle.places.map((p) => [p.id, p]));
 
   /** 未排期地点按组归桶（酒店走 hotelCandidates 以拿到候选 id 与每晚价） */
   const grouped: Record<GroupKey, PlaceDto[]> = { hotel: [], attraction: [], dining: [], other: [] };

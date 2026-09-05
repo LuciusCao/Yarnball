@@ -19,9 +19,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const candidatesApi = {
-  /** 锁定（locked）/ 解锁（candidate）地点 */
+  /** 锁定（locked）/ 解锁（candidate）地点；返回更新后的 place（M1 契约） */
   setPlaceStatus: (placeId: string, status: PlaceStatus) =>
-    request<{ ok: true }>(`/places/${placeId}/status`, {
+    request<{ place: unknown }>(`/places/${placeId}/status`, {
       method: "PATCH",
       body: JSON.stringify({ status }),
     }),
