@@ -1,5 +1,5 @@
 import type { LngLat, PoiCandidate, TransportMode } from "@yarnball/shared";
-import { env } from "../env.js";
+import { getAmapServerKey } from "./settings.js";
 
 /**
  * GeoProvider —— 地理服务抽象。
@@ -114,7 +114,8 @@ const AMAP_BASE = "https://restapi.amap.com/v3";
 class AmapError extends Error {}
 
 async function amapGet<T>(path: string, params: Record<string, string>): Promise<T> {
-  const key = env.amapServerKey;
+  // key 读取走 settings（DB 覆盖 > env），PUT /api/settings 后立即生效
+  const key = getAmapServerKey();
   if (!key) throw new AmapError("AMAP_SERVER_KEY is not configured");
   const url = new URL(path, AMAP_BASE);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);

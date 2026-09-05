@@ -1,23 +1,30 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { asc, eq } from "drizzle-orm";
+import { execFile } from "node:child_process";
 import { z } from "zod";
 import {
   AddEntryInputSchema,
+  CreateAgentInputSchema,
   CreateHotelCandidateInputSchema,
   CreatePlaceInputSchema,
   CreateTripInputSchema,
   ReorderDayInputSchema,
+  SetLegModeInputSchema,
+  SetPlaceStatusInputSchema,
+  UpdateAgentInputSchema,
   UpdatePlaceInputSchema,
+  UpdateSettingsInputSchema,
+  type AgentAvailability,
 } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { chatChannel, tripChannel, TRIPS_CHANNEL, type EventBus } from "../events.js";
-import { env } from "../env.js";
 import type { AcpSessionManager } from "../acp/sessionManager.js";
 import { ServiceError, type TripService } from "../services/tripService.js";
 import { getProvider } from "../services/geo.js";
-import { toChatSessionDto } from "../services/mappers.js";
+import { amapConfigured, getSettings, updateSettings } from "../services/settings.js";
+import { toAgentDto, toChatSessionDto } from "../services/mappers.js";
 import { listChatMessages } from "../services/chatStore.js";
 
 /**
@@ -43,14 +50,15 @@ export function createApi(
 
   // ---------- 系统状态 ----------
 
-  api.get("/config", (c) =>
-    c.json({
-      amapConfigured: env.amapConfigured,
-      amapJsKey: env.amapJsKey,
-      amapJsSecret: env.amapJsSecret,
+  api.get("/config", (c) => {
+    const s = getSettings();
+    return c.json({
+      amapConfigured: s.amapConfigured,
+      amapJsKey: s.amapJsKey,
+      amapJsSecret: s.amapJsSecret,
       activeChatSessions: sessions.size,
-    }),
-  );
+    });
+  });
 
   // ---------- 城市联想（创建表单自动补全） ----------
 
@@ -58,7 +66,7 @@ export function createApi(
     const q = (c.req.query("q") ?? "").trim();
     if (q.length < 1) return c.json({ suggestions: [] });
     // 高德可用时国内城市优先走高德（中文名更准），否则 OSM 栈（Nominatim 优先）
-    const useAmap = env.amapConfigured && /[\u4e00-\u9fff]/.test(q) === false ? false : env.amapConfigured;
+    const useAmap = amapConfigured() && /[\u4e00-\u9fff]/.test(q) === false ? false : amapConfigured();
     try {
       const suggestions = useAmap
         ? await getProvider("amap").suggestCities(q)
@@ -109,6 +117,12 @@ export function createApi(
     return c.json({ place: await tripService.updatePlace(c.req.param("placeId"), input) });
   });
 
+  /** 锁定/解锁地点（候选状态机：candidate ↔ locked） */
+  api.patch("/places/:placeId/status", async (c) => {
+    const input = SetPlaceStatusInputSchema.parse(await c.req.json());
+    return c.json({ place: await tripService.setPlaceStatus(c.req.param("placeId"), input.status) });
+  });
+
   api.delete("/places/:placeId", async (c) => {
     await tripService.removePlace(c.req.param("placeId"));
     return c.json({ ok: true });
@@ -147,6 +161,7 @@ export function createApi(
       input.placeId,
       input.dayIndex,
       input.position ?? null,
+      input.startTime ?? null,
     );
     return c.json(result, 201);
   });
@@ -167,6 +182,15 @@ export function createApi(
   api.post("/trips/:tripId/days/:dayIndex/reorder", async (c) => {
     const input = ReorderDayInputSchema.parse(await c.req.json());
     await tripService.reorderDay(c.req.param("tripId"), Number(c.req.param("dayIndex")), input.entryIds);
+    return c.json({ ok: true });
+  });
+
+  // ---------- 交通段 ----------
+
+  /** 手动覆盖交通方式（mode=null 清除覆盖恢复自动计算） */
+  api.patch("/legs/:legId/mode", async (c) => {
+    const input = SetLegModeInputSchema.parse(await c.req.json());
+    await tripService.setLegMode(c.req.param("legId"), input.mode);
     return c.json({ ok: true });
   });
 
@@ -226,17 +250,93 @@ export function createApi(
     return c.json({ bundle: await tripService.getBundle(trip.id) });
   });
 
-  // ---------- chat sessions ----------
+  // ---------- 设置（高德 key 等，DB 覆盖 > env） ----------
+
+  api.get("/settings", (c) => c.json({ settings: getSettings() }));
+
+  api.put("/settings", async (c) => {
+    const input = UpdateSettingsInputSchema.parse(await c.req.json());
+    return c.json({ settings: await updateSettings(db, input) });
+  });
+
+  // ---------- agent 注册 CRUD ----------
 
   api.get("/agents", async (c) => {
     const rows = await db
       .select()
       .from(schema.agentRegistry)
-      .where(eq(schema.agentRegistry.enabled, true))
       .orderBy(asc(schema.agentRegistry.createdAt));
-    // command/args 不出 API 边界（防 RCE 信息泄露）
-    return c.json({ agents: rows.map((r) => ({ id: r.id, label: r.label })) });
+    // 单机自托管：设置页需要编辑 command/args，完整字段出 API（前端按 enabled 过滤可选 agent）
+    return c.json({ agents: rows.map(toAgentDto) });
   });
+
+  /** 检测各注册 agent 的 command 在本机是否可用（which） */
+  api.get("/agents/detect", async (c) => {
+    const rows = await db
+      .select()
+      .from(schema.agentRegistry)
+      .orderBy(asc(schema.agentRegistry.createdAt));
+    const agents: AgentAvailability[] = await Promise.all(
+      rows.map(async (row) => ({
+        ...toAgentDto(row),
+        available: await new Promise<boolean>((resolve) =>
+          execFile("which", [row.command], (err) => resolve(!err)),
+        ),
+      })),
+    );
+    return c.json({ agents });
+  });
+
+  api.post("/agents", async (c) => {
+    const input = CreateAgentInputSchema.parse(await c.req.json());
+    const [row] = await db
+      .insert(schema.agentRegistry)
+      .values({ id: crypto.randomUUID(), ...input })
+      .returning();
+    return c.json({ agent: toAgentDto(row) }, 201);
+  });
+
+  api.patch("/agents/:agentId", async (c) => {
+    const input = UpdateAgentInputSchema.parse(await c.req.json());
+    const patch: Partial<typeof schema.agentRegistry.$inferInsert> = {};
+    if (input.label !== undefined) patch.label = input.label;
+    if (input.command !== undefined) patch.command = input.command;
+    if (input.args !== undefined) patch.args = input.args;
+    if (input.enabled !== undefined) patch.enabled = input.enabled;
+    const [row] = await db
+      .update(schema.agentRegistry)
+      .set(patch)
+      .where(eq(schema.agentRegistry.id, c.req.param("agentId")))
+      .returning();
+    if (!row) return c.json({ error: "agent not found" }, 404);
+    return c.json({ agent: toAgentDto(row) });
+  });
+
+  api.delete("/agents/:agentId", async (c) => {
+    const agentId = c.req.param("agentId");
+    const [existing] = await db
+      .select()
+      .from(schema.agentRegistry)
+      .where(eq(schema.agentRegistry.id, agentId));
+    if (!existing) return c.json({ error: "agent not found" }, 404);
+    // 有历史会话引用的 agent 只停用不删除（保留会话记录里的 label 快照可用）
+    const [used] = await db
+      .select({ id: schema.chatSessions.id })
+      .from(schema.chatSessions)
+      .where(eq(schema.chatSessions.agentRegistryId, agentId))
+      .limit(1);
+    if (used) {
+      await db
+        .update(schema.agentRegistry)
+        .set({ enabled: false })
+        .where(eq(schema.agentRegistry.id, agentId));
+      return c.json({ ok: true, disabled: true });
+    }
+    await db.delete(schema.agentRegistry).where(eq(schema.agentRegistry.id, agentId));
+    return c.json({ ok: true, disabled: false });
+  });
+
+  // ---------- chat sessions ----------
 
   api.get("/trips/:tripId/chat-sessions", async (c) => {
     const rows = await db

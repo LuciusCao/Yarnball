@@ -7,6 +7,7 @@ import * as schema from "./db/schema.js";
 import { EventBus } from "./events.js";
 import { env } from "./env.js";
 import { TripService } from "./services/tripService.js";
+import { amapConfigured, initSettingsCache } from "./services/settings.js";
 import { AcpSessionManager } from "./acp/sessionManager.js";
 import { createMcpApp } from "./mcp/app.js";
 import { createApi } from "./routes/api.js";
@@ -62,11 +63,12 @@ async function seedAgents() {
 
 const server = serve({ fetch: app.fetch, port: env.serverPort }, async (info) => {
   console.log(`[yarnball] server listening on http://127.0.0.1:${info.port}`);
+  await initSettingsCache(db);
   await seedAgents();
-  if (!env.amapConfigured) {
+  if (!amapConfigured()) {
     console.warn(
       "[yarnball] AMAP keys not configured — POI search / routing will use rough estimates. " +
-        "Set AMAP_JS_KEY / AMAP_SERVER_KEY in .env (see .env.example).",
+        "Set them in 设置页 or .env (see .env.example).",
     );
   }
 });

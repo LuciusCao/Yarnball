@@ -29,6 +29,13 @@
       "when": 1788362187809,
       "tag": "0003_marvelous_wendigo",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788578667904,
+      "tag": "0004_exotic_lionheart",
+      "breakpoints": true
     }
   ]
 }

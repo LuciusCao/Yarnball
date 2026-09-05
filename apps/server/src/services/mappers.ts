@@ -1,4 +1,5 @@
 import type {
+  AgentRegistryDto,
   ChatSessionDto,
   DayDto,
   EntryDto,
@@ -16,6 +17,7 @@ type EntryRow = typeof t.entries.$inferSelect;
 type LegRow = typeof t.transportLegs.$inferSelect;
 type HotelRow = typeof t.hotelCandidates.$inferSelect;
 type ChatSessionRow = typeof t.chatSessions.$inferSelect;
+type AgentRow = typeof t.agentRegistry.$inferSelect;
 
 const iso = (d: Date | string): string =>
   d instanceof Date ? d.toISOString() : new Date(d).toISOString();
@@ -58,6 +60,7 @@ export function toPlaceDto(row: PlaceRow): PlaceDto {
     durationMin: row.durationMin,
     priceCny: row.priceCny,
     bookingInfo: row.bookingInfo,
+    status: row.status as PlaceDto["status"],
     createdBy: row.createdBy as PlaceDto["createdBy"],
     createdAt: iso(row.createdAt),
   };
@@ -90,6 +93,7 @@ export function toLegDto(row: LegRow): TransportLegDto {
     toPlaceId: row.toPlaceId,
     seq: row.seq,
     mode: row.mode as TransportLegDto["mode"],
+    modeOverride: (row.modeOverride as TransportLegDto["modeOverride"]) ?? null,
     distanceM: row.distanceM,
     durationS: row.durationS,
     polyline: (row.polyline as TransportLegDto["polyline"]) ?? null,
@@ -107,8 +111,7 @@ export function toHotelDto(row: HotelRow): HotelCandidateDto {
   };
 }
 
-export function toChatSessionDto(row: ChatSessionRow): ChatSessionDto {
-  return {
+export function toChatSessionDto(row: ChatSessionRow): ChatSessionDto {  return {
     id: row.id,
     tripId: row.tripId,
     agentRegistryId: row.agentRegistryId,
@@ -119,5 +122,16 @@ export function toChatSessionDto(row: ChatSessionRow): ChatSessionDto {
     uiContext: (row.uiContext as Record<string, unknown> | null) ?? null,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
+  };
+}
+
+export function toAgentDto(row: AgentRow): AgentRegistryDto {
+  return {
+    id: row.id,
+    label: row.label,
+    command: row.command,
+    args: (row.args as string[]) ?? [],
+    enabled: row.enabled,
+    createdAt: iso(row.createdAt),
   };
 }
