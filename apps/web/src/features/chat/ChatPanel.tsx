@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
-import type { ChatMessageDto, ChatSessionDto, TripDto } from "@yarnball/shared";
+import type { AgentRegistryDto, ChatMessageDto, ChatSessionDto, TripDto } from "@yarnball/shared";
 import { toast } from "sonner";
 import { AlertTriangle, Brain, CalendarClock, Check, Clock, ListChecks, Loader2, SendHorizontal, ShieldCheck, Unplug, X } from "lucide-react";
 import { api } from "../../api/client";
+import { api as libApi } from "../../lib/api";
 import { Button } from "../../components/ui/button";
 import { Textarea, Select } from "../../components/ui/input";
 import { useChatStore } from "../../stores/tripStore";
@@ -24,7 +25,9 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }: ChatPanelProps) {
-  const [agents, setAgents] = useState<{ id: string; label: string }[]>([]);
+  // GET /api/agents 现在返回全部注册 agent（含 disabled，带 command/args）——只保留 enabled
+  const [agents, setAgents] = useState<AgentRegistryDto[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [agentId, setAgentId] = useState("");
   const [input, setInput] = useState("");
   const [starting, setStarting] = useState(false);
@@ -38,9 +41,11 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   const { messages, subscribe, reset, upsertMessage } = useChatStore();
 
   useEffect(() => {
-    void api.agents().then(({ agents }) => {
-      setAgents(agents);
-      if (agents.length > 0) setAgentId((prev) => prev || agents[0].id);
+    void libApi.listAgents().then(({ agents }) => {
+      const enabled = agents.filter((a) => a.enabled);
+      setAgents(enabled);
+      setAgentsLoaded(true);
+      if (enabled.length > 0) setAgentId((prev) => prev || enabled[0].id);
     });
   }, []);
 
@@ -99,10 +104,8 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
     setPlanning(true);
     try {
       const { bundle } = await api.getBundle(trip.id);
-      const statusOf = (p: (typeof bundle.places)[number]) =>
-        (p as { status?: string }).status ?? "candidate";
-      const locked = bundle.places.filter((p) => statusOf(p) === "locked");
-      const candidates = bundle.places.filter((p) => statusOf(p) !== "locked");
+      const locked = bundle.places.filter((p) => p.status === "locked");
+      const candidates = bundle.places.filter((p) => p.status !== "locked");
       if (locked.length === 0 && candidates.length === 0) {
         toast.info("还没有地点。先让 agent 解析攻略，或在「添加地点」里手动加几个。");
         return;
@@ -140,22 +143,29 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
           <br />
           粘贴攻略 / 酒店候选，解析、定位、编排。
         </p>
-        <div className="flex gap-2">
-          <Select
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-            className="h-10 px-3"
-          >
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.label}
-              </option>
-            ))}
-          </Select>
-          <Button variant="primary" size="lg" onClick={startSession} disabled={starting || !agentId}>
-            {starting ? "启动中…" : "连接 agent"}
-          </Button>
-        </div>
+        {/* 全部注册 agent 都被停用时：不渲染空下拉，引导去设置页启用 */}
+        {agentsLoaded && agents.length === 0 ? (
+          <p className="text-xs text-amber-600">
+            没有已启用的 agent —— 请先到设置页注册或启用一个 agent。
+          </p>
+        ) : (
+          <div className="flex gap-2">
+            <Select
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              className="h-10 px-3"
+            >
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.label}
+                </option>
+              ))}
+            </Select>
+            <Button variant="primary" size="lg" onClick={startSession} disabled={starting || !agentId}>
+              {starting ? "启动中…" : "连接 agent"}
+            </Button>
+          </div>
+        )}
         {starting && <p className="text-xs text-slate-400">正在启动 agent 子进程…</p>}
         {/* 规划引导（空态置灰）：连接 agent 后一键把已锁定/候选地点发给 agent 排程 */}
         <button

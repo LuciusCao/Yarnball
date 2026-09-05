@@ -3,9 +3,9 @@ import { formatDistance, formatDuration, type TripBundle, type TransportLegDto }
 import { toast } from "sonner";
 import { BedDouble, Bus, Car, Footprints, Zap } from "lucide-react";
 import { api } from "../../api/client";
+import { api as libApi } from "../../lib/api";
 import { DAY_COLORS } from "../map/MapCanvas";
 import { buildDayTimeline, formatHHMM } from "./timeline";
-import { overrideLegMode } from "./legApi";
 
 /**
  * 行程面板：按天分组的时间轴。
@@ -79,11 +79,11 @@ export function ItineraryPanel({
     }
   }
 
-  /** 手动覆盖交通段模式（M1 契约）；成功后靠 SSE 全量快照刷新，这里再主动拉一次兜底 */
-  async function overrideMode(legId: string, mode: "walk" | "drive") {
+  /** 手动覆盖交通段模式（M1：PATCH /api/legs/:id/mode，mode=null 清除覆盖）；成功后靠 SSE 全量快照刷新，这里再主动拉一次兜底 */
+  async function overrideMode(legId: string, mode: "walk" | "drive" | null) {
     setBusy(true);
     try {
-      await overrideLegMode(legId, mode);
+      await libApi.setLegMode(legId, mode);
       onDataChanged();
     } catch (err) {
       toast.error((err as Error).message);
@@ -272,10 +272,10 @@ function LegRow({
   hotelName?: string;
   readOnly: boolean;
   busy: boolean;
-  onOverride: (legId: string, mode: "walk" | "drive") => Promise<void>;
+  onOverride: (legId: string, mode: "walk" | "drive" | null) => Promise<void>;
 }) {
-  // M1 合入后 DTO 可能带 modeOverride 标记；防御性读取，缺省按未覆盖
-  const overridden = (leg as { modeOverride?: boolean }).modeOverride === true;
+  // modeOverride 非空 = 人工覆盖过（M1），自动重算不会冲掉；可点击徽标恢复自动
+  const overridden = leg.modeOverride != null;
   return (
     <div className="group/leg flex items-center gap-1 py-0.5 pl-9 text-[11px] text-slate-400">
       <TransportIcon mode={toHotel ? "hotel" : leg.mode} />
@@ -284,7 +284,19 @@ function LegRow({
         {formatDuration(leg.durationS)}
         {leg.distanceM != null ? ` · ${formatDistance(leg.distanceM)}` : ""}
       </span>
-      {overridden && <span className="rounded bg-slate-900/8 px-1 text-[10px] text-slate-500">手动</span>}
+      {overridden &&
+        (readOnly || toHotel ? (
+          <span className="rounded bg-slate-900/8 px-1 text-[10px] text-slate-500">手动</span>
+        ) : (
+          <button
+            title="恢复自动计算"
+            disabled={busy}
+            onClick={() => void onOverride(leg.id, null)}
+            className="rounded bg-slate-900/8 px-1 text-[10px] text-slate-500 hover:bg-slate-900/15 disabled:opacity-40"
+          >
+            手动 ✕
+          </button>
+        ))}
       {!readOnly && !toHotel && (
         <span className="ml-1 hidden items-center gap-0.5 group-hover/leg:flex">
           {(["walk", "drive"] as const).map((mode) => (
