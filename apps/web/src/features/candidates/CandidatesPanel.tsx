@@ -121,7 +121,7 @@ export function CandidatesPanel({
     }
     setBusy(true);
     try {
-      await candidatesApi.selectHotelStay(tripId, candidateId, span);
+      await uxApi.selectHotel(tripId, { candidateId, ...span });
       onDataChanged();
     } catch (err) {
       toast.error((err as Error).message);
@@ -133,7 +133,7 @@ export function CandidatesPanel({
   async function unselectHotel(candidateId: string) {
     setBusy(true);
     try {
-      await candidatesApi.unselectHotelStay(tripId, candidateId);
+      await uxApi.unselectHotel(tripId, candidateId);
       onDataChanged();
     } catch (err) {
       toast.error((err as Error).message);
@@ -142,11 +142,11 @@ export function CandidatesPanel({
     }
   }
 
-  /** 修改已选定酒店的入离店天；区间冲突由选择器禁用兜底，服务端拒绝时 toast */
+  /** 修改已选定酒店的入离店天（重选即改期）；区间冲突由选择器禁用兜底，服务端拒绝时 toast */
   async function updateStay(candidateId: string, range: HotelStayRange) {
     setBusy(true);
     try {
-      await candidatesApi.updateHotelStay(tripId, candidateId, range);
+      await uxApi.selectHotel(tripId, { candidateId, ...range });
       onDataChanged();
     } catch (err) {
       toast.error((err as Error).message);

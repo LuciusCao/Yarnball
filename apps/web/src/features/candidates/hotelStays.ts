@@ -1,17 +1,15 @@
 import type { TripBundle } from "@yarnball/shared";
 
 /**
- * 多酒店入住区间 —— M9（multi-hotel-model）契约的适配层（契约已随 M9 广播确认）。
+ * 多酒店入住区间（M9 契约，见 HotelCandidateDto.selected/checkInDay/checkOutDay）。
  *
  * 契约要点：
- * - HotelCandidateDto 增加 selected / checkInDay / checkOutDay 三个字段（仅 selected 时非空）；
  * - 天序号 1-based，闭开区间 [checkInDay, checkOutDay) 表示覆盖哪些天的「当晚」，checkOutDay
  *   最大可到 行程天数 + 1（住到行程结束）；换酒店日约定：旧酒店 checkOutDay == 新酒店 checkInDay；
  * - 同一行程内已选定酒店的区间不得重叠（服务端 422 校验，前端做选项禁用 + 提示）。
  *
- * 过渡期兼容：M9 合并前服务端还没下发这些字段，运行期回退到旧的
- * trip.selectedHotelCandidateId 单选定语义（视为覆盖全部天；该字段在 M9 后保留为 deprecated
- * 兼容镜像，故此兜底对新旧服务端都安全）。
+ * 兼容兜底：trip.selectedHotelCandidateId 是 deprecated 兼容镜像；仅当没有任何
+ * selected 候选时（旧数据未迁移）回退为「覆盖全部天」的单条住宿。
  */
 
 /** 一条已选定的住宿区间 */
@@ -27,19 +25,10 @@ export interface HotelStayRange {
   checkOutDay: number;
 }
 
-/** 前瞻字段：M9 合并前 HotelCandidateDto 上还不存在，结构式宽松读取 */
-type HotelCandidateWithStay = {
-  id: string;
-  placeId: string;
-  selected?: boolean;
-  checkInDay?: number | null;
-  checkOutDay?: number | null;
-};
-
 /** 从 bundle 提取全部已选定住宿区间（含 legacy 单选定兜底），按入住天排序 */
 export function getSelectedStays(bundle: TripBundle): HotelStay[] {
   const stays: HotelStay[] = [];
-  for (const cand of bundle.hotelCandidates as HotelCandidateWithStay[]) {
+  for (const cand of bundle.hotelCandidates) {
     if (cand.selected && cand.checkInDay != null && cand.checkOutDay != null) {
       stays.push({
         candidateId: cand.id,
@@ -49,13 +38,11 @@ export function getSelectedStays(bundle: TripBundle): HotelStay[] {
       });
     }
   }
-  if (stays.length === 0) {
-    // legacy 单选定（M9 迁移后该字段可能消失，结构式宽松读取避免编译期依赖）
-    const legacyId = (bundle.trip as { selectedHotelCandidateId?: string | null })
-      .selectedHotelCandidateId;
-    const legacy = legacyId
-      ? bundle.hotelCandidates.find((h) => h.id === legacyId)
-      : undefined;
+  if (stays.length === 0 && bundle.trip.selectedHotelCandidateId != null) {
+    // legacy：deprecated 兼容镜像（旧数据未迁移时）
+    const legacy = bundle.hotelCandidates.find(
+      (h) => h.id === bundle.trip.selectedHotelCandidateId,
+    );
     if (legacy) {
       stays.push({
         candidateId: legacy.id,

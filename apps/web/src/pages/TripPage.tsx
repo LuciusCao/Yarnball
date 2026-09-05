@@ -185,7 +185,7 @@ export function TripPage() {
     if (!tripId) return;
     setPlaceBusy(true);
     try {
-      await candidatesApi.updateHotelStay(tripId, candidateId, range);
+      await uxApi.selectHotel(tripId, { candidateId, ...range });
       await load(tripId);
     } catch (err) {
       toast.error((err as Error).message);
