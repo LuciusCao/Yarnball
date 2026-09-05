@@ -352,6 +352,8 @@ export function createApi(
     const input = z.object({ agentId: z.string() }).parse(await c.req.json());
     const [agent] = await db.select().from(schema.agentRegistry).where(eq(schema.agentRegistry.id, input.agentId));
     if (!agent) return c.json({ error: "agent not found" }, 404);
+    // 被停用（DELETE 降级或设置页关闭）的 agent 不可再开新会话
+    if (!agent.enabled) return c.json({ error: `agent「${agent.label}」已停用，请先在设置页启用` }, 409);
 
     const [row] = await db
       .insert(schema.chatSessions)

@@ -111,7 +111,8 @@ export function toHotelDto(row: HotelRow): HotelCandidateDto {
   };
 }
 
-export function toChatSessionDto(row: ChatSessionRow): ChatSessionDto {  return {
+export function toChatSessionDto(row: ChatSessionRow): ChatSessionDto {
+  return {
     id: row.id,
     tripId: row.tripId,
     agentRegistryId: row.agentRegistryId,
