@@ -40,7 +40,7 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  *   （onOpenCandidates 由 TripPage 传入；只读分享页只有文案没有按钮）。
  *   注意（M20 话术统一）：酒店需「加入行程」（底层 select，带 checkInDay/checkOutDay 住宿区间）才参与路线锚定
  * - Day 筛选 tabs（M15，TripPage 传入 visibleDay/onVisibleDayChange 时启用）：
- *   面板顶部「全部/D1/D2…」，选中天过滤面板并同步地图聚焦
+ *   面板顶部「全部/Day 1/Day 2…」，选中天过滤面板并同步地图聚焦
  * - readOnly（分享页）：隐藏一切编辑操作
  */
 
@@ -53,7 +53,7 @@ interface ItineraryPanelProps {
   /** 只读模式（分享页）：不渲染编辑按钮与交通段切换 */
   readOnly?: boolean;
   /**
-   * Day 筛选 tabs（M15，仅 TripPage 传入）：面板顶部渲染「全部/D1/D2…」，
+   * Day 筛选 tabs（M15，仅 TripPage 传入）：面板顶部渲染「全部/Day 1/Day 2…」，
    * 选中后过滤面板只显示该天，并回传 TripPage 让地图聚焦同一天（原地图浮条的状态通道）
    */
   visibleDay?: number | null;
@@ -215,7 +215,7 @@ export function ItineraryPanel({
                 }`}
                 style={active ? { background: color } : { color }}
               >
-                D{d.dayIndex}
+                Day {d.dayIndex}
               </button>
             );
           })}
@@ -223,7 +223,7 @@ export function ItineraryPanel({
       )}
       {sortedDays.length === 0 && (
         <div className="p-6 text-center text-sm text-slate-400">
-          还没有行程。让 agent 帮你排，或在「搜索添加」里手动加地点。
+          还没有行程。让 agent 帮你排，或在「添加地点」里手动加地点。
         </div>
       )}
       {shownDays.map((day) => {

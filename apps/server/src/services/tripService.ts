@@ -760,23 +760,29 @@ export class TripService {
   /**
    * 某天的首/尾酒店锚点（多酒店模型）：
    * - 首锚点 = 前一晚住宿的酒店（缺省回退当晚酒店，如行程第 1 天先到酒店）
-   * - 尾锚点 = 当晚住宿的酒店（缺省回退前一晚酒店，如最后一天不住宿）
+   * - 尾锚点 = 当晚住宿的酒店；仅最后一天（离店日不住宿）回退前一晚酒店。
+   *   中间空洞夜不回退（不生成「返回酒店」段，避免行程中段凭空折返到已退房的酒店）
    * 换酒店日（旧酒店 checkOutDay = 当天 = 新酒店 checkInDay）：首 = 旧酒店，尾 = 新酒店。
    * 没有任何已选定酒店覆盖时两端都是 null（无锚点，保持现状）。
    */
   private async getDayHotelAnchors(
     tripId: string,
     dayIndex: number,
+    lastDayIndex: number,
   ): Promise<{ startPlaceId: string | null; endPlaceId: string | null }> {
     const prev = await this.getHotelPlaceIdForNight(tripId, dayIndex - 1);
     const curr = await this.getHotelPlaceIdForNight(tripId, dayIndex);
-    return { startPlaceId: prev ?? curr, endPlaceId: curr ?? prev };
+    return {
+      startPlaceId: prev ?? curr,
+      endPlaceId: curr ?? (dayIndex >= lastDayIndex ? prev : null),
+    };
   }
 
   /**
    * 变更某天 entry / 换酒店后重算该天交通段。
    * 酒店锚点按天解析（见 getDayHotelAnchors）：普通日首尾同为当晚酒店，
-   * 换酒店日首 = 旧酒店、尾 = 新酒店；无覆盖酒店的天不锚定（仅景点间移动）。
+   * 换酒店日首 = 旧酒店、尾 = 新酒店；当晚无覆盖的天不生成「返回酒店」段
+   * （仅最后一天离店回退前一晚酒店），首尾都无覆盖则完全不锚定（仅景点间移动）。
    * transit entry（大交通）参与锚定：起讫引用行程内 place 时走真实坐标展开成端点节点；
    * 首个 entry 是带坐标的 transit 到达 → 替代酒店首锚点成为当天起点；
    * 末个 entry 是带坐标的 transit 离开 → 替代酒店尾锚点收口当天。
@@ -795,7 +801,11 @@ export class TripService {
       .orderBy(asc(schema.entries.position));
     const anchors =
       day && entries.length > 0
-        ? await this.getDayHotelAnchors(tripId, day.dayIndex)
+        ? await this.getDayHotelAnchors(
+            tripId,
+            day.dayIndex,
+            trip ? await this.getTripDayCount(trip) : day.dayIndex,
+          )
         : { startPlaceId: null, endPlaceId: null };
 
     const placeIds = [
@@ -1014,7 +1024,7 @@ export class TripService {
       const p = placeById.get(e.placeId!)!;
       return { lng: Number(p.lng), lat: Number(p.lat) };
     });
-    const anchors = await this.getDayHotelAnchors(tripId, dayIndex);
+    const anchors = await this.getDayHotelAnchors(tripId, dayIndex, await this.getTripDayCount(trip));
     const anchorCoord = new Map<string, LngLat>();
     for (const pid of new Set(
       [anchors.startPlaceId, anchors.endPlaceId].filter((x): x is string => x != null),
@@ -1025,7 +1035,7 @@ export class TripService {
     const startCoord = anchors.startPlaceId ? (anchorCoord.get(anchors.startPlaceId) ?? null) : null;
     const endCoord = anchors.endPlaceId ? (anchorCoord.get(anchors.endPlaceId) ?? null) : null;
     const hotelAnchored = startCoord != null || endCoord != null;
-    // 换酒店日：首（旧酒店）≠ 尾（新酒店）；getDayHotelAnchors 保证要么两端都有、要么都无
+    // 换酒店日：首（旧酒店）≠ 尾（新酒店）；中间空洞夜可能只有首锚点（尾=null），此时按环路优化
     const switchDay =
       anchors.startPlaceId != null && anchors.endPlaceId != null && anchors.startPlaceId !== anchors.endPlaceId;
 
@@ -1087,7 +1097,8 @@ export class TripService {
     };
   }
 
-  /** 顺路度分析（不落库）：把 place 插入某天每个位置的时间增量 + 最优位置。酒店锚点按天解析，换酒店日首尾锚点不同。
+  /** 顺路度分析（不落库）：把 place 插入某天每个位置的时间增量 + 最优位置。酒店锚点按天解析，换酒店日首尾锚点不同；
+   *  中间空洞夜仅首锚点（尾端开放，不假设返回已退房酒店）。
    *  transit entry 不参与插入分析（时间固定、不产生顺路增量），position 语义按 place entry 序列计。 */
   async analyzeDetour(tripId: string, placeId: string, dayIndex: number) {
     const [place] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
@@ -1102,7 +1113,7 @@ export class TripService {
         .orderBy(asc(schema.entries.position))
     ).filter((e) => e.entryType !== "transit" && e.placeId != null);
 
-    const anchors = await this.getDayHotelAnchors(tripId, dayIndex);
+    const anchors = await this.getDayHotelAnchors(tripId, dayIndex, await this.getTripDayCount(trip));
     const anchorPlaceIds = [
       ...new Set([anchors.startPlaceId, anchors.endPlaceId].filter((x): x is string => x != null)),
     ];
@@ -1130,7 +1141,9 @@ export class TripService {
     const switchDay =
       anchors.startPlaceId != null && anchors.endPlaceId != null && anchors.startPlaceId !== anchors.endPlaceId;
 
-    // 坐标矩阵：同酒店锚点 [酒店, ...entries, 目标]；换酒店日 [旧酒店, ...entries, 新酒店, 目标]；无锚点 [...entries, 目标]
+    // 坐标矩阵：同酒店锚点 [酒店, ...entries, 目标]；换酒店日 [旧酒店, ...entries, 新酒店, 目标]；
+    // 仅首锚点（中间空洞夜：前一晚有酒店、当晚无住宿）[酒店, ...entries, 目标] 且尾端开放；
+    // 无锚点 [...entries, 目标]
     const entryCoords = entries.map((e) => {
       const p = placeById.get(e.placeId!)!;
       return { lng: Number(p.lng), lat: Number(p.lat) };
@@ -1140,12 +1153,15 @@ export class TripService {
     const startCoord = coordOf(startHotel);
     const endCoord = coordOf(endHotel);
     const targetCoord = { lng: Number(target.lng), lat: Number(target.lat) };
+    const startOnlyAnchored = hotelAnchored && startCoord != null && endCoord == null;
     const points =
       hotelAnchored && startCoord && endCoord
         ? switchDay
           ? [startCoord, ...entryCoords, endCoord, targetCoord]
           : [startCoord, ...entryCoords, targetCoord]
-        : [...entryCoords, targetCoord];
+        : startOnlyAnchored
+          ? [startCoord, ...entryCoords, targetCoord]
+          : [...entryCoords, targetCoord];
     const matrix = await this.buildDurationMatrix(trip.geoProvider, points);
     const targetIdx = points.length - 1;
     const hotelIdx = hotelAnchored ? 0 : undefined;
@@ -1154,7 +1170,15 @@ export class TripService {
     const base = hotelAnchored ? 1 : 0;
     const chain = entries.map((_, i) => base + i);
 
-    const options = insertionIncrements(chain, targetIdx, matrix, hotelIdx, endHotelIdx).map((o) => ({
+    // 仅首锚点（中间空洞夜）：酒店钉在链首（本身不是可插入位置），尾端开放——与 recalcDayLegs 一致
+    // （当晚无住宿不生成返回段），不能按环路（默认 endAnchorIdx=anchorIdx）也不能按无锚点算。
+    // 把酒店作为 chain[0] 走无锚点插入分析，再剔除「插到酒店前」并把 position 平移回 entry 序列
+    const increments = startOnlyAnchored
+      ? insertionIncrements([0, ...chain], targetIdx, matrix)
+          .filter((o) => o.position > 0)
+          .map((o) => ({ position: o.position - 1, incrementS: o.incrementS }))
+      : insertionIncrements(chain, targetIdx, matrix, hotelIdx, endHotelIdx);
+    const options = increments.map((o) => ({
       position: o.position,
       incrementS: o.incrementS,
       // 插在 position k = 跟在原链路第 k-1 个 entry 后面；k=0 时锚定酒店则"从（首锚点）酒店出发后"
@@ -1439,8 +1463,11 @@ export class TripService {
   }
 
   /**
-   * 预算汇总：住宿（各已选定酒店 × 各自覆盖晚数求和）+ 餐饮（餐厅人均 × 人数）+ 门票（景点 × 人数）。
+   * 预算汇总：住宿（各已选定酒店 × 各自覆盖晚数求和，每晚价 × 晚数，不按人数计）
+   * + 美食（已加入餐厅人均 × 人数）+ 门票（已加入景点 × 人数）。
+   * 美食/门票只计已加入行程（locked）的地点，候选池里未加入的不计入；
    * 交通费不自动计入（打车/公交成本因人而异，提示用户自行预留）。
+   * unpricedCount = 已加入但未填价格的餐厅/景点数 + 已选定但未填每晚价的酒店数（预算低估提醒）。
    */
   async getBudgetSummary(tripId: string) {
     const trip = await this.getTrip(tripId);
@@ -1460,9 +1487,10 @@ export class TripService {
       if (Number.isFinite(diff) && diff > 0) tripDays = diff;
     }
 
-    // 住宿费：各已选定酒店 × 各自覆盖晚数（checkOutDay - checkInDay）求和。
+    // 住宿费：各已选定酒店 × 各自覆盖晚数（checkOutDay - checkInDay）求和（每晚价 × 晚数，不按人数计）。
     // 晚数口径与计费一致：N 天行程 = N-1 晚（最后一天离店不住）；
     // 有已选定酒店时 nights = 覆盖晚数合计，无覆盖时显示 天数-1 供参考。
+    // 已选定但未填每晚价的酒店计入 unpricedCount（否则住宿行显示「—」却无任何提醒）。
     const selectedHotels = await this.db
       .select()
       .from(schema.hotelCandidates)
@@ -1472,6 +1500,7 @@ export class TripService {
     let hotelCny: number | null = null;
     let hotelSelected = false;
     let coveredNightsTotal = 0;
+    let unpricedCount = 0;
     for (const cand of selectedHotels) {
       hotelSelected = true;
       const coveredNights =
@@ -1479,16 +1508,21 @@ export class TripService {
           ? Math.max(0, cand.checkOutDay - cand.checkInDay)
           : 0;
       coveredNightsTotal += coveredNights;
-      if (cand.pricePerNight == null) continue;
+      if (cand.pricePerNight == null) {
+        unpricedCount += 1;
+        continue;
+      }
       hotelCny = (hotelCny ?? 0) + cand.pricePerNight * coveredNights;
     }
     const nights = hotelSelected ? coveredNightsTotal : Math.max(0, tripDays - 1);
 
+    // 美食/门票：只计已加入行程（locked）的地点——预算辅助决策「已加入项」，
+    // 候选池（candidate）里未加入的地点不计入，未定价的计入 unpricedCount 提醒
     let diningCny = 0;
     let ticketsCny = 0;
-    let unpricedCount = 0;
     for (const p of places) {
       if (p.category === "hotel") continue;
+      if (p.status !== "locked") continue;
       if (p.priceCny == null) {
         if (p.category === "restaurant" || p.category === "attraction" || p.category === "activity") {
           unpricedCount += 1;
