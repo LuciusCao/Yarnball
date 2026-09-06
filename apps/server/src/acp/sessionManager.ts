@@ -641,6 +641,11 @@ export class SessionHandle {
       key = `${this.currentTurnId}:${kind}:${segment}`;
     }
 
+    // 先打开本段再 await：权限三条并发路径在消费循环外调 appendMessage 封闭段，
+    // 若在 await 后才设 openAggregateKey，恢复时会把刚被封闭的段重新打开，
+    // 后续 chunk 并回权限事件之前的旧段，显示顺序颠倒
+    this.openAggregateKey = key;
+
     const existing = this.aggregateSlots.get(key) ?? "";
     const updated = existing + text;
     this.aggregateSlots.set(key, updated);
@@ -664,11 +669,13 @@ export class SessionHandle {
         },
       });
     } else {
-      const dto = await this.appendMessage({ turnId: this.currentTurnId, kind, content: { text: updated } });
+      // 段首插入走 appendMessage 但不许它封闭自己刚打开的段
+      const dto = await this.appendMessage(
+        { turnId: this.currentTurnId, kind, content: { text: updated } },
+        { closesAggregate: false },
+      );
       this.aggregateMessageIds.set(key, dto.id);
     }
-    // appendMessage 会封闭开放段，这里重新打开本段
-    this.openAggregateKey = key;
   }
 
   private seqCache = new Map<string, number>();
@@ -882,7 +889,7 @@ export class SessionHandle {
     opts: { closesAggregate?: boolean } = {},
   ): Promise<ChatMessageDto> {
     // 任何非聚合事件（tool_call/plan/permission/user_text/advisory…）介入即封闭当前聚合段，
-    // 后续 agent chunk 会开新段（appendAggregated 插入新段后自己重新打开）；
+    // 后续 agent chunk 会开新段（appendAggregated 先打开新段再走这里，传 closesAggregate:false）；
     // tool_call_update 是 tool_call 的续报，传 closesAggregate:false 例外
     if (opts.closesAggregate ?? true) this.openAggregateKey = null;
     const seq = ++this.seq;
