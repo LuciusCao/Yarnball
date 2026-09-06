@@ -123,11 +123,12 @@ export function formatMoney(amount: number | null | undefined, currency = "CNY")
   return `${CURRENCY_SYMBOLS[currency] ?? currency} ${amount.toLocaleString("zh-CN")}`;
 }
 
-/** 预计游览/用餐时长展示：不足 1 小时显示「约 X 分钟」，否则「约 X 小时」（半小时粒度） */
+/** 预计游览/用餐时长展示：按半小时粒度四舍五入；不足 1 小时显示「约 X 分钟」，否则「约 X 小时」 */
 export function formatVisitDuration(minutes: number | null | undefined): string {
   if (minutes == null || minutes <= 0) return "";
-  if (minutes < 60) return `约 ${minutes} 分钟`;
-  const hours = minutes / 60;
+  const rounded = Math.max(30, Math.round(minutes / 30) * 30);
+  if (rounded < 60) return `约 ${rounded} 分钟`;
+  const hours = rounded / 60;
   return `约 ${Number.isInteger(hours) ? hours : hours.toFixed(1)} 小时`;
 }
 
@@ -284,20 +285,30 @@ export const CreateTripInputSchema = z.object({
 });
 export type CreateTripInput = z.infer<typeof CreateTripInputSchema>;
 
+/**
+ * http(s) URL 白名单：agent 从不可信内容收集的链接会在前端以 <a href> 渲染，
+ * z.string().url() 接受 javascript:/data: 等危险 scheme，必须收窄（防 stored XSS）。
+ */
+const HttpUrlSchema = z
+  .string()
+  .url()
+  .max(500)
+  .refine((v) => /^https?:\/\//i.test(v), { message: "仅支持 http/https 链接" });
+
 export const CreatePlaceInputSchema = z.object({
   name: z.string().min(1).max(120),
   category: z.enum(PLACE_CATEGORIES).default("other"),
   location: LngLatSchema,
   address: z.string().max(300).nullable().optional(),
   /** 官网链接 */
-  website: z.string().url().max(500).nullable().optional(),
+  website: HttpUrlSchema.nullable().optional(),
   /** 预订链接（可直接跳转下单/预约的 URL） */
-  bookingUrl: z.string().url().max(500).nullable().optional(),
+  bookingUrl: HttpUrlSchema.nullable().optional(),
   /** 联系电话（含国家/区号更佳，如 +61 2 9250 7111） */
   phone: z.string().max(50).nullable().optional(),
   amapPoiId: z.string().max(64).nullable().optional(),
   sourceType: z.enum(SOURCE_TYPES).default("manual"),
-  sourceUrl: z.string().url().max(500).nullable().optional(),
+  sourceUrl: HttpUrlSchema.nullable().optional(),
   notes: z.string().max(4000).nullable().optional(),
   durationMin: z.number().int().min(0).max(24 * 60).nullable().optional(),
   /** 预计游览/用餐分钟数（景点/美食尽量填写；规划每日行程的重要输入） */

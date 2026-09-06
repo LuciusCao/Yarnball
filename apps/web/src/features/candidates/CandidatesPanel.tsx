@@ -374,7 +374,7 @@ export function CandidatesPanel({
                           )}
                         </div>
                         {/* 第二行：地址 · 营业时间 · 预计游览时长 合并一行，truncate 兜底 */}
-                        {(place.address || openingHours || place.visitDurationMin != null) && (
+                        {(place.address || openingHours || formatVisitDuration(place.visitDurationMin)) && (
                           <p className="truncate text-[11px] text-slate-400">
                             {[place.address, openingHours, formatVisitDuration(place.visitDurationMin)]
                               .filter(Boolean)
