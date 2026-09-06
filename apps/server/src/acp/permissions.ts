@@ -61,8 +61,11 @@ function allowOption(params: acp.RequestPermissionRequest): acp.PermissionOption
   return params.options.find((o) => o.kind === "allow_once") ?? params.options.find((o) => o.kind === "allow_always") ?? params.options[0];
 }
 
-/** 停靠 UI 的 permission，120s 无人响应自动 deny（防止挂死 agent 子进程） */
-export const PERMISSION_TIMEOUT_MS = 120_000;
+/**
+ * 停靠 UI 的 permission，120s 无人响应自动 deny（防止挂死 agent 子进程）。
+ * 可用 YARNBALL_PERMISSION_TIMEOUT_MS 调短（冒烟/手测覆盖超时路径用）。
+ */
+export const PERMISSION_TIMEOUT_MS = Number(process.env.YARNBALL_PERMISSION_TIMEOUT_MS) || 120_000;
 
 export interface ParkedPermission {
   pending: PendingPermission;
@@ -72,7 +75,7 @@ export interface ParkedPermission {
   userDecides: (outcome: PermissionOutcome) => void;
 }
 
-export function parkPermission(pending: PendingPermission): ParkedPermission {
+export function parkPermission(pending: PendingPermission, onTimeout?: () => void): ParkedPermission {
   let onUserDecision: ((outcome: PermissionOutcome) => void) | null = null;
   const userDecision = new Promise<PermissionOutcome>((resolve) => {
     onUserDecision = resolve;
@@ -86,6 +89,9 @@ export function parkPermission(pending: PendingPermission): ParkedPermission {
   });
 
   const timer = setTimeout(() => {
+    // 先结算（调用方移除 parked 记录 + 落超时消息），再放行 agent——
+    // 超时后的用户点击会拿到「已失效」，而不是落一条假的「已允许」
+    onTimeout?.();
     onUserDecision?.({ optionId: null, optionName: "超时自动拒绝", autoApproved: false });
   }, PERMISSION_TIMEOUT_MS);
   void userDecision.then(() => clearTimeout(timer));

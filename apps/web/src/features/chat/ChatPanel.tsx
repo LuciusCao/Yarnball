@@ -86,6 +86,18 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
 
+  // permission_request 的结算表：permission_result（用户决策 / 超时自动拒绝）到达后，
+  // 对应权限卡进入已答态（禁用按钮 + 展示结算文案）
+  const permissionOutcomes = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const m of messages) {
+      if (m.kind === "permission_result" && m.content.requestId != null) {
+        map.set(String(m.content.requestId), String(m.content.outcome ?? ""));
+      }
+    }
+    return map;
+  }, [messages]);
+
   // 轮询 session 状态（running→idle 切换驱动 UI；服务端状态变化也会发 SSE session 事件，
   // 但 chat store 目前只消费 message 事件，头部状态灯仍以轮询为准）
   useEffect(() => {
@@ -321,19 +333,19 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
         </div>
       )}
 
-      {activeSession.lastError && (
+      {/* 红横幅只在 error 态渲染：sweep/停机会留 idle + lastError 提示（下条消息自动重连），
+          绿灯与红横幅同屏会让状态口径自相矛盾 */}
+      {activeSession.lastError && activeSession.status === "error" && (
         <div className="flex items-center gap-2 border-b border-red-200/60 bg-red-500/10 px-3 py-1.5 text-xs text-red-600">
           <span className="flex-1">{activeSession.lastError}</span>
-          {activeSession.status === "error" && (
-            <button
-              onClick={() => void reconnect()}
-              disabled={reconnecting}
-              className="flex shrink-0 items-center gap-1 rounded-md border border-red-300/70 bg-white/70 px-2 py-0.5 font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
-            >
-              {reconnecting ? <Loader2 className="size-3 animate-spin" /> : null}
-              {reconnecting ? "重连中…" : "重新连接"}
-            </button>
-          )}
+          <button
+            onClick={() => void reconnect()}
+            disabled={reconnecting}
+            className="flex shrink-0 items-center gap-1 rounded-md border border-red-300/70 bg-white/70 px-2 py-0.5 font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
+          >
+            {reconnecting ? <Loader2 className="size-3 animate-spin" /> : null}
+            {reconnecting ? "重连中…" : "重新连接"}
+          </button>
         </div>
       )}
 
@@ -361,8 +373,13 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
             key={m.id}
             message={m}
             running={running}
+            permissionOutcomes={permissionOutcomes}
             onAnswerPermission={async (requestId, optionId) => {
-              await api.answerPermission(activeSession.id, requestId, optionId);
+              const res = await api.answerPermission(activeSession.id, requestId, optionId);
+              // server 对未知 requestId（已超时结算/会话重开）返回 { ok: false }——不是网络错误，单独抛指引
+              if (!res.ok) {
+                throw new Error("该权限请求已失效（可能已超时自动拒绝）。请重新发送消息，让 agent 重新发起。");
+              }
             }}
           />
         ))}
@@ -422,10 +439,12 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 function MessageBubble({
   message,
   running,
+  permissionOutcomes,
   onAnswerPermission,
 }: {
   message: ChatMessageDto;
   running: boolean;
+  permissionOutcomes: Map<string, string>;
   onAnswerPermission: (requestId: string, optionId: string | null) => Promise<void>;
 }) {
   switch (message.kind) {
@@ -480,34 +499,14 @@ function MessageBubble({
           </ol>
         </div>
       );
-    case "permission_request": {
-      const toolCall = message.content.toolCall as { title?: string } | undefined;
-      const options = (message.content.options as { optionId: string; name: string; kind: string }[]) ?? [];
-      const requestId = String(message.content.requestId ?? "");
+    case "permission_request":
       return (
-        <div className="rounded-lg border border-amber-300/70 bg-amber-100/70 px-3 py-2 text-sm shadow-sm">
-          <p className="flex items-center gap-1.5 font-medium text-amber-800">
-            <ShieldCheck className="size-4 shrink-0" />
-            请求权限：{toolCall?.title ?? "工具调用"}
-          </p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {options.map((o) => (
-              <button
-                key={o.optionId}
-                onClick={() => void onAnswerPermission(requestId, o.optionId)}
-                className={`rounded-lg px-3 py-1 text-xs font-medium shadow-sm ${
-                  o.kind.startsWith("allow")
-                    ? "bg-amber-600 text-white hover:bg-amber-700"
-                    : "border border-amber-400/70 bg-white/60 text-amber-700 hover:bg-amber-50"
-                }`}
-              >
-                {o.name}
-              </button>
-            ))}
-          </div>
-        </div>
+        <PermissionRequestCard
+          message={message}
+          settledOutcome={permissionOutcomes.get(String(message.content.requestId ?? "")) ?? null}
+          onAnswer={onAnswerPermission}
+        />
       );
-    }
     case "permission_result":
       return (
         <div className="px-1 text-[11px] text-slate-400">
@@ -530,6 +529,65 @@ function MessageBubble({
     default:
       return null;
   }
+}
+
+function PermissionRequestCard({
+  message,
+  settledOutcome,
+  onAnswer,
+}: {
+  message: ChatMessageDto;
+  /** 非 null = 已结算（用户决策 / 超时自动拒绝），权限卡进入已答态 */
+  settledOutcome: string | null;
+  onAnswer: (requestId: string, optionId: string | null) => Promise<void>;
+}) {
+  const toolCall = message.content.toolCall as { title?: string } | undefined;
+  const options = (message.content.options as { optionId: string; name: string; kind: string }[]) ?? [];
+  const requestId = String(message.content.requestId ?? "");
+  // 本地已点击、等待 SSE 的 permission_result 结算；失败（已失效 / 409）时 toast 并复位允许重试
+  const [answering, setAnswering] = useState(false);
+  const settled = settledOutcome != null;
+
+  const answer = (optionId: string | null) => {
+    setAnswering(true);
+    onAnswer(requestId, optionId).catch((err) => {
+      toast.error((err as Error).message);
+      setAnswering(false);
+    });
+  };
+
+  return (
+    <div
+      className={`rounded-lg border px-3 py-2 text-sm shadow-sm ${
+        settled ? "border-slate-200/80 bg-slate-100/60" : "border-amber-300/70 bg-amber-100/70"
+      }`}
+    >
+      <p className={`flex items-center gap-1.5 font-medium ${settled ? "text-slate-500" : "text-amber-800"}`}>
+        <ShieldCheck className="size-4 shrink-0" />
+        请求权限：{toolCall?.title ?? "工具调用"}
+      </p>
+      {settled ? (
+        <p className="mt-1.5 text-xs text-slate-500">{settledOutcome}</p>
+      ) : (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {options.map((o) => (
+            <button
+              key={o.optionId}
+              disabled={answering}
+              onClick={() => answer(o.optionId)}
+              className={`rounded-lg px-3 py-1 text-xs font-medium shadow-sm transition-opacity disabled:cursor-not-allowed disabled:opacity-50 ${
+                o.kind.startsWith("allow")
+                  ? "bg-amber-600 text-white hover:bg-amber-700"
+                  : "border border-amber-400/70 bg-white/60 text-amber-700 hover:bg-amber-50"
+              }`}
+            >
+              {o.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ToolCallCard({ message }: { message: ChatMessageDto }) {
