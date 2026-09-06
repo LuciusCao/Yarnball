@@ -153,6 +153,12 @@ export const PlaceDtoSchema = z.object({
   category: z.enum(PLACE_CATEGORIES),
   location: LngLatSchema,
   address: z.string().nullable(),
+  /** 官网链接 */
+  website: z.string().nullable(),
+  /** 预订链接（可直接跳转下单/预约的 URL） */
+  bookingUrl: z.string().nullable(),
+  /** 联系电话 */
+  phone: z.string().nullable(),
   amapPoiId: z.string().nullable(),
   sourceType: z.enum(SOURCE_TYPES),
   sourceUrl: z.string().nullable(),
@@ -273,6 +279,12 @@ export const CreatePlaceInputSchema = z.object({
   category: z.enum(PLACE_CATEGORIES).default("other"),
   location: LngLatSchema,
   address: z.string().max(300).nullable().optional(),
+  /** 官网链接 */
+  website: z.string().url().max(500).nullable().optional(),
+  /** 预订链接（可直接跳转下单/预约的 URL） */
+  bookingUrl: z.string().url().max(500).nullable().optional(),
+  /** 联系电话（含国家/区号更佳，如 +61 2 9250 7111） */
+  phone: z.string().max(50).nullable().optional(),
   amapPoiId: z.string().max(64).nullable().optional(),
   sourceType: z.enum(SOURCE_TYPES).default("manual"),
   sourceUrl: z.string().url().max(500).nullable().optional(),

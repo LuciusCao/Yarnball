@@ -52,6 +52,12 @@ export const places = pgTable(
     lng: numeric("lng", { precision: 10, scale: 6 }).notNull(),
     lat: numeric("lat", { precision: 10, scale: 6 }).notNull(),
     address: text("address"),
+    /** 官网链接 */
+    website: text("website"),
+    /** 预订链接（可直接跳转下单/预约） */
+    bookingUrl: text("booking_url"),
+    /** 联系电话 */
+    phone: text("phone"),
     amapPoiId: text("amap_poi_id"),
     sourceType: text("source_type").notNull().default("manual"),
     sourceUrl: text("source_url"),

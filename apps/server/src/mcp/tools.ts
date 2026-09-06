@@ -229,7 +229,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
           `字段含义：entries[].position 为天内顺序（0 起）；dayIndex 从 1 开始。` +
           ` entries[].entryType：place=地点节点，transit=大交通节点（航班/高铁，带 departTime/arriveTime 与 fromName/toName 或 fromPlaceId/toPlaceId 起讫点）。` +
           ` places[].status：candidate=候选池（待用户确认），locked=用户已锁定（agent 不可改/删，只排 locked 的地点进每日行程）。` +
-          ` places[].openingHours 为营业时间（排天硬约束），bookingStatus 为预订状态（none|pending|booked）。` +
+          ` places[].openingHours 为营业时间（排天硬约束），bookingStatus 为预订状态（none|pending|booked）；website 官网、bookingUrl 预订链接、phone 电话、address 地址会展示在地点信息卡上。` +
           (overseas
             ? ` 本行程是海外目的地（${bundle.trip.destinationCity}，${bundle.trip.geoProvider} provider）：search_poi 时用英文或当地语言名称（如 "Sydney Opera House"）效果最好。`
             : ""),
@@ -287,7 +287,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_place",
     {
       description:
-        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）、durationMin（建议游玩时长）和 openingHours（营业时间自由文本，如「09:00-17:00 周一闭馆」——排天硬约束，务必尽力填写）。金额单位为行程币种。bookingStatus（none|pending|booked）可填但以用户在界面上的标记为准。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上锁定（status=locked）后才用 add_place_to_day 排天。**",
+        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）、durationMin（建议游玩时长）和 openingHours（营业时间自由文本，如「09:00-17:00 周一闭馆」——排天硬约束，务必尽力填写）。金额单位为行程币种。bookingStatus（none|pending|booked）可填但以用户在界面上的标记为准。**详情字段尽量收集**：website（官网）、bookingUrl（可直接下单/预约的预订链接）、phone（电话）、address（结构化地址）——这些会直接展示在地点信息卡上，酒店和需预约餐厅尤其重要。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上锁定（status=locked）后才用 add_place_to_day 排天。**",
       inputSchema: McpCreatePlaceSchema.shape,
     },
     async (input) => {
@@ -305,7 +305,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "update_place",
     {
       description:
-        "更新地点信息（备注、游玩时长、价格、openingHours 营业时间、bookingStatus 预订状态等）。只需要传要改的字段。bookingStatus 可由你更新（如你已核实可订/已订），但以用户在界面上的标记为准。注意：status=locked（用户已锁定）的地点不可修改——请用户在界面上解锁。",
+        "更新地点信息（备注、游玩时长、价格、openingHours 营业时间、bookingStatus 预订状态、website 官网、bookingUrl 预订链接、phone 电话、address 地址等）。只需要传要改的字段。bookingStatus 可由你更新（如你已核实可订/已订），但以用户在界面上的标记为准。注意：status=locked（用户已锁定）的地点不可修改——请用户在界面上解锁。",
       inputSchema: UpdatePlaceWithIdSchema.shape,
     },
     async ({ placeId, ...patch }) => {

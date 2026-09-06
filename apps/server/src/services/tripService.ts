@@ -312,6 +312,9 @@ export class TripService {
         lng: String(input.location.lng),
         lat: String(input.location.lat),
         address: input.address ?? null,
+        website: input.website ?? null,
+        bookingUrl: input.bookingUrl ?? null,
+        phone: input.phone ?? null,
         amapPoiId: input.amapPoiId ?? null,
         sourceType: input.sourceType,
         sourceUrl: input.sourceUrl ?? null,
@@ -369,6 +372,9 @@ export class TripService {
       patch.lat = String(input.location.lat);
     }
     if (input.address !== undefined) patch.address = input.address ?? null;
+    if (input.website !== undefined) patch.website = input.website ?? null;
+    if (input.bookingUrl !== undefined) patch.bookingUrl = input.bookingUrl ?? null;
+    if (input.phone !== undefined) patch.phone = input.phone ?? null;
     if (input.amapPoiId !== undefined) patch.amapPoiId = input.amapPoiId ?? null;
     if (input.sourceUrl !== undefined) patch.sourceUrl = input.sourceUrl ?? null;
     if (input.notes !== undefined) patch.notes = input.notes ?? null;

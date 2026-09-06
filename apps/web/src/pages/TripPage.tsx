@@ -6,13 +6,17 @@ import {
   BedDouble,
   Clock,
   Crosshair,
+  ExternalLink,
+  Globe,
   Link2,
   Lock,
   LockOpen,
+  MapPin,
   Maximize2,
   Minimize2,
   PanelRightClose,
   PanelRightOpen,
+  Phone,
   Search,
   Sparkles,
   Star,
@@ -55,6 +59,15 @@ const LEFT_PANEL_META: Record<LeftPanel, { label: string; Icon: LucideIcon }> = 
 
 /** 设置抽屉由 M2（features/settings）挂载；合并前用全局事件解耦对接 */
 const OPEN_SETTINGS_EVENT = "yarnball:open-settings";
+
+/** 信息卡外链展示：取 URL 的 host，解析失败退回原文截断 */
+function urlHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
 
 export function TripPage() {
   const { tripId } = useParams<{ tripId: string }>();
@@ -315,7 +328,6 @@ export function TripPage() {
               <p className="truncate text-sm font-semibold text-slate-900">
                 {selectedPlace.name}
               </p>
-              <p className="truncate text-[11px] text-slate-400">{selectedPlace.address ?? ""}</p>
             </div>
             <button
               onClick={() => setSelectedPlaceId(null)}
@@ -363,11 +375,56 @@ export function TripPage() {
               )
             )}
           </div>
-          {openingHoursOf(selectedPlace) && (
-            <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-500">
-              <Clock className="size-3 shrink-0 text-slate-400" />
-              {openingHoursOf(selectedPlace)}
-            </p>
+          {/* 详情块（M26）：地址/营业时间/电话/官网/预订链接，有值才显示；外链新窗口打开 */}
+          {(selectedPlace.address ||
+            openingHoursOf(selectedPlace) ||
+            selectedPlace.phone ||
+            selectedPlace.website ||
+            selectedPlace.bookingUrl) && (
+            <div className="mt-2 space-y-1 rounded-lg bg-slate-900/5 px-2.5 py-2 text-[11px] text-slate-600">
+              {selectedPlace.address && (
+                <p className="flex items-start gap-1.5">
+                  <MapPin className="mt-0.5 size-3 shrink-0 text-slate-400" />
+                  <span>{selectedPlace.address}</span>
+                </p>
+              )}
+              {openingHoursOf(selectedPlace) && (
+                <p className="flex items-start gap-1.5">
+                  <Clock className="mt-0.5 size-3 shrink-0 text-slate-400" />
+                  <span>{openingHoursOf(selectedPlace)}</span>
+                </p>
+              )}
+              {selectedPlace.phone && (
+                <p className="flex items-center gap-1.5">
+                  <Phone className="size-3 shrink-0 text-slate-400" />
+                  <span>{selectedPlace.phone}</span>
+                </p>
+              )}
+              {selectedPlace.website && (
+                <a
+                  href={selectedPlace.website}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 text-blue-600 hover:underline"
+                >
+                  <Globe className="size-3 shrink-0 text-slate-400" />
+                  <span className="truncate">官网 · {urlHost(selectedPlace.website)}</span>
+                  <ExternalLink className="size-3 shrink-0" />
+                </a>
+              )}
+              {selectedPlace.bookingUrl && (
+                <a
+                  href={selectedPlace.bookingUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 text-blue-600 hover:underline"
+                >
+                  <CalendarCheck className="size-3 shrink-0 text-slate-400" />
+                  <span className="truncate">预订 · {urlHost(selectedPlace.bookingUrl)}</span>
+                  <ExternalLink className="size-3 shrink-0" />
+                </a>
+              )}
+            </div>
           )}
           {selectedPlace.priceCny != null && (
             <p className="mt-1.5 text-sm font-semibold text-orange-600">

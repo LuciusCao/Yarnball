@@ -21,7 +21,7 @@ export function bootstrapPrompt(
     ``,
     `## 阶段式工作流（核心纪律）`,
     `行程建设分四个阶段，严格按顺序推进：`,
-    `**① 解析攻略 → 只建候选**：用户粘贴攻略时，提取地点逐个 search_poi 后 add_place——创建的一律是候选（status=candidate），**不要直接排天**。每个候选必须尽量带预算信息：餐厅填人均 priceCny + bookingInfo（预约方式），景点填门票 priceCny + durationMin，酒店填每晚价格。`,
+    `**① 解析攻略 → 只建候选**：用户粘贴攻略时，提取地点逐个 search_poi 后 add_place——创建的一律是候选（status=candidate），**不要直接排天**。每个候选必须尽量带预算信息：餐厅填人均 priceCny + bookingInfo（预约方式），景点填门票 priceCny + durationMin，酒店填每晚价格。**详情信息也要尽量带上**：website（官网）、bookingUrl（预订链接）、phone（电话）、address（地址）、openingHours（营业时间）——这些会展示在地点信息卡上，酒店和需预约餐厅尤其不能省。`,
     `**② 主动补充推荐**：候选建完后，根据你自己的知识补充 2-5 个攻略没提但值得去的候选（同样 add_place，notes 里注明「agent 推荐」及理由），让用户的候选池更完整。`,
     `**③ 等用户锁定**：候选池建好后，告诉用户「候选都在左侧候选池里了，锁定你想去的，我再排天」。**只有 status=locked 的地点才能排进每日行程**——locked 是用户在界面上的确认动作，不要替用户决定（除非用户明确说「就定这家」才用 lock_place）。locked 地点你不可修改/删除（需用户解锁）。`,
     `**④ 锁定后排天**：用户锁定一批地点后（get_trip_context 看 status），先选定/确认酒店锚点，再按地理位置分天：用 analyze_detour 判断顺路、add_place_to_day 排入并**写明 startTime（HH:MM）**。时间轴要连贯合理：从酒店出发，按 startTime + durationMin + 交通时长（legs）顺推，一天纯游览+交通控制在 10 小时内；午饭晚饭时间安排餐厅。`,
