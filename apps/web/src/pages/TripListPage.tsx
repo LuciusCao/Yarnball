@@ -61,12 +61,52 @@ function formatRelativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString("zh-CN");
 }
 
+/** 卡片统计值：加载中静默「—」；拉取失败给错误态（title 提示 + 点击重试），不永久显示「—」 */
+function StatValue({
+  value,
+  unit,
+  failed,
+  onRetry,
+}: {
+  value: number | undefined;
+  unit: string;
+  failed: boolean;
+  onRetry: () => void;
+}) {
+  if (value != null) return <>{`${value} ${unit}`}</>;
+  if (!failed) return <>{`— ${unit}`}</>;
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      title="统计加载失败，点击重试"
+      className="cursor-pointer text-amber-600 underline decoration-dotted underline-offset-2"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onRetry();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          onRetry();
+        }
+      }}
+    >
+      {`— ${unit}`}
+    </span>
+  );
+}
+
 /** 行程列表页：创建 + 管理（删除） */
 export function TripListPage() {
   const navigate = useNavigate();
   const [trips, setTrips] = useState<TripDto[]>([]);
   /** 每个行程的天数/地点数（list 接口不含统计，并行拉 bundle 汇总；本地数据量小可接受） */
   const [stats, setStats] = useState<Record<string, { days: number; places: number }>>({});
+  /** 统计拉取失败的行程 id：卡片上显示可重试的错误态，不静默吞掉 */
+  const [statErrors, setStatErrors] = useState<Record<string, true>>({});
   const [title, setTitle] = useState("");
   const [city, setCity] = useState("");
   const [creating, setCreating] = useState(false);
@@ -111,15 +151,37 @@ export function TripListPage() {
     // 最近编辑的排前面
     trips.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     setTrips(trips);
-    // 汇总天数/地点数：失败的行程跳过（卡片回落到只显示元信息）
+    // 汇总天数/地点数：失败的行程记入 statErrors（卡片显示可重试的错误态）
     const results = await Promise.allSettled(trips.map((t) => api.getBundle(t.id)));
     const next: Record<string, { days: number; places: number }> = {};
+    const errors: Record<string, true> = {};
     results.forEach((r, i) => {
       if (r.status === "fulfilled") {
         next[trips[i].id] = { days: r.value.bundle.days.length, places: r.value.bundle.places.length };
+      } else {
+        errors[trips[i].id] = true;
       }
     });
     setStats(next);
+    setStatErrors(errors);
+  }
+
+  /** 单个行程统计重试（失败保持错误态，可再次点击） */
+  async function retryStats(tripId: string) {
+    try {
+      const { bundle } = await api.getBundle(tripId);
+      setStats((prev) => ({
+        ...prev,
+        [tripId]: { days: bundle.days.length, places: bundle.places.length },
+      }));
+      setStatErrors((prev) => {
+        const next = { ...prev };
+        delete next[tripId];
+        return next;
+      });
+    } catch {
+      /* 保持错误态 */
+    }
   }
 
   useEffect(() => {
@@ -277,11 +339,21 @@ export function TripListPage() {
                     <div className="mt-2 flex items-center gap-3 text-xs text-slate-500">
                       <span className="inline-flex items-center gap-1">
                         <CalendarDays className="size-3.5 text-slate-400" />
-                        {stats[trip.id] ? `${stats[trip.id].days} 天` : "— 天"}
+                        <StatValue
+                          value={stats[trip.id]?.days}
+                          unit="天"
+                          failed={statErrors[trip.id] === true}
+                          onRetry={() => void retryStats(trip.id)}
+                        />
                       </span>
                       <span className="inline-flex items-center gap-1">
                         <MapPin className="size-3.5 text-slate-400" />
-                        {stats[trip.id] ? `${stats[trip.id].places} 个地点` : "— 个地点"}
+                        <StatValue
+                          value={stats[trip.id]?.places}
+                          unit="个地点"
+                          failed={statErrors[trip.id] === true}
+                          onRetry={() => void retryStats(trip.id)}
+                        />
                       </span>
                     </div>
                     <p className="mt-2.5 text-xs text-slate-400">

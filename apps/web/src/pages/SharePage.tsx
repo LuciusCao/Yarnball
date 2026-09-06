@@ -118,7 +118,7 @@ export function SharePage() {
                 className="glass rounded-full px-3 py-1 text-xs font-medium shadow transition-all hover:scale-105"
                 style={active ? { background: color, color: "#fff", borderColor: "transparent" } : { color }}
               >
-                D{d.dayIndex}
+                Day {d.dayIndex}
               </button>
             );
           })}
@@ -345,7 +345,7 @@ function ShareBudgetStrip({ summary }: { summary: BudgetSummary }) {
             max={max}
           />
           <BudgetRow
-            label="餐饮"
+            label="美食"
             detail="人均 × 人数"
             value={formatMoney(summary.diningCny, cur)}
             amount={summary.diningCny}
