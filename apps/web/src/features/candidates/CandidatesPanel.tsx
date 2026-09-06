@@ -14,7 +14,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { formatMoney, type PlaceCategory, type PlaceDto, type TripBundle } from "@yarnball/shared";
+import { formatMoney, formatVisitDuration, type PlaceCategory, type PlaceDto, type TripBundle } from "@yarnball/shared";
 import { api as uxApi } from "../../lib/api";
 import { Badge } from "../../components/ui/badge";
 import { candidatesApi } from "./api";
@@ -373,10 +373,12 @@ export function CandidatesPanel({
                             </span>
                           )}
                         </div>
-                        {/* 第二行：地址 · 营业时间 合并一行，truncate 兜底 */}
-                        {(place.address || openingHours) && (
+                        {/* 第二行：地址 · 营业时间 · 预计游览时长 合并一行，truncate 兜底 */}
+                        {(place.address || openingHours || formatVisitDuration(place.visitDurationMin)) && (
                           <p className="truncate text-[11px] text-slate-400">
-                            {[place.address, openingHours].filter(Boolean).join(" · ")}
+                            {[place.address, openingHours, formatVisitDuration(place.visitDurationMin)]
+                              .filter(Boolean)
+                              .join(" · ")}
                           </p>
                         )}
                         {/* 徽章行（消费 M13 令牌变体）；预订状态徽章 locked 时可点选流转，候选态仅展示 */}

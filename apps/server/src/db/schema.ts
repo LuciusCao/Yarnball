@@ -52,11 +52,19 @@ export const places = pgTable(
     lng: numeric("lng", { precision: 10, scale: 6 }).notNull(),
     lat: numeric("lat", { precision: 10, scale: 6 }).notNull(),
     address: text("address"),
+    /** 官网链接 */
+    website: text("website"),
+    /** 预订链接（可直接跳转下单/预约） */
+    bookingUrl: text("booking_url"),
+    /** 联系电话 */
+    phone: text("phone"),
     amapPoiId: text("amap_poi_id"),
     sourceType: text("source_type").notNull().default("manual"),
     sourceUrl: text("source_url"),
     notes: text("notes"),
     durationMin: integer("duration_min"),
+    /** 预计游览/用餐分钟数（景点/美食的参观时长预估，排天参考输入） */
+    visitDurationMin: integer("visit_duration_min"),
     priceCny: integer("price_cny"),
     bookingInfo: text("booking_info"),
     /** 营业时间（v1 自由文本，如「09:00-17:00 周一闭馆」） */
