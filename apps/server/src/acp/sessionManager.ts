@@ -200,10 +200,14 @@ export class SessionHandle {
   private draining = false;
 
   private seq = 0;
-  /** 聚合 key（turnId:kind）→ 已累计文本。turn 开始时清空。 */
+  /** 聚合 key（turnId:kind:segment）→ 已累计文本。turn 开始时清空。 */
   private aggregateSlots = new Map<string, string>();
   /** 聚合消息的 DB id，用于原地更新而不是无限追加 */
   private aggregateMessageIds = new Map<string, string>();
+  /** kind → 当前段号：tool_call/plan/permission 等事件介入后封闭当前段，后续 chunk 开新段 */
+  private aggregateSegments = new Map<string, number>();
+  /** 当前开放聚合段的 key；任何非聚合消息落库都会封闭它（置 null） */
+  private openAggregateKey: string | null = null;
 
   private parkedPermissions: ParkedPermission[] = [];
   private permissionSeq = 0;
@@ -448,9 +452,11 @@ export class SessionHandle {
 
     const turnId = crypto.randomUUID();
     this.currentTurnId = turnId;
-    // turn 开始时清聚合槽（SDK 在 prompt resolve 后可能还有 trailing chunks）
+    // turn 开始时清聚合槽与段号（SDK 在 prompt resolve 后可能还有 trailing chunks）
     this.aggregateSlots.clear();
     this.aggregateMessageIds.clear();
+    this.aggregateSegments.clear();
+    this.openAggregateKey = null;
 
     await this.appendMessage({ turnId, kind: "user_text", content: { text: userText } });
 
@@ -473,12 +479,15 @@ export class SessionHandle {
           setTimeout(() => reject(new Error("prompt 超时（1 小时）")), PROMPT_TIMEOUT_MS).unref?.(),
         ),
       ]);
+      // 等 trailing chunks 落库，保证 advisory 的 seq 排在回合所有消息之后
+      await this.drainUpdates();
       await this.appendMessage({
         turnId,
         kind: "advisory",
         content: { text: `—— 回合结束（${response.stopReason}）——` },
       });
     } catch (err) {
+      await this.drainUpdates();
       await this.appendMessage({
         turnId,
         kind: "error",
@@ -505,16 +514,27 @@ export class SessionHandle {
 
   // ---------- update 流 ----------
 
+  /** 更新流消费统计：drainUpdates 据此判断 trailing chunks 是否已全部落库 */
+  private updatesReceived = 0;
+  private updatesHandled = 0;
+  /** 消费循环正阻塞在 nextUpdate()（= 手头没有未处理的更新） */
+  private consumerIdle = false;
+
   private consumeUpdates() {
     const session = this.activeSession;
     if (!session) return;
     void (async () => {
       for (;;) {
         try {
+          this.consumerIdle = true;
           const message = await session.nextUpdate();
+          this.consumerIdle = false;
           if (message.kind === "stop") continue; // stop 已由 prompt() 的 resolve 处理
+          this.updatesReceived++;
           await this.handleUpdate(message.update);
+          this.updatesHandled++;
         } catch (err) {
+          this.consumerIdle = false;
           if (this.closed) return;
           console.error(`[acp:${this.sessionRow.id}] update stream error:`, err);
           await this.appendMessage({
@@ -527,6 +547,22 @@ export class SessionHandle {
         }
       }
     })();
+  }
+
+  /**
+   * prompt() resolve 不等于更新流消费完：SDK 按行处理 NDJSON，response 之前的
+   * trailing chunks 可能还在消费循环的 DB 写入里排队。若直接落「回合结束」advisory，
+   * 后续 chunk 开的新段会拿到更大的 seq，显示顺序颠倒（分段后从隐藏问题变成可见问题）。
+   * 这里等到「消费循环空闲且 received==handled」连续稳定两个事件循环 tick 才放行；
+   * 有上限兜底，异常时不挂死回合。
+   */
+  private async drainUpdates(maxTicks = 500) {
+    let stable = 0;
+    for (let i = 0; i < maxTicks && stable < 2; i++) {
+      await new Promise((r) => setImmediate(r));
+      if (this.consumerIdle && this.updatesReceived === this.updatesHandled) stable++;
+      else stable = 0;
+    }
   }
 
   private async handleUpdate(update: acp.SessionUpdate) {
@@ -561,15 +597,19 @@ export class SessionHandle {
         }
         break;
       case "tool_call_update":
-        await this.appendMessage({
-          turnId: this.currentTurnId,
-          kind: "tool_call_update",
-          content: {
-            toolCallId: update.toolCallId,
-            status: update.status,
-            content: update.content ?? null,
+        // tool_call 的续报，不算新事件：不封闭当前聚合段（agent 可能在工具进行期间持续输出）
+        await this.appendMessage(
+          {
+            turnId: this.currentTurnId,
+            kind: "tool_call_update",
+            content: {
+              toolCallId: update.toolCallId,
+              status: update.status,
+              content: update.content ?? null,
+            },
           },
-        });
+          { closesAggregate: false },
+        );
         break;
       case "plan":
         await this.appendMessage({
@@ -584,11 +624,23 @@ export class SessionHandle {
   }
 
   /**
-   * 同 turn 同 kind 的 chunk 聚合成一条消息，原地更新（seq 不变，id 不变）。
+   * 同 turn 同 kind 同段的 chunk 聚合成一条消息，原地更新（seq 不变，id 不变）。
    * 前端按 id upsert，实现平滑流式渲染。
+   *
+   * 分段：tool_call / plan / permission 等事件（任何走 appendMessage 的非聚合消息）
+   * 会封闭当前聚合段，后续 chunk 开新段（segment+1）——实现
+   * 「agent 输出 → 工具调用 → agent 输出」的多块交错，而不是整个 turn 糊成一条。
    */
   private async appendAggregated(kind: "agent_text" | "agent_thought", text: string) {
-    const key = `${this.currentTurnId}:${kind}`;
+    let segment = this.aggregateSegments.get(kind) ?? 0;
+    let key = `${this.currentTurnId}:${kind}:${segment}`;
+    // 当前段已被其他事件封闭（或另一种 kind 的 chunk 插进来过）→ 开新段
+    if (this.openAggregateKey !== key && this.aggregateSlots.has(key)) {
+      segment += 1;
+      this.aggregateSegments.set(kind, segment);
+      key = `${this.currentTurnId}:${kind}:${segment}`;
+    }
+
     const existing = this.aggregateSlots.get(key) ?? "";
     const updated = existing + text;
     this.aggregateSlots.set(key, updated);
@@ -615,6 +667,8 @@ export class SessionHandle {
       const dto = await this.appendMessage({ turnId: this.currentTurnId, kind, content: { text: updated } });
       this.aggregateMessageIds.set(key, dto.id);
     }
+    // appendMessage 会封闭开放段，这里重新打开本段
+    this.openAggregateKey = key;
   }
 
   private seqCache = new Map<string, number>();
@@ -825,7 +879,12 @@ export class SessionHandle {
 
   private async appendMessage(
     message: Omit<ChatMessageDto, "createdAt" | "id" | "sessionId" | "seq">,
+    opts: { closesAggregate?: boolean } = {},
   ): Promise<ChatMessageDto> {
+    // 任何非聚合事件（tool_call/plan/permission/user_text/advisory…）介入即封闭当前聚合段，
+    // 后续 agent chunk 会开新段（appendAggregated 插入新段后自己重新打开）；
+    // tool_call_update 是 tool_call 的续报，传 closesAggregate:false 例外
+    if (opts.closesAggregate ?? true) this.openAggregateKey = null;
     const seq = ++this.seq;
     const id = crypto.randomUUID();
     await this.db.insert(schema.chatMessages).values({

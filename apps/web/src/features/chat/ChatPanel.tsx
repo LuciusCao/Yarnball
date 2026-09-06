@@ -17,7 +17,8 @@ import { useChatStore } from "../../stores/tripStore";
 
 /**
  * 对话面板：与用户 agent 的交流界面。
- * - 流式 agent 消息：流式中纯文本渲染，完成后 markdown 渲染（避免半截 markdown 抖动）
+ * - 流式 agent 消息：仅「最后一条且回合进行中」的聚合段纯文本渲染，已封闭的段立即走 markdown
+ *   （服务端按 tool_call/plan/permission 事件把同 turn 输出切成多段，避免半截 markdown 抖动）
  * - tool_call 卡片：按 toolCallId 归并，可展开
  * - permission 待答卡：允许/拒绝 + allow-all
  */
@@ -289,6 +290,15 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   // starting = 首次启动或断线懒恢复进行中（server 重启后 prompt/reconnect 触发）
   const connecting = activeSession.status === "starting";
 
+  // 流式中的消息 = 回合进行中且位于消息列表末尾的 agent_text/agent_thought 聚合段。
+  // 已被后续事件（tool_call/advisory 等）封闭的段立即按完成态渲染 markdown，
+  // 不用等整回合结束（长回合里早先的段不再是纯文本）
+  const lastMessage = messages[messages.length - 1];
+  const streamingMessageId =
+    running && lastMessage && (lastMessage.kind === "agent_text" || lastMessage.kind === "agent_thought")
+      ? lastMessage.id
+      : null;
+
   return (
     <div className="flex h-full flex-col">
       {/* 会话头（右侧留出面板收起把手的高度） */}
@@ -372,7 +382,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
           <MessageBubble
             key={m.id}
             message={m}
-            running={running}
+            streaming={m.id === streamingMessageId}
             permissionOutcomes={permissionOutcomes}
             onAnswerPermission={async (requestId, optionId) => {
               const res = await api.answerPermission(activeSession.id, requestId, optionId);
@@ -438,12 +448,13 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
 function MessageBubble({
   message,
-  running,
+  streaming,
   permissionOutcomes,
   onAnswerPermission,
 }: {
   message: ChatMessageDto;
-  running: boolean;
+  /** true = 该聚合段仍在流式追加（列表末尾且回合进行中），纯文本渲染避免半截 markdown 抖动 */
+  streaming: boolean;
   permissionOutcomes: Map<string, string>;
   onAnswerPermission: (requestId: string, optionId: string | null) => Promise<void>;
 }) {
@@ -458,11 +469,11 @@ function MessageBubble({
       );
     case "agent_text": {
       const text = String(message.content.text ?? "");
-      // 流式中纯文本（半截 markdown 渲染会抖动）；完成后渲染 markdown。
+      // 流式中的段纯文本（半截 markdown 渲染会抖动）；段封闭后即渲染 markdown
       return (
         <div className="flex justify-start">
           <div className="max-w-[90%] whitespace-pre-wrap break-words rounded-2xl rounded-bl-sm bg-white/85 px-3 py-2 text-sm text-slate-800 shadow-sm">
-            {running ? text : <Markdown text={text} />}
+            {streaming ? text : <Markdown text={text} />}
           </div>
         </div>
       );
