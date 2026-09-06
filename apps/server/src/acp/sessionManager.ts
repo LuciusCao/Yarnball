@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { ChatMessageDto } from "@yarnball/shared";
-import { asc, eq, max } from "drizzle-orm";
+import { and, asc, eq, max, ne } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { chatChannel, type EventBus } from "../events.js";
@@ -133,6 +133,11 @@ export class AcpSessionManager {
       await handle.whenReady;
     } catch (err) {
       this.handles.delete(row.id);
+      // 启动失败必须回收子进程/临时目录/MCP token，只删 map 会全部泄漏。
+      // final 传 error：close 默认的 closed 终态会盖住失败原因，UI 需要 error 态给重连入口
+      await handle
+        .close("start failed", { status: "error", lastError: (err as Error).message })
+        .catch(() => {});
       throw err;
     }
   }
@@ -764,13 +769,21 @@ export class SessionHandle {
 
   // ---------- DB helpers ----------
 
-  /** 状态落库 + SSE 推送 session 快照（前端状态灯/重连提示实时刷新，不必等轮询） */
+  /**
+   * 状态落库 + SSE 推送 session 快照（前端状态灯/重连提示实时刷新，不必等轮询）。
+   * 非 closed 写入带 status != 'closed' 条件：closed 是终态（用户主动断开/删行程），
+   * 并发路径（启动失败清理、agent 崩溃回调）不得把它覆盖回 error/idle。
+   */
   private async setStatus(status: string, lastError?: string | null) {
     try {
       await this.db
         .update(schema.chatSessions)
         .set({ status, ...(lastError !== undefined ? { lastError } : {}), updatedAt: new Date() })
-        .where(eq(schema.chatSessions.id, this.sessionRow.id));
+        .where(
+          status === "closed"
+            ? eq(schema.chatSessions.id, this.sessionRow.id)
+            : and(eq(schema.chatSessions.id, this.sessionRow.id), ne(schema.chatSessions.status, "closed")),
+        );
       const [row] = await this.db
         .select()
         .from(schema.chatSessions)

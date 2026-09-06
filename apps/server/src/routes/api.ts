@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, ne } from "drizzle-orm";
 import { execFile } from "node:child_process";
 import { z } from "zod";
 import {
@@ -432,10 +432,12 @@ export function createApi(
       return await sessions.ensureSession(row);
     } catch (err) {
       const message = (err as Error).message;
+      // status != 'closed' 条件写：与用户并发 close（DELETE 端点）的落库存在竞态，
+      // 无条件回写会把已关闭会话「复活」成 error
       await db
         .update(schema.chatSessions)
         .set({ status: "error", lastError: `自动重连失败：${message}`, updatedAt: new Date() })
-        .where(eq(schema.chatSessions.id, row.id));
+        .where(and(eq(schema.chatSessions.id, row.id), ne(schema.chatSessions.status, "closed")));
       throw err;
     }
   }
