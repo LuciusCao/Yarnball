@@ -107,7 +107,13 @@ export function createApi(
 
   api.delete("/trips/:tripId", async (c) => {
     const tripId = c.req.param("tripId");
-    await sessions.stopSession(tripId, "trip deleted").catch(() => {});
+    // 句柄以 chatSessionId 为键——必须按 trip 归组停，否则 agent 子进程泄漏
+    await sessions.stopByTrip(tripId, "trip deleted").catch(() => {});
+    // 无句柄的残留行（重启后 idle/error）一并置 closed 终态；随后 deleteTrip cascade 删行
+    await db
+      .update(schema.chatSessions)
+      .set({ status: "closed", updatedAt: new Date() })
+      .where(eq(schema.chatSessions.tripId, tripId));
     await tripService.deleteTrip(tripId);
     return c.json({ ok: true });
   });

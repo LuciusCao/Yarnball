@@ -45,18 +45,6 @@ const STATUS_LABEL: Record<ChatSessionDto["status"], string> = {
   closed: "已断开",
 };
 
-/**
- * POST /api/chat-sessions/:id/reconnect —— 触发服务端懒恢复（session/new + 转录回放）。
- * 新端点契约按约定应入 lib/api.ts，但该文件不在本 feature scope；tower 批准扩 scope 后迁移。
- */
-async function reconnectChatSession(sessionId: string): Promise<void> {
-  const res = await fetch(`/api/chat-sessions/${sessionId}/reconnect`, { method: "POST" });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `HTTP ${res.status}`);
-  }
-}
-
 export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }: ChatPanelProps) {
   // GET /api/agents 现在返回全部注册 agent（含 disabled，带 command/args）——只保留 enabled
   const [agents, setAgents] = useState<AgentRegistryDto[]>([]);
@@ -124,7 +112,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
     if (!activeSession) return;
     setReconnecting(true);
     try {
-      await reconnectChatSession(activeSession.id);
+      await libApi.reconnectChatSession(activeSession.id);
       onSessionsChanged();
     } catch (err) {
       toast.error((err as Error).message);

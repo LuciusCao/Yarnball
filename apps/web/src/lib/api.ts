@@ -2,6 +2,7 @@ import type {
   AddEntryInput,
   AgentAvailability,
   AgentRegistryDto,
+  ChatSessionDto,
   CreateAgentInput,
   EntryDto,
   PlaceDto,
@@ -149,4 +150,16 @@ export const api = {
   /** 有历史会话引用的 agent 只停用不删除（disabled=true 表示走了停用） */
   deleteAgent: (agentId: string) =>
     request<{ ok: true; disabled: boolean }>(`/agents/${agentId}`, { method: "DELETE" }),
+
+  // ---------- chat 会话 ----------
+
+  /**
+   * 手动重连 agent（POST /api/chat-sessions/:id/reconnect）。
+   * server 重启 / agent 崩溃后的懒恢复（session/new + 压缩转录回放），与 prompt 的自动恢复同路径；
+   * prompt 端点本身也会自动恢复，此方法供「重新连接」按钮不带消息地触发。
+   */
+  reconnectChatSession: (sessionId: string) =>
+    request<{ ok: true; session: ChatSessionDto }>(`/chat-sessions/${sessionId}/reconnect`, {
+      method: "POST",
+    }),
 };

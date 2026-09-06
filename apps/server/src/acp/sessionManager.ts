@@ -143,6 +143,13 @@ export class AcpSessionManager {
     await handle?.close(reason);
   }
 
+  /** 停掉某行程下所有 chat session 的句柄（删行程用；close 走默认 closed 终态语义） */
+  async stopByTrip(tripId: string, reason: string) {
+    const targets = [...this.handles.entries()].filter(([, h]) => h.tripId === tripId);
+    for (const [id] of targets) this.handles.delete(id);
+    await Promise.allSettled(targets.map(([, h]) => h.close(reason)));
+  }
+
   /**
    * server 关停：进程死了但会话可恢复（acpSessionId + 转录回放都在 DB），
    * 不标 closed（closed = 用户主动断开），标 idle + 提示，重启后 prompt 懒恢复无感继续。
@@ -824,6 +831,11 @@ export class SessionHandle {
     this.tripTitle = title;
     this.tripCity = city;
     this.tripProvider = provider;
+  }
+
+  /** 所属行程（stopByTrip 按它匹配句柄） */
+  get tripId(): string {
+    return this.sessionRow.tripId;
   }
 }
 
