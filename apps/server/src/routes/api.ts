@@ -19,6 +19,7 @@ import {
   UpdatePlaceInputSchema,
   UpdateSettingsInputSchema,
   type AgentAvailability,
+  type SharePayload,
 } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
@@ -284,7 +285,17 @@ export function createApi(
 
   api.get("/share/:token", async (c) => {
     const trip = await tripService.getTripByShareToken(c.req.param("token"));
-    return c.json({ bundle: await tripService.getBundle(trip.id) });
+    const [bundle, budget] = await Promise.all([
+      tripService.getBundle(trip.id),
+      tripService.getBudgetSummary(trip.id),
+    ]);
+    // 防越权写：剥离可写标识。分享链接即公开凭证，trip.id 可直达全部
+    // /trips/:tripId/* 写端点、shareToken 可反向定位行程——下发时置空。
+    const sharedBundle: SharePayload["bundle"] = {
+      ...bundle,
+      trip: { ...bundle.trip, id: "", shareToken: "" },
+    };
+    return c.json({ bundle: sharedBundle, budget } satisfies SharePayload);
   });
 
   // ---------- 设置（高德 key 等，DB 覆盖 > env） ----------

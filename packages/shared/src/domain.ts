@@ -607,6 +607,18 @@ export const BudgetSummarySchema = z.object({
 });
 export type BudgetSummary = z.infer<typeof BudgetSummarySchema>;
 
+/**
+ * 分享只读负载（GET /api/share/:token）：
+ * bundle.trip.id 与 shareToken 已由服务端置空——分享链接是公开凭证，
+ * 不能把可写标识（tripId 直达全部 /trips/:tripId/* 写端点）发给访客；
+ * 预算汇总随包下发，分享页无需（也无法）再按 tripId 拉取。
+ */
+export const SharePayloadSchema = z.object({
+  bundle: TripBundleSchema,
+  budget: BudgetSummarySchema,
+});
+export type SharePayload = z.infer<typeof SharePayloadSchema>;
+
 // ---------- 工具函数 ----------
 
 export function formatDuration(durationS: number | null | undefined): string {
