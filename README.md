@@ -64,7 +64,12 @@ pnpm dev                    # server :18788 + web :15173
 
 ```bash
 pnpm smoke                  # fake-acp-agent 端到端：prompt 流 / permission 停泊 / MCP 真实调用
+pnpm verify                 # 提交前质量门：build（tsc + vite）+ smoke 串行，任一失败即红
 ```
+
+`pnpm verify` 前置与 smoke 相同：dev server（:18788）与 DB（:5433）已在线（`pnpm dev` 已跑、已迁移）——verify 脚本本身假设环境就绪，不负责起服务。
+
+CI（GitHub Actions，`.github/workflows/ci.yml`）在 push 到 main 与每个 PR 上跑同一条 verify：起 postgres:16 service → `db:migrate` → 后台起 server（CI 端口 18789，避免与本地 18788 冲突）→ `SMOKE_BASE=http://127.0.0.1:18789 pnpm verify`，红则阻断合并。
 
 ## Agent 手册（MCP 工具）
 

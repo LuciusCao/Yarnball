@@ -71,6 +71,9 @@ pnpm build              # pnpm -r build（server: tsc --noEmit；web: tsc -b && 
 pnpm test               # vitest run（server；目前无测试文件，测试主要靠 smoke）
 pnpm smoke              # fake-acp-agent 端到端冒烟：prompt 流 / permission 停泊 / MCP 真实调用
                         # 前置：pnpm dev 已运行、DB 已迁移
+pnpm verify             # 提交前质量门：build + smoke 串行，任一失败即红；前置同 smoke
+                        # （脚本本身假设 server + DB 环境就绪，不负责起服务；
+                        #  CI 里由 .github/workflows/ci.yml 起 postgres + server :18789 后跑同一条 verify）
 pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit generate）
 ```
 
