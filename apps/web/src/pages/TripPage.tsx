@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import {
   CalendarDays,
   CalendarCheck,
+  CalendarMinus,
   BedDouble,
   Clock,
   Crosshair,
@@ -36,7 +37,7 @@ import { ChatPanel } from "../features/chat/ChatPanel";
 import { CandidatesPanel } from "../features/candidates/CandidatesPanel";
 import { candidatesApi } from "../features/candidates/api";
 import { HotelStayRangePicker } from "../features/candidates/HotelStayRangePicker";
-import { getSelectedStays, type HotelStayRange } from "../features/candidates/hotelStays";
+import { getSelectedStays, largestFreeSpan, type HotelStayRange } from "../features/candidates/hotelStays";
 import {
   BOOKING_STATUS_META,
   bookingStatusOf,
@@ -232,6 +233,56 @@ export function TripPage() {
     }
   }
 
+  /** 加入酒店（信息卡主操作，口径对齐候选池 selectHotel）：默认占未覆盖的最长连续段；全程已覆盖则提示先调整已有酒店 */
+  async function selectHotelStay(candidateId: string) {
+    if (!tripId) return;
+    if (days.length === 0) {
+      toast.warning("还没有行程天数，先让 agent 规划行程再加入酒店");
+      return;
+    }
+    const span = largestFreeSpan(hotelStays, days.length);
+    if (!span) {
+      toast.warning("全程已被其他已加入的酒店覆盖，请先调整它们的入离店天");
+      return;
+    }
+    setPlaceBusy(true);
+    try {
+      await uxApi.selectHotel(tripId, { candidateId, ...span });
+      await load(tripId);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setPlaceBusy(false);
+    }
+  }
+
+  /** 移出酒店（口径对齐候选池 unselectHotel）：取消住宿区间，不再锚定每天首尾 */
+  async function unselectHotelStay(candidateId: string) {
+    if (!tripId) return;
+    setPlaceBusy(true);
+    try {
+      await uxApi.unselectHotel(tripId, candidateId);
+      await load(tripId);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setPlaceBusy(false);
+    }
+  }
+
+  /** 移出行程（M20，对齐候选池出口）：已排期地点撤销全部日程 entry，退回候选态不删除 */
+  async function unschedulePlace(place: PlaceDto) {
+    setPlaceBusy(true);
+    try {
+      await candidatesApi.unschedulePlace(place.id);
+      if (tripId) await load(tripId);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setPlaceBusy(false);
+    }
+  }
+
   const refreshSessions = useCallback(async () => {
     if (!tripId) return;
     const { sessions } = await api.chatSessions(tripId);
@@ -337,11 +388,13 @@ export function TripPage() {
               ✕
             </button>
           </div>
-          {/* 状态徽章：排期中（scheduled 蓝）> 已加入（locked 金）> 候选（消费 M13 令牌变体，M20 措辞统一为「已加入」）；agent 建的地点带推荐标记 */}
+          {/* 状态徽章：已排期（scheduled 蓝）> 已加入（locked 金）> 候选；酒店 locked 降级不展示 locked 徽章（!isHotel 守卫，口径对齐候选池），已选定住宿的酒店凭住宿块说明「已加入」；agent 建的地点带推荐标记 */}
           <div className="mt-1.5 flex flex-wrap gap-1">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
-              <Badge variant="scheduled">已加入</Badge>
-            ) : selectedPlace.status === "locked" ? (
+              <Badge variant="scheduled">已排期</Badge>
+            ) : selectedPlace.status === "locked" && selectedHotelCand == null ? (
+              <Badge variant="locked">已加入</Badge>
+            ) : selectedStay ? (
               <Badge variant="locked">已加入</Badge>
             ) : (
               <Badge variant="candidate">候选</Badge>
@@ -475,33 +528,69 @@ export function TripPage() {
           {selectedPlace.notes && (
             <p className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-slate-500">{selectedPlace.notes}</p>
           )}
-          {/* 操作行：已排期地点不再提供加入/移出开关（排期即已确认） */}
+          {/* 操作行（口径对齐候选池）：酒店主操作走 select/unselect（带默认住宿区间，不再只切 locked 造「暗 locked」态）；
+              已排期地点给「移出行程」出口（unschedule 撤销日程）；未排期 POI 走 locked 开关。
+              Lock 图标语义与候选池一致：locked 态显示 Lock（点击移出），候选态显示 LockOpen（点击加入） */}
           <div className="mt-2.5 flex items-center gap-1.5 border-t border-slate-900/8 pt-2.5">
-            {!scheduledPlaceIds.has(selectedPlace.id) && (
+            {selectedHotelCand && (
               <button
                 title={
-                  selectedPlace.status === "locked"
-                    ? "移出行程（退回候选池，不再必排进日程）"
-                    : "加入行程（确认要去，排日程时必排）"
+                  selectedStay
+                    ? "移出行程：取消该酒店的住宿区间，不再锚定每天首尾"
+                    : "加入行程：自动分配未覆盖的最长连续住宿段，可再调整入离店天"
                 }
                 disabled={placeBusy}
-                onClick={() => void togglePlaceLock(selectedPlace)}
+                onClick={() =>
+                  void (selectedStay
+                    ? unselectHotelStay(selectedHotelCand.id)
+                    : selectHotelStay(selectedHotelCand.id))
+                }
                 className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
-                  selectedPlace.status === "locked"
-                    ? "bg-locked/10 text-locked hover:bg-locked/20"
+                  selectedStay
+                    ? "bg-hotelpin/10 text-hotelpin hover:bg-hotelpin/20"
                     : "bg-slate-900/8 text-slate-600 hover:bg-slate-900/15"
                 }`}
               >
-                {selectedPlace.status === "locked" ? (
-                  <>
-                    <LockOpen className="size-3" /> 移出行程
-                  </>
-                ) : (
-                  <>
-                    <Lock className="size-3" /> 加入行程
-                  </>
-                )}
+                <BedDouble className="size-3" />
+                {selectedStay ? "移出行程" : "加入行程"}
               </button>
+            )}
+            {scheduledPlaceIds.has(selectedPlace.id) ? (
+              <button
+                title="移出行程（撤销排入的日程，退回候选池）"
+                disabled={placeBusy}
+                onClick={() => void unschedulePlace(selectedPlace)}
+                className="flex items-center gap-1 rounded-lg bg-scheduled/10 px-2.5 py-1 text-xs font-medium text-scheduled transition-colors hover:bg-scheduled/20 disabled:opacity-50"
+              >
+                <CalendarMinus className="size-3" /> 移出行程
+              </button>
+            ) : (
+              !selectedHotelCand && (
+                <button
+                  title={
+                    selectedPlace.status === "locked"
+                      ? "移出行程（退回候选池，不再必排进日程）"
+                      : "加入行程（确认要去，排日程时必排）"
+                  }
+                  disabled={placeBusy}
+                  onClick={() => void togglePlaceLock(selectedPlace)}
+                  className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                    selectedPlace.status === "locked"
+                      ? "bg-locked/10 text-locked hover:bg-locked/20"
+                      : "bg-slate-900/8 text-slate-600 hover:bg-slate-900/15"
+                  }`}
+                >
+                  {selectedPlace.status === "locked" ? (
+                    <>
+                      <Lock className="size-3" /> 移出行程
+                    </>
+                  ) : (
+                    <>
+                      <LockOpen className="size-3" /> 加入行程
+                    </>
+                  )}
+                </button>
+              )
             )}
             <button
               disabled={placeBusy}
