@@ -111,16 +111,19 @@ async function main() {
     assert(kinds.includes("user_text"), "user_text message exists");
     assert(kinds.includes("tool_call"), "tool_call message exists");
     assert(kinds.includes("tool_call_update"), "tool_call_update message exists");
-    const agentText = msgs.find((m) => m.kind === "agent_text");
+    // 分段：tool_call 介入封闭当前聚合段，prompt_flow（文本→工具调用→文本）
+    // 应产生两条独立的 agent_text，顺序为 user_text → agent_text → tool_call
+    // → tool_call_update → agent_text → advisory
+    const agentTexts = msgs.filter((m) => m.kind === "agent_text");
+    assert(agentTexts.length === 2, `agent output split into 2 segments around tool_call (got ${agentTexts.length})`);
     assert(
-      agentText != null && String(agentText.content.text).includes("灵隐寺"),
-      "agent_text mentions 灵隐寺",
+      String(agentTexts[1].content.text).includes("灵隐寺"),
+      "second agent_text segment mentions 灵隐寺",
     );
-    // bootstrap prompt 必须带进第一个 prompt（验证方式：fake agent 只回显前 40 字，
-    // bootstrap 在 user text 前面，所以回显里应是 bootstrap 开头）
+    const expectOrder = ["user_text", "agent_text", "tool_call", "tool_call_update", "agent_text", "advisory"];
     assert(
-      String(agentText?.content.text ?? "").length > 0,
-      "agent produced text",
+      JSON.stringify(kinds) === JSON.stringify(expectOrder),
+      `message order is ${expectOrder.join(" → ")} (got ${kinds.join(" → ")})`,
     );
 
     // 关闭会话
