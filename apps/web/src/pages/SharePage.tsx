@@ -340,6 +340,7 @@ function ShareBudgetStrip({ summary }: { summary: BudgetSummary }) {
             label="住宿"
             detail={summary.hotelSelected ? `${summary.nights} 晚 × ${summary.travelerCount} 人行程` : "未选酒店"}
             value={summary.hotelCny != null ? formatMoney(summary.hotelCny, cur) : "—"}
+            amount={summary.hotelCny ?? 0}
             color="bg-red-400"
             max={max}
           />
@@ -347,6 +348,7 @@ function ShareBudgetStrip({ summary }: { summary: BudgetSummary }) {
             label="餐饮"
             detail="人均 × 人数"
             value={formatMoney(summary.diningCny, cur)}
+            amount={summary.diningCny}
             color="bg-orange-400"
             max={max}
           />
@@ -354,6 +356,7 @@ function ShareBudgetStrip({ summary }: { summary: BudgetSummary }) {
             label="门票/活动"
             detail="单价 × 人数"
             value={formatMoney(summary.ticketsCny, cur)}
+            amount={summary.ticketsCny}
             color="bg-blue-400"
             max={max}
           />
@@ -373,16 +376,18 @@ function BudgetRow({
   label,
   detail,
   value,
+  amount,
   color,
   max,
 }: {
   label: string;
   detail: string;
+  /** 展示串（formatMoney 结果）；百分比用原始数值 amount，不从展示串反解（小数/非 CNY 格式会断） */
   value: string;
+  amount: number;
   color: string;
   max: number;
 }) {
-  const amount = Number(value.replace(/[^\d]/g, "")) || 0;
   const pct = max > 0 ? Math.min(100, (amount / max) * 100) : 0;
   return (
     <div>
