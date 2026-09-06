@@ -14,7 +14,8 @@
     "db:generate": "pnpm --filter @yarnball/server db:generate",
     "build": "pnpm -r build",
     "test": "pnpm --filter @yarnball/server test",
-    "smoke": "pnpm --filter @yarnball/server smoke"
+    "smoke": "pnpm --filter @yarnball/server smoke",
+    "verify": "pnpm build && pnpm smoke"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 质量门：与本地 `pnpm verify` 同一条链路（build + smoke），红则阻断合并。
+# smoke 需要 server + DB 在线，由本 workflow 负责起（verify 脚本本身假设环境就绪）。
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      # 与 docker-compose.yml 对齐：postgres:16，账密/库名 yarnball，宿主机 5433
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: yarnball
+          POSTGRES_PASSWORD: yarnball
+          POSTGRES_DB: yarnball
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U yarnball"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgres://yarnball:yarnball@localhost:5433/yarnball
+      # CI 内用 18789，避免与本地 dev 默认的 18788 语义混淆
+      SERVER_PORT: 18789
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm/action-setup 从 package.json 的 packageManager 字段读取版本（pnpm@10）
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm db:migrate
+
+      - name: 后台启动 server（:18789）
+        run: |
+          cd apps/server
+          nohup pnpm exec tsx src/main.ts > "$RUNNER_TEMP/server.log" 2>&1 &
+
+      - name: 等待 server 就绪（/api/trips 返回 200）
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:18789/api/trips > /dev/null; then
+              echo "server ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not become ready in 60s" >&2
+          exit 1
+
+      - name: pnpm verify（build + smoke）
+        run: SMOKE_BASE=http://127.0.0.1:18789 pnpm verify
+
+      - name: 失败时输出 server 日志
+        if: failure()
+        run: cat "$RUNNER_TEMP/server.log" || true
