@@ -336,7 +336,7 @@ export function CandidatesPanel({
                     ? (hotelCand?.pricePerNight ?? place.priceCny)
                     : place.priceCny;
                 const selected = place.id === selectedPlaceId;
-                /** 已排期（M20：也进候选池，徽章「已加入」+ agent 推荐标记，可「移出行程」撤销排期） */
+                /** 已排期（M20：也进候选池，徽章「已排期」（与 locked 的「已加入」区分）+ agent 推荐标记，可「移出行程」撤销排期） */
                 const scheduled = scheduledPlaceIds.has(place.id);
 
                 // 是否有徽章要展示（没有就不渲染徽章行，避免多余间距）
@@ -391,7 +391,7 @@ export function CandidatesPanel({
                               </Badge>
                             )}
                             {scheduled ? (
-                              <Badge variant="scheduled">已加入</Badge>
+                              <Badge variant="scheduled">已排期</Badge>
                             ) : (
                               locked && !isHotel && <Badge variant="locked">已加入</Badge>
                             )}
