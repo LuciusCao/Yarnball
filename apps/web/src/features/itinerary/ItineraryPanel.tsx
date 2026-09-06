@@ -8,8 +8,10 @@ import { DAY_COLORS } from "../map/MapCanvas";
 import { buildDayTimeline, formatHHMM, type TimelineItem } from "./timeline";
 import {
   TRANSIT_KIND_META,
+  transitFromName,
   transitKindOf,
   transitRouteText,
+  transitToName,
   type TransitKind,
 } from "./transit";
 import {
@@ -32,10 +34,11 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  * - 酒店端点节点（M17）：每天首渲染「从 X 酒店出发」、尾渲染「返回 X 酒店」，
  *   数据取 legs 首/末段的 from/toPlaceId（服务端按选定酒店锚定当天首尾，M9/M11）；
  *   用酒店图标 + hotelpin 虚线卡片区别于普通 entry；出发/到店时刻随时间轴推算（~ 前缀 = 估算），
- *   首段交通时长挂在出发节点下方。大交通收口的头/尾天（机场落地/离开）服务端不锚定，节点自然不出现
- * - 无覆盖酒店的天（M17）：天头部显示「当晚未安排住宿」+「去候选池选定」引导
+ *   首段交通时长挂在出发节点下方。大交通收口的头/尾天（机场落地/离开）服务端不锚定酒店，
+ *   改渲染大交通端点节点（M20：到达日「从 机场/车站 出发」、离开日「前往 机场/车站」）
+ * - 无覆盖酒店的天（M17）：天头部显示「当晚未安排住宿」+「去候选池加入」引导
  *   （onOpenCandidates 由 TripPage 传入；只读分享页只有文案没有按钮）。
- *   注意 锁定 ≠ 选定：只有「选定」（带 checkInDay/checkOutDay 住宿区间）的酒店才参与路线锚定
+ *   注意（M20 话术统一）：酒店需「加入行程」（底层 select，带 checkInDay/checkOutDay 住宿区间）才参与路线锚定
  * - Day 筛选 tabs（M15，TripPage 传入 visibleDay/onVisibleDayChange 时启用）：
  *   面板顶部「全部/D1/D2…」，选中天过滤面板并同步地图聚焦
  * - readOnly（分享页）：隐藏一切编辑操作
@@ -55,7 +58,7 @@ interface ItineraryPanelProps {
    */
   visibleDay?: number | null;
   onVisibleDayChange?: (dayIndex: number | null) => void;
-  /** 打开候选池面板（M17：无覆盖酒店天的「去候选池选定」引导；TripPage 传入，分享页不传则只显示文案） */
+  /** 打开候选池面板（M17：无覆盖酒店天的「去候选池加入」引导；TripPage 传入，分享页不传则只显示文案） */
   onOpenCandidates?: () => void;
 }
 
@@ -247,6 +250,15 @@ export function ItineraryPanel({
           .sort((a, b) => a.seq - b.seq);
         const startLeg = dayLegs.find((l) => l.fromPlaceId != null) ?? null;
         const endLeg = [...dayLegs].reverse().find((l) => l.toPlaceId != null) ?? null;
+        // 大交通端点锚定（M20 追加）：首/末 entry 为带坐标 transit（到达/离开）时服务端 recalcDayLegs
+        // 已跳过酒店锚点，面板对应渲染「从 机场/车站 出发」/「前往 机场/车站」端点节点；
+        // 仅一个 entry 的纯移动天不重复渲染（transit 卡本身已足够）
+        const startTransitItem =
+          startLeg == null && timeline.length > 1 && timeline[0]?.transit ? timeline[0] : null;
+        const endTransitItem =
+          endLeg == null && timeline.length > 1 && timeline[timeline.length - 1]?.transit
+            ? timeline[timeline.length - 1]
+            : null;
         return (
           <section key={day.id} className="border-b border-slate-900/8 p-3">
             <header className="mb-2 flex items-center gap-2">
@@ -266,15 +278,15 @@ export function ItineraryPanel({
                 <button
                   onClick={() => suggestOrder(day.dayIndex)}
                   disabled={busy}
-                  className="ml-auto rounded border border-slate-300/60 bg-white/60 px-2 py-0.5 text-xs text-slate-600 hover:bg-white disabled:opacity-50"
+                  className="ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded border border-slate-300/60 bg-white/60 px-2 py-0.5 text-xs text-slate-600 hover:bg-white disabled:opacity-50"
                 >
-                  <Zap className="size-3" />
+                  <Zap className="size-3 shrink-0" />
                   优化顺序
                 </button>
               )}
             </header>
 
-            {/* 住宿行：平时「当晚住宿：X」，换酒店日「离店 A → 入住 B」；无覆盖时给「去候选池选定」引导（M17） */}
+            {/* 住宿行：平时「当晚住宿：X」，换酒店日「离店 A → 入住 B」；无覆盖时给「去候选池加入」引导（M17） */}
             {nightStay || switchFrom ? (
               <p className="mb-1.5 flex items-center gap-1 text-[11px] text-slate-400">
                 <BedDouble className="size-3 shrink-0" />
@@ -296,7 +308,7 @@ export function ItineraryPanel({
                 <span>
                   当晚未安排住宿
                   <span className="text-slate-300">
-                    （锁定的酒店还需「选定」并设置入离店天，才会锚定当天首尾）
+                    （酒店需加入行程并设置入离店天，才会锚定当天首尾）
                   </span>
                 </span>
                 {!readOnly && onOpenCandidates && (
@@ -352,6 +364,20 @@ export function ItineraryPanel({
                   : null;
                 return (
                   <li key={entry.id}>
+                    {/* 离开日大交通端点（M20）：末 entry 为 transit 离开时，在卡片前渲染「前往 机场/车站」；
+                        到达车站时刻 ≈ transit 的 departTime（startMin），恒按估算渲染（~ 前缀） */}
+                    {kind && endTransitItem != null && i === timeline.length - 1 && (
+                      <TransitAnchorRow
+                        direction="return"
+                        kind={kind}
+                        name={transitFromName(entry, placeById) ?? "出发地"}
+                        timeMin={startMin}
+                        estimated
+                        onSelect={
+                          entry.fromPlaceId ? () => onSelectPlace(entry.fromPlaceId!) : undefined
+                        }
+                      />
+                    )}
                     {kind ? (
                       <TransitRow
                         key={`${entry.id}:${entry.departTime ?? ""}:${entry.arriveTime ?? ""}`}
@@ -448,6 +474,23 @@ export function ItineraryPanel({
                         </span>
                       )}
                     </div>
+                    )}
+                    {/* 到达日大交通端点（M20）：首 entry 为 transit 到达时，在卡片后渲染「从 机场/车站 出发」，时刻 = 下一站开始 - 交通时长 */}
+                    {kind && startTransitItem != null && i === 0 && (
+                      <TransitAnchorRow
+                        direction="depart"
+                        kind={kind}
+                        name={transitToName(entry, placeById) ?? "目的地"}
+                        timeMin={
+                          timeline.length > 1
+                            ? timeline[1].startMin - Math.round((leg?.durationS ?? 0) / 60)
+                            : endMin
+                        }
+                        estimated={timeline[1]?.estimated ?? true}
+                        onSelect={
+                          entry.toPlaceId ? () => onSelectPlace(entry.toPlaceId!) : undefined
+                        }
+                      />
                     )}
                     {leg && (
                       <LegRow
@@ -724,15 +767,63 @@ function HotelAnchorRow({
   );
 }
 
-/** 「去候选池选定」引导钮（M17）：讲清 锁定 ≠ 选定——只有选定（带入住/离店天）的酒店才参与首尾锚定 */
+/** 大交通端点节点（M20 追加）：到达日首「从 机场/车站 出发」、离开日尾「前往 机场/车站」，
+ *  对应服务端 recalcDayLegs 对首/末 transit 天跳过酒店锚点的行为；样式对齐 TransitRow（slate 虚线卡 +
+ *  类别图标），时刻 ~ 前缀 = 随时间轴推算的估算值；起讫引用行程内 place 时点击在地图上选中该地点 */
+function TransitAnchorRow({
+  direction,
+  kind,
+  name,
+  timeMin,
+  estimated,
+  onSelect,
+}: {
+  direction: "depart" | "return";
+  kind: TransitKind;
+  name: string;
+  timeMin: number | null;
+  estimated: boolean;
+  onSelect?: () => void;
+}) {
+  const Icon = kind === "arrival" ? PlaneLanding : kind === "departure" ? PlaneTakeoff : TrainFront;
+  return (
+    <div
+      className={`flex items-center gap-2 rounded-lg border border-dashed border-slate-400/70 bg-slate-500/8 px-2 py-1.5 transition-colors ${
+        onSelect ? "cursor-pointer hover:bg-slate-500/15" : ""
+      }`}
+      onClick={onSelect}
+    >
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-700 text-white">
+        <Icon className="size-3.5" />
+      </span>
+      <span className="flex min-w-0 flex-1 items-baseline text-sm font-medium text-slate-700">
+        <span className="shrink-0">{direction === "depart" ? "从 " : "前往 "}</span>
+        <span className="truncate">{name}</span>
+        {direction === "depart" ? <span className="shrink-0"> 出发</span> : null}
+      </span>
+      {timeMin != null && (
+        <span
+          className={`shrink-0 text-[11px] tabular-nums ${estimated ? "text-slate-300" : "text-slate-500"}`}
+          title={estimated ? "按停留时长与交通时间推算" : undefined}
+        >
+          {estimated ? "~" : ""}
+          {formatHHMM(timeMin)}
+          {direction === "depart" ? " 出发" : " 到达"}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** 「去候选池加入」引导钮（M17；M20 话术统一）：酒店「加入行程」（带入住/离店天）后才参与首尾锚定 */
 function SelectHotelGuide({ onClick }: { onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      title="只有「选定」酒店（带入住/离店天）才会作为当天行程的首尾锚点；候选池里仅「锁定」还不够"
-      className="shrink-0 rounded bg-slate-900/8 px-1.5 py-0.5 text-slate-500 transition-colors hover:bg-slate-900/15 hover:text-slate-700"
+      title="酒店「加入行程」（带入住/离店天）后才会作为当天行程的首尾锚点；仅放进候选池还不够"
+      className="shrink-0 whitespace-nowrap rounded bg-slate-900/8 px-1.5 py-0.5 text-slate-500 transition-colors hover:bg-slate-900/15 hover:text-slate-700"
     >
-      去候选池选定 →
+      去候选池加入 →
     </button>
   );
 }

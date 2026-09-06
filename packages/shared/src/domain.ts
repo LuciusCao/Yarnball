@@ -298,6 +298,13 @@ export const SetPlaceStatusInputSchema = z.object({
 });
 export type SetPlaceStatusInput = z.infer<typeof SetPlaceStatusInputSchema>;
 
+/** 移出行程（POST /api/places/:id/unschedule，M20）响应：撤销该地点的全部日程 entry，地点退回候选态 */
+export const UnschedulePlaceResultSchema = z.object({
+  ok: z.literal(true),
+  removedEntries: z.number().int().min(0),
+});
+export type UnschedulePlaceResult = z.infer<typeof UnschedulePlaceResultSchema>;
+
 /** HH:MM（24 小时制） */
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 

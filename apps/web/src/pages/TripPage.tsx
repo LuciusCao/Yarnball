@@ -154,7 +154,7 @@ export function TripPage() {
     }
   }
 
-  /** 地点操作进行中（选中卡片的锁定/删除按钮防重入） */
+  /** 地点操作进行中（选中卡片的加入/移出/删除按钮防重入） */
   const [placeBusy, setPlaceBusy] = useState(false);
 
   /** 打开设置抽屉：M2 的设置入口监听该事件；M2 未合并时事件无人消费，静默降级 */
@@ -162,7 +162,7 @@ export function TripPage() {
     window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT));
   }, []);
 
-  /** 锁定/解锁地点：写后依赖 SSE bundle 全量刷新，再主动 load 兜底 */
+  /** 加入/移出地点（底层 locked 状态切换，M20 UI 话术统一为「加入行程」）：写后依赖 SSE bundle 全量刷新，再主动 load 兜底 */
   async function togglePlaceLock(place: PlaceDto) {
     const next = place.status === "locked" ? "candidate" : "locked";
     setPlaceBusy(true);
@@ -307,7 +307,7 @@ export function TripPage() {
         </Link>
       </header>
 
-      {/* 左上（行程信息条下方）：选中地点信息卡（可操作：锁定/解锁/删除） ===== */}
+      {/* 左上（行程信息条下方）：选中地点信息卡（可操作：加入行程/移出行程/删除） ===== */}
       {selectedPlace && (
         <div className="glass panel-in rounded-card absolute left-4 top-[60px] z-10 max-w-xs p-3.5 shadow-card">
           <div className="flex items-start justify-between gap-2">
@@ -324,12 +324,12 @@ export function TripPage() {
               ✕
             </button>
           </div>
-          {/* 状态徽章：已排期 > 已锁定 > 候选（消费 M13 令牌变体）；agent 建的地点带推荐标记 */}
+          {/* 状态徽章：排期中（scheduled 蓝）> 已加入（locked 金）> 候选（消费 M13 令牌变体，M20 措辞统一为「已加入」）；agent 建的地点带推荐标记 */}
           <div className="mt-1.5 flex flex-wrap gap-1">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
-              <Badge variant="scheduled">已排期</Badge>
+              <Badge variant="scheduled">已加入</Badge>
             ) : selectedPlace.status === "locked" ? (
-              <Badge variant="locked">已锁定</Badge>
+              <Badge variant="locked">已加入</Badge>
             ) : (
               <Badge variant="candidate">候选</Badge>
             )}
@@ -381,12 +381,12 @@ export function TripPage() {
               {selectedPlace.bookingInfo}
             </p>
           )}
-          {/* 酒店：已选定时显示并可编辑入离店天（多酒店，M10） */}
+          {/* 酒店：已加入行程时显示并可编辑入离店天（多酒店，M10） */}
           {selectedHotelCand && (
             <div className="mt-1.5 rounded-lg bg-red-500/8 px-2 py-1.5 text-[11px] text-slate-600">
               <p className="flex items-center gap-1">
                 <BedDouble className="size-3 shrink-0 text-slate-400" />
-                {selectedStay ? "已选定住宿" : "酒店候选（未选定，可在候选池选定）"}
+                {selectedStay ? "已加入行程的住宿" : "酒店候选（未加入，可在候选池加入行程）"}
               </p>
               {selectedStay && days.length > 0 && (
                 <div className="mt-1">
@@ -410,10 +410,15 @@ export function TripPage() {
           {selectedPlace.notes && (
             <p className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-slate-500">{selectedPlace.notes}</p>
           )}
-          {/* 操作行：已排期地点不再提供锁定开关（排期即已确认） */}
+          {/* 操作行：已排期地点不再提供加入/移出开关（排期即已确认） */}
           <div className="mt-2.5 flex items-center gap-1.5 border-t border-slate-900/8 pt-2.5">
             {!scheduledPlaceIds.has(selectedPlace.id) && (
               <button
+                title={
+                  selectedPlace.status === "locked"
+                    ? "移出行程（退回候选池，不再必排进日程）"
+                    : "加入行程（确认要去，排日程时必排）"
+                }
                 disabled={placeBusy}
                 onClick={() => void togglePlaceLock(selectedPlace)}
                 className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
@@ -424,11 +429,11 @@ export function TripPage() {
               >
                 {selectedPlace.status === "locked" ? (
                   <>
-                    <LockOpen className="size-3" /> 解锁
+                    <LockOpen className="size-3" /> 移出行程
                   </>
                 ) : (
                   <>
-                    <Lock className="size-3" /> 锁定
+                    <Lock className="size-3" /> 加入行程
                   </>
                 )}
               </button>

@@ -418,6 +418,39 @@ export class TripService {
     await this.publishBundle(tripId);
   }
 
+  /**
+   * 移出行程（M20：POST /api/places/:id/unschedule）：撤销该地点的全部日程 entry
+   * （place 退回候选态，不删 place 本身，transit 起讫点对其的引用保留）。
+   * 受影响天 normalizePositions 填洞 + 重算 legs（首尾锚定/交通段按 recalcDayLegs 现有不变式重算）。
+   */
+  async unschedulePlace(placeId: string) {
+    const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
+    if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
+    const entryRows = await this.db
+      .select()
+      .from(schema.entries)
+      .where(and(eq(schema.entries.placeId, placeId), eq(schema.entries.entryType, "place")));
+    const dayIds = [...new Set(entryRows.map((e) => e.dayId))];
+    if (entryRows.length > 0) {
+      await this.db.delete(schema.entries).where(
+        inArray(
+          schema.entries.id,
+          entryRows.map((e) => e.id),
+        ),
+      );
+    }
+    if (existing.status !== "candidate") {
+      await this.db.update(schema.places).set({ status: "candidate" }).where(eq(schema.places.id, placeId));
+    }
+    await this.touchTrip(existing.tripId);
+    for (const dayId of dayIds) {
+      await this.normalizePositions(dayId);
+      await this.recalcDayLegs(existing.tripId, dayId);
+    }
+    await this.publishBundle(existing.tripId);
+    return { removedEntries: entryRows.length };
+  }
+
   // ---------- days & entries ----------
 
   /** 惰性建 day：首次往某天加 entry 时创建 */

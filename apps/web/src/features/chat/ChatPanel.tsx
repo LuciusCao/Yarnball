@@ -33,7 +33,7 @@ interface ChatPanelProps {
 const EXAMPLE_PROMPTS = [
   "这是我从攻略里复制的行程，帮我解析成地点",
   "帮我推荐几家住宿区域附近的酒店",
-  "把想去的餐厅列给我，我挑几家锁定",
+  "把想去的餐厅列给我，我挑几家加入行程",
 ] as const;
 
 /** 会话状态中文标签（原始 status 枚举对用户无意义） */
@@ -134,7 +134,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   }
 
   /**
-   * 「规划每日行程」引导：拉当前 bundle，把已锁定/候选地点摘要 + 区域聚类建议（M11）+
+   * 「规划每日行程」引导：拉当前 bundle，把已加入行程/候选地点摘要 + 区域聚类建议（M11）+
    * 大交通锚点组装成预制指令，走现有发送链路发给 agent，提示按区域成片分天。
    * place.status 来自 shared 契约：locked=必排，candidate=按顺路取舍。
    */
@@ -185,7 +185,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
       const lines = [
         `请帮我规划这次「${bundle.trip.destinationCity}」之行的每日行程，按区域成片分天：同一片区的地点尽量排在同一天，减少跨区折返。`,
-        `已锁定（必须排入）：${fmt(locked)}`,
+        `已加入行程（必须排入）：${fmt(locked)}`,
         `候选地点（按顺路和体验取舍）：${fmt(candidates)}`,
       ];
       if (clusterLines.length > 0) {
@@ -260,7 +260,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
             </span>
           ))}
         </div>
-        {/* 规划引导（空态置灰）：连接 agent 后一键把已锁定/候选地点发给 agent 排程 */}
+        {/* 规划引导（空态置灰）：连接 agent 后一键把已加入行程/候选地点发给 agent 排程 */}
         <button
           disabled
           title="先连接 agent，再让它规划每日行程"
@@ -371,11 +371,11 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
       {/* 输入 */}
       <div className="border-t border-slate-900/8 p-3">
-        {/* 规划引导（主行动点）：把已锁定/候选地点摘要组装成预制指令发给 agent */}
+        {/* 规划引导（主行动点）：把已加入行程/候选地点摘要组装成预制指令发给 agent */}
         <button
           onClick={() => void planDays()}
           disabled={running || planning || connecting}
-          title="把当前已锁定/候选地点发给 agent，让它排每日行程（含 startTime 与交通段）"
+          title="把当前已加入行程/候选地点发给 agent，让它排每日行程（含 startTime 与交通段）"
           className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-xl bg-brand px-3 py-2 text-xs font-medium text-white shadow-sm transition-colors hover:bg-brand-hover disabled:opacity-50"
         >
           {planning ? <Loader2 className="size-3.5 animate-spin" /> : <CalendarClock className="size-3.5" />}

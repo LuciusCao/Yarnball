@@ -136,6 +136,12 @@ export function createApi(
     return c.json({ place: await tripService.setPlaceStatus(c.req.param("placeId"), input.status) });
   });
 
+  /** 移出行程（M20）：撤销该地点的全部日程 entry，地点退回候选态 */
+  api.post("/places/:placeId/unschedule", async (c) => {
+    const result = await tripService.unschedulePlace(c.req.param("placeId"));
+    return c.json({ ok: true, removedEntries: result.removedEntries });
+  });
+
   api.delete("/places/:placeId", async (c) => {
     await tripService.removePlace(c.req.param("placeId"));
     return c.json({ ok: true });
