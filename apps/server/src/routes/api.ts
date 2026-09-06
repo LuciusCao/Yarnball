@@ -423,8 +423,10 @@ export function createApi(
     if (row.status === "closed") throw new Error("会话已关闭，请新建会话");
     let handle = sessions.get(row.id);
     if (handle && row.status === "error") {
-      // 进程已死但句柄残留（agent 崩溃只置了 status）：先停掉再重建
-      await sessions.stopSession(row.id, "recover after error").catch(() => {});
+      // 进程已死但句柄残留（agent 崩溃只置了 status）：先停掉再重建。
+      // final 必须传 error 过渡态而非默认 closed——closed 是终态，setStatus 守卫会挡住
+      // 随后新句柄 start() 的 starting/idle 写入，会话永久卡 closed（复审 P1）
+      await sessions.stopSession(row.id, "recover after error", { status: "error" }).catch(() => {});
       handle = undefined;
     }
     if (handle) return handle;

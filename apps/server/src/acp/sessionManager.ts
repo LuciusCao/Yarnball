@@ -142,10 +142,15 @@ export class AcpSessionManager {
     }
   }
 
-  async stopSession(chatSessionId: string, reason: string) {
+  /** final 缺省 closed（用户主动断开）；recoverSession 停崩溃残留句柄时传 error 过渡态 */
+  async stopSession(
+    chatSessionId: string,
+    reason: string,
+    final?: { status: string; lastError?: string | null },
+  ) {
     const handle = this.handles.get(chatSessionId);
     this.handles.delete(chatSessionId);
-    await handle?.close(reason);
+    await handle?.close(reason, final);
   }
 
   /** 停掉某行程下所有 chat session 的句柄（删行程用；close 走默认 closed 终态语义） */
