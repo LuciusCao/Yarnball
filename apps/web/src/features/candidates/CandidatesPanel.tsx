@@ -4,6 +4,7 @@ import {
   CalendarCheck,
   CalendarMinus,
   Landmark,
+  LayoutGrid,
   Lock,
   LockOpen,
   Package,
@@ -42,6 +43,10 @@ import {
  * M20：UI 话术统一为「加入行程」——酒店「加入行程」即选定住宿区间（select，含入离店天），
  * 底层 locked/select 语义不变；酒店的 locked 状态在 UI 上降级（不再出现「已锁定·未选定住宿天」）。
  * 数据刷新：操作后走 SSE bundle 全量快照 + 主动 load 兜底，不做本地增量。
+ * M25：面板顶部 segmented 切换（全部/酒店/景点/美食，各带数量徽标=该类别候选总数含已加入；
+ * 「其他」类别只在「全部」视图出现）。默认「全部」= 原分组视图；切到类别 tab = 该类别单组列表
+ * （已加入仍排前，组头小计/酒店提示等元素保留）。待预订汇总提醒、agent 推荐标记等跨类别元素
+ * 不随 tab 隐藏。tab 状态仅存组件本地。
  */
 
 interface CandidatesPanelProps {
@@ -65,6 +70,16 @@ const GROUP_META: Record<GroupKey, { label: string; Icon: LucideIcon; categories
 
 const GROUP_ORDER: GroupKey[] = ["hotel", "attraction", "dining", "other"];
 
+/** M25：顶部分类切换 tab；「其他」不单列 tab，只在「全部」视图出现 */
+type TabKey = GroupKey | "all";
+
+const TAB_DEFS: { key: TabKey; label: string; Icon: LucideIcon }[] = [
+  { key: "all", label: "全部", Icon: LayoutGrid },
+  { key: "hotel", label: GROUP_META.hotel.label, Icon: GROUP_META.hotel.Icon },
+  { key: "attraction", label: GROUP_META.attraction.label, Icon: GROUP_META.attraction.Icon },
+  { key: "dining", label: GROUP_META.dining.label, Icon: GROUP_META.dining.Icon },
+];
+
 export function CandidatesPanel({
   tripId,
   bundle,
@@ -74,6 +89,8 @@ export function CandidatesPanel({
   onDataChanged,
 }: CandidatesPanelProps) {
   const [busy, setBusy] = useState(false);
+  /** M25：分类 tab 状态仅存组件本地，面板收起/重开后回到「全部」 */
+  const [tab, setTab] = useState<TabKey>("all");
   const cur = bundle.trip.currency;
   const scheduledPlaceIds = new Set(bundle.entries.map((e) => e.placeId));
 
@@ -199,6 +216,10 @@ export function CandidatesPanel({
   }
 
   const totalCount = GROUP_ORDER.reduce((n, key) => n + grouped[key].length, 0);
+  /** M25：tab 徽标数量 = 各类别候选总数（含已加入）；「全部」含「其他」类别 */
+  const tabCount = (key: TabKey) => (key === "all" ? totalCount : grouped[key].length);
+  /** 当前 tab 下要渲染的组：「全部」保持分组视图，类别 tab 只渲染该组 */
+  const visibleGroups: GroupKey[] = tab === "all" ? GROUP_ORDER : [tab];
   /** 待预订的已加入地点（M11，底层仍是 locked 状态）：顶部汇总提醒 + 卡片高亮 */
   const pendingLockedCount = bundle.places.filter(
     (p) => p.status === "locked" && bookingStatusOf(p) === "pending",
@@ -206,6 +227,29 @@ export function CandidatesPanel({
 
   return (
     <div className="h-full overflow-y-auto p-3">
+      {/* M25：分类 segmented 切换（风格对齐 dock 文字标签）；跨类别元素（待预订提醒等）在下方常驻 */}
+      <div className="mb-3 flex items-center gap-1 rounded-full bg-slate-900/5 p-1">
+        {TAB_DEFS.map(({ key, label, Icon }) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={`flex flex-1 items-center justify-center gap-1 rounded-full px-2 py-1 text-xs font-medium transition-colors ${
+              tab === key
+                ? "bg-slate-900 text-white shadow-sm"
+                : "text-slate-500 hover:bg-slate-900/5 hover:text-slate-800"
+            }`}
+          >
+            <Icon className="size-3.5" />
+            {label}
+            <Badge
+              variant="secondary"
+              className={tab === key ? "border-white/25 bg-white/15 text-white/85" : undefined}
+            >
+              {tabCount(key)}
+            </Badge>
+          </button>
+        ))}
+      </div>
       {pendingLockedCount > 0 && (
         <div className="mb-3 flex items-center gap-1.5 rounded-xl border border-orange-300/70 bg-orange-100/60 px-3 py-2 text-xs text-orange-700">
           <CalendarCheck className="size-3.5 shrink-0" />
@@ -222,10 +266,11 @@ export function CandidatesPanel({
         </div>
       )}
 
-      {GROUP_ORDER.map((key) => {
+      {visibleGroups.map((key) => {
         const { label, Icon } = GROUP_META[key];
         const places = grouped[key];
-        if (key !== "hotel" && places.length === 0) return null;
+        // 「全部」视图下空组（酒店除外）不占位；类别 tab 下空组落到下面的空态提示
+        if (key !== "hotel" && places.length === 0 && tab === "all") return null;
 
         // 预算小计：酒店按每晚价合计（候选互为备选，仅供参考），其余按单价合计
         const subtotal = places.reduce((sum, p) => {
@@ -266,6 +311,12 @@ export function CandidatesPanel({
             {key === "hotel" && places.length === 0 && (
               <p className="rounded-xl border border-dashed border-slate-300 bg-white/40 py-4 text-center text-xs text-slate-400">
                 还没有酒店候选。把携程的酒店列表粘给 agent，或点上面「复制提示词」。
+              </p>
+            )}
+
+            {tab !== "all" && key !== "hotel" && places.length === 0 && (
+              <p className="rounded-xl border border-dashed border-slate-300 bg-white/40 py-4 text-center text-xs text-slate-400">
+                该类别还没有候选地点。
               </p>
             )}
 
