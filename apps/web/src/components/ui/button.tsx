@@ -8,8 +8,11 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
+        // 主按钮只有一个：default（蓝色）。primary 是历史遗留别名，样式与 default 完全一致，
+        // 仅为兼容既有调用保留；新代码省略 variant 即可，不要再新增「另一种主按钮」。
         default:
-          "bg-slate-900 text-white shadow-sm hover:bg-slate-800 active:scale-[0.98]",
+          "bg-blue-600 text-white shadow-sm hover:bg-blue-700 active:scale-[0.98]",
+        /** @deprecated 与 default 同样式的兼容别名，新代码请用 default（省略 variant） */
         primary:
           "bg-blue-600 text-white shadow-sm hover:bg-blue-700 active:scale-[0.98]",
         destructive:
