@@ -27,6 +27,14 @@ export type SourceType = (typeof SOURCE_TYPES)[number];
 export const TRANSPORT_MODES = ["walk", "taxi", "transit", "drive"] as const;
 export type TransportMode = (typeof TRANSPORT_MODES)[number];
 
+/**
+ * 大交通方式（transit entry 的移动方式）：flight=航班 / train=火车高铁 / drive=自驾 / bus=大巴。
+ * null = 未指定（保持直线段行为）。transitMode=drive 的城际段走真实路由拿公路 polyline/里程，
+ * 是自驾环线体验的关键；枚举刻意收窄（不加 other/ship），引导更准。
+ */
+export const TRANSIT_MODES = ["flight", "train", "drive", "bus"] as const;
+export type TransitMode = (typeof TRANSIT_MODES)[number];
+
 /** 变更由谁触发（人类直接编辑 or agent 经 MCP） */
 export const ACTORS = ["human", "agent"] as const;
 export type Actor = (typeof ACTORS)[number];
@@ -87,6 +95,20 @@ export const LngLatSchema = z.object({
 });
 export type LngLat = z.infer<typeof LngLatSchema>;
 
+/**
+ * 途经地节点（多城市/环线）：有序列表 = 用户意图的游览顺序，stops[0] = 主目的地。
+ * 「城市」建模为节点而非行政区——青海湖/大柴旦这类非行政区住宿点也是 stop。
+ * trips.destinationCity / cityCenter 保留为 stops[0] 的兼容镜像（同 selectedHotelCandidateId 镜像模式）。
+ * 环线闭合不落库：由末段 transit 讫点 == stops[0] 推断。
+ * center 为 null = 解析失败（网络/未找到），自愈时重解析。
+ */
+export const TripStopSchema = z.object({
+  name: z.string(),
+  adcode: z.string().nullable(),
+  center: LngLatSchema.nullable(),
+});
+export type TripStop = z.infer<typeof TripStopSchema>;
+
 /** 高德 POI 搜索结果里的候选 */
 export const PoiCandidateSchema = z.object({
   poiId: z.string(),
@@ -141,6 +163,8 @@ export const TripDtoSchema = z.object({
   cityAdcode: z.string().nullable(),
   geoProvider: z.enum(GEO_PROVIDERS),
   location: LngLatSchema.nullable(),
+  /** 有序途经地节点（多城市/环线）；单城市行程恒为 1 个元素，destinationCity/location 是 stops[0] 镜像 */
+  stops: z.array(TripStopSchema),
   startDate: z.string().nullable(),
   endDate: z.string().nullable(),
   /** @deprecated 兼容镜像：checkInDay 最早的已选定酒店候选 id；多酒店请看 hotelCandidates[].selected/checkInDay/checkOutDay */
@@ -168,6 +192,8 @@ export const PlaceDtoSchema = z.object({
   bookingUrl: z.string().nullable(),
   /** 联系电话 */
   phone: z.string().nullable(),
+  /** 归属途经地/城市展示名（多城市分组依据）：建点时自动填充（显式传 > 最近 stop ≤150km > null），可改 */
+  cityName: z.string().nullable(),
   amapPoiId: z.string().nullable(),
   sourceType: z.enum(SOURCE_TYPES),
   sourceUrl: z.string().nullable(),
@@ -215,6 +241,8 @@ export const EntryDtoSchema = z.object({
   fromName: z.string().nullable(),
   /** 讫点自由文本 */
   toName: z.string().nullable(),
+  /** 大交通方式（见 TRANSIT_MODES）；null=未指定（直线段）。drive=自驾：城际段走真实路由 */
+  transitMode: z.enum(TRANSIT_MODES).nullable(),
 });
 export type EntryDto = z.infer<typeof EntryDtoSchema>;
 
@@ -278,6 +306,11 @@ export type TripBundle = z.infer<typeof TripBundleSchema>;
 export const CreateTripInputSchema = z.object({
   title: z.string().min(1).max(120),
   destinationCity: z.string().min(1).max(60),
+  /**
+   * 有序途经地节点名列表（多城市/环线，如 ["西宁","茶卡","大柴旦"]），逐个解析中心 + 同侧校验。
+   * 缺省 = [destinationCity]（单城市，完全向后兼容）；提供时首元素即主目的地（镜像到 destinationCity）。
+   */
+  stops: z.array(z.string().min(1).max(60)).min(1).max(20).optional(),
   /** 显式指定地理 provider；缺省按目的地自动判定（国内→amap，海外→osm） */
   geoProvider: z.enum(GEO_PROVIDERS).optional(),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
@@ -306,6 +339,8 @@ export const CreatePlaceInputSchema = z.object({
   bookingUrl: HttpUrlSchema.nullable().optional(),
   /** 联系电话（含国家/区号更佳，如 +61 2 9250 7111） */
   phone: z.string().max(50).nullable().optional(),
+  /** 归属途经地/城市名（多城市行程建议从 search_poi 返回的 cityName 带过来；缺省服务端按最近 stop ≤150km 自动填充） */
+  cityName: z.string().max(120).nullable().optional(),
   amapPoiId: z.string().max(64).nullable().optional(),
   sourceType: z.enum(SOURCE_TYPES).default("manual"),
   sourceUrl: HttpUrlSchema.nullable().optional(),
@@ -365,6 +400,8 @@ export const AddEntryInputSchema = z
     toPlaceId: z.string().nullable().optional(),
     fromName: z.string().min(1).max(120).nullable().optional(),
     toName: z.string().min(1).max(120).nullable().optional(),
+    /** 大交通方式（仅 transit 有意义）；drive=自驾城际段走真实路由 */
+    transitMode: z.enum(TRANSIT_MODES).nullable().optional(),
   })
   .refine((v) => v.entryType !== "place" || !!v.placeId, {
     message: "entryType=place 时必须提供 placeId",
@@ -393,6 +430,8 @@ export const UpdateEntryInputSchema = z.object({
   toPlaceId: z.string().nullable().optional(),
   fromName: z.string().min(1).max(120).nullable().optional(),
   toName: z.string().min(1).max(120).nullable().optional(),
+  /** 大交通方式（仅 transit entry 可改）；null=清除恢复直线段 */
+  transitMode: z.enum(TRANSIT_MODES).nullable().optional(),
 });
 export type UpdateEntryInput = z.infer<typeof UpdateEntryInputSchema>;
 

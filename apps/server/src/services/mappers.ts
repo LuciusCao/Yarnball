@@ -7,6 +7,7 @@ import type {
   PlaceDto,
   TransportLegDto,
   TripDto,
+  TripStop,
 } from "@yarnball/shared";
 import type * as t from "../db/schema.js";
 
@@ -23,16 +24,22 @@ const iso = (d: Date | string): string =>
   d instanceof Date ? d.toISOString() : new Date(d).toISOString();
 
 export function toTripDto(row: TripRow): TripDto {
+  const location =
+    row.cityCenterLng != null && row.cityCenterLat != null
+      ? { lng: Number(row.cityCenterLng), lat: Number(row.cityCenterLat) }
+      : null;
+  // stops 缺省（迁移前旧行）时由镜像字段兜底构造 stops[0]，保证 DTO 恒非空
+  const stops =
+    (row.stops as TripStop[] | null) ??
+    [{ name: row.destinationCity, adcode: row.cityAdcode, center: location }];
   return {
     id: row.id,
     title: row.title,
     destinationCity: row.destinationCity,
     cityAdcode: row.cityAdcode,
     geoProvider: row.geoProvider as TripDto["geoProvider"],
-    location:
-      row.cityCenterLng != null && row.cityCenterLat != null
-        ? { lng: Number(row.cityCenterLng), lat: Number(row.cityCenterLat) }
-        : null,
+    location,
+    stops,
     startDate: row.startDate,
     endDate: row.endDate,
     selectedHotelCandidateId: row.selectedHotelCandidateId,
@@ -56,6 +63,7 @@ export function toPlaceDto(row: PlaceRow): PlaceDto {
     website: row.website,
     bookingUrl: row.bookingUrl,
     phone: row.phone,
+    cityName: row.cityName,
     amapPoiId: row.amapPoiId,
     sourceType: row.sourceType as PlaceDto["sourceType"],
     sourceUrl: row.sourceUrl,
@@ -93,6 +101,7 @@ export function toEntryDto(row: EntryRow): EntryDto {
     toPlaceId: row.toPlaceId,
     fromName: row.fromName,
     toName: row.toName,
+    transitMode: (row.transitMode as EntryDto["transitMode"]) ?? null,
   };
 }
 

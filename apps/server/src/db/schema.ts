@@ -24,6 +24,13 @@ export const trips = pgTable("trips", {
   geoProvider: text("geo_provider").notNull().default("osm"),
   cityCenterLng: numeric("city_center_lng", { precision: 10, scale: 6 }),
   cityCenterLat: numeric("city_center_lat", { precision: 10, scale: 6 }),
+  /**
+   * 有序途经地节点（TripStop[] = [{ name, adcode, center }]，多城市/环线）。
+   * destinationCity/cityAdcode/cityCenterLng/Lat 保留为 stops[0] 的兼容镜像，
+   * 旧前端/搜索/自愈逻辑零破坏（同 selected_hotel_candidate_id 镜像模式）；由 service 层同步维护。
+   * 单城市行程恒为单元素；环线闭合不落库（由末段 transit 讫点 == stops[0] 推断）。
+   */
+  stops: jsonb("stops"),
   startDate: text("start_date"), // YYYY-MM-DD
   endDate: text("end_date"),
   /**
@@ -58,6 +65,8 @@ export const places = pgTable(
     bookingUrl: text("booking_url"),
     /** 联系电话 */
     phone: text("phone"),
+    /** 归属途经地/城市展示名（多城市分组依据）：建点时自动填充（显式传 > 最近 stop ≤150km > null），可改 */
+    cityName: text("city_name"),
     amapPoiId: text("amap_poi_id"),
     sourceType: text("source_type").notNull().default("manual"),
     sourceUrl: text("source_url"),
@@ -119,6 +128,8 @@ export const entries = pgTable(
     toPlaceId: text("to_place_id").references(() => places.id, { onDelete: "set null" }),
     fromName: text("from_name"),
     toName: text("to_name"),
+    /** 大交通方式：flight|train|drive|bus；null=未指定（直线段）。drive=自驾：城际段走真实路由 */
+    transitMode: text("transit_mode"),
   },
   (t) => [
     index("entries_day_idx").on(t.dayId),

@@ -7,6 +7,7 @@ import {
   CreatePlaceInputSchema,
   LngLatSchema,
   SelectHotelInputSchema,
+  TRANSIT_MODES,
   UpdatePlaceInputSchema,
 } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
@@ -97,6 +98,8 @@ const AddTransitEntryInput = z.object({
   toPlaceId: z.string().nullable().optional(),
   fromName: z.string().min(1).max(120).nullable().optional(),
   toName: z.string().min(1).max(120).nullable().optional(),
+  /** 大交通方式：flight=航班 / train=火车高铁 / drive=自驾 / bus=大巴；缺省 null（直线段）。自驾环线城际段务必传 drive（走真实公路路线） */
+  transitMode: z.enum(TRANSIT_MODES).nullable().optional(),
   note: z.string().max(2000).nullable().optional(),
 });
 
@@ -123,6 +126,8 @@ const UpdateEntryInput = z.object({
   toPlaceId: z.string().nullable().optional(),
   fromName: z.string().min(1).max(120).nullable().optional(),
   toName: z.string().min(1).max(120).nullable().optional(),
+  /** 大交通方式（仅 transit entry 可改）：flight|train|drive|bus；null=清除恢复直线段 */
+  transitMode: z.enum(TRANSIT_MODES).nullable().optional(),
 });
 
 const MoveEntryInput = z.object({
@@ -253,7 +258,9 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
         userUiContext: uiContext,
         hint:
           `字段含义：entries[].position 为天内顺序（0 起）；dayIndex 从 1 开始。` +
-          ` entries[].entryType：place=地点节点，transit=大交通节点（航班/高铁，带 departTime/arriveTime 与 fromName/toName 或 fromPlaceId/toPlaceId 起讫点）。` +
+          ` trip.stops 为有序途经地节点（多城市/环线，stops[0] 是主目的地；单城市行程只有 1 个元素）。` +
+          ` entries[].entryType：place=地点节点，transit=大交通节点（航班/高铁/城际移动，带 departTime/arriveTime 与 fromName/toName 或 fromPlaceId/toPlaceId 起讫点；transitMode：flight|train|drive|bus，drive=自驾走真实公路路线）。` +
+          ` places[].cityName 为归属途经地/城市名（多城市分组依据）。` +
           ` places[].status：candidate=候选池（待用户确认），locked=用户已锁定（agent 不可改/删，只排 locked 的地点进每日行程）。` +
           ` places[].openingHours 为营业时间（排天硬约束），visitDurationMin 为预计游览/用餐分钟数（排天参考），bookingStatus 为预订状态（none|pending|booked）；website 官网、bookingUrl 预订链接、phone 电话、address 地址会展示在地点信息卡上。` +
           (overseas
@@ -267,7 +274,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "search_poi",
     {
       description:
-        "按关键词搜索真实地点（POI），返回名称、地址、精确坐标（gcj02）、poiId。**创建任何地点前必须先调这个工具**，用返回的 location 作为坐标——绝不自行填写或编造经纬度。",
+        "按关键词搜索真实地点（POI），返回名称、地址、精确坐标（gcj02）、poiId、cityName（归属城市）。**创建任何地点前必须先调这个工具**，用返回的 location 作为坐标——绝不自行填写或编造经纬度。多城市行程（trip.stops 多个节点）：搜目标城市的地点时务必传 city 参数（如搜「莫高窟」传 city=敦煌），并把返回的 cityName 带到 add_place。",
       inputSchema: SearchPoiInput.shape,
     },
     async ({ keyword, city }) => {
@@ -313,7 +320,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_place",
     {
       description:
-        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）、durationMin（建议游玩时长）和 openingHours（营业时间自由文本，如「09:00-17:00 周一闭馆」——排天硬约束，务必尽力填写）。visitDurationMin：预计游览/用餐分钟数，规划每日行程时的重要输入，景点和餐厅尽量填写。金额单位为行程币种。bookingStatus（none|pending|booked）可填但以用户在界面上的标记为准。**详情字段尽量收集**：website（官网）、bookingUrl（可直接下单/预约的预订链接）、phone（电话）、address（结构化地址）——这些会直接展示在地点信息卡上，酒店和需预约餐厅尤其重要。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上锁定（status=locked）后才用 add_place_to_day 排天。**",
+        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）、durationMin（建议游玩时长）和 openingHours（营业时间自由文本，如「09:00-17:00 周一闭馆」——排天硬约束，务必尽力填写）。visitDurationMin：预计游览/用餐分钟数，规划每日行程时的重要输入，景点和餐厅尽量填写。金额单位为行程币种。bookingStatus（none|pending|booked）可填但以用户在界面上的标记为准。**详情字段尽量收集**：website（官网）、bookingUrl（可直接下单/预约的预订链接）、phone（电话）、address（结构化地址）——这些会直接展示在地点信息卡上，酒店和需预约餐厅尤其重要。多城市行程：把 search_poi 返回的 cityName 原样带到 cityName 字段（归属途经地分组依据；不传则服务端按最近途经地自动填充）。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上锁定（status=locked）后才用 add_place_to_day 排天。**",
       inputSchema: McpCreatePlaceSchema.shape,
     },
     async (input) => {
@@ -431,7 +438,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_transit_entry",
     {
       description:
-        "添加大交通节点（transit entry：航班/高铁/城际移动，如「家 → 萧山机场」「杭州东站 → 市区酒店」）到某一天。起讫点各给一种：fromPlaceId/toPlaceId（行程内地点，走真实坐标参与当天路线锚定，推荐先 search_poi 建好站点 place）或 fromName/toName（自由文本，如「家」「浦东机场」，不产生交通段）。departTime/arriveTime 尽量给（HH:MM）——到达日的 arriveTime 约束当天可排容量，离开日的 departTime 是当天收口（最后一个景点要预留赶车缓冲）。到达 transit 排在当天第一位、离开 transit 排在当天最后一位。",
+        "添加大交通节点（transit entry：航班/高铁/城际移动，如「家 → 萧山机场」「杭州东站 → 市区酒店」）到某一天。起讫点各给一种：fromPlaceId/toPlaceId（行程内地点，走真实坐标参与当天路线锚定，推荐先 search_poi 建好站点 place）或 fromName/toName（自由文本，如「家」「浦东机场」，不产生交通段）。departTime/arriveTime 尽量给（HH:MM）——到达日的 arriveTime 约束当天可排容量，离开日的 departTime 是当天收口（最后一个景点要预留赶车缓冲）。到达 transit 排在当天第一位、离开 transit 排在当天最后一位。**多城市/环线行程：城市间移动也是 transit entry**（排在移动日当天首位，fromPlaceId/toPlaceId 引用两端城市的 place）；transitMode 传 drive（自驾环线城际段，走真实公路路线和里程）、train（火车/高铁）、flight（航班）、bus（大巴），缺省为直线段（适合航班/高铁）。环线闭合：最后一段 transit 的讫点回到主目的地（stops[0]）即自动视为环线闭合，无需特殊标记。",
       inputSchema: AddTransitEntryInput.shape,
     },
     async (input) => {
@@ -449,7 +456,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "update_entry",
     {
       description:
-        "修改某天行程中的条目：startTime（HH:MM）、durationMin（该次停留时长覆盖，分钟）、note；transit entry 还可改 departTime/arriveTime 与起讫点（fromPlaceId/toPlaceId/fromName/toName，传 null 清除）。",
+        "修改某天行程中的条目：startTime（HH:MM）、durationMin（该次停留时长覆盖，分钟）、note；transit entry 还可改 departTime/arriveTime、起讫点（fromPlaceId/toPlaceId/fromName/toName，传 null 清除）与 transitMode（flight|train|drive|bus，传 null 恢复直线段）。",
       inputSchema: UpdateEntryInput.shape,
     },
     async ({ entryId, ...patch }) => {

@@ -253,6 +253,147 @@ async function main() {
     );
     await api(`/chat-sessions/${mcpSession.id}`, { method: "DELETE" });
 
+    // 4.6 multi_city_flow：多城市服务端地基（stops 镜像 / cityName 填充 / transitMode=drive 真实路由段 / 多中心防编造）
+    console.log("-- multi_city_flow --");
+    // 单城市向后兼容：stops 恒为 stops[0] 镜像（destinationCity）
+    {
+      const { bundle } = await api(`/trips/${trip.id}`);
+      assert(
+        Array.isArray(bundle.trip.stops) && bundle.trip.stops.length === 1 && bundle.trip.stops[0].name === "杭州",
+        "single-city trip exposes stops = [destinationCity mirror]",
+      );
+    }
+
+    // 多城市行程（青甘环线迷你版：西宁-茶卡-大柴旦），顺序 = 用户指定
+    const { trip: mcTrip } = await api("/trips", {
+      method: "POST",
+      body: JSON.stringify({ title: "smoke-青甘迷你环线", destinationCity: "西宁", stops: ["西宁", "茶卡", "大柴旦"] }),
+    });
+    assert(
+      mcTrip.stops?.length === 3 &&
+        mcTrip.stops[0].name === "西宁" &&
+        mcTrip.stops[1].name === "茶卡" &&
+        mcTrip.stops[2].name === "大柴旦",
+      "multi-city trip keeps stops in user-specified order",
+    );
+    assert(mcTrip.destinationCity === "西宁", "destinationCity mirrors stops[0]");
+
+    // stop 中心依赖外部地理服务（网络不定）：DB 直连钉死确定性中心，只验证服务端逻辑不验证网络
+    const mcStops = [
+      { name: "西宁", adcode: "630100", center: { lng: 101.7782, lat: 36.6171 } },
+      { name: "茶卡", adcode: null, center: { lng: 99.0828, lat: 36.7902 } },
+      { name: "大柴旦", adcode: null, center: { lng: 95.3572, lat: 37.8534 } },
+    ];
+    await client.query(`UPDATE trips SET stops = $1::jsonb WHERE id = $2`, [JSON.stringify(mcStops), mcTrip.id]);
+
+    // 建点（human REST）：cityName 按最近 stop ≤150km 自动填充
+    const mkPlace = async (body: Record<string, unknown>) =>
+      (await api(`/trips/${mcTrip.id}/places`, { method: "POST", body: JSON.stringify(body) })).place;
+    const xz = await mkPlace({ name: "西宁站", category: "other", location: { lng: 101.8121, lat: 36.6203 } });
+    assert(xz.cityName === "西宁", "place near stops[0] auto-filled cityName=西宁");
+    const qhk = await mkPlace({ name: "茶卡盐湖", category: "attraction", location: { lng: 99.0833, lat: 36.7 } });
+    assert(qhk.cityName === "茶卡", "place near non-primary stop auto-filled cityName=茶卡");
+    const dcd = await mkPlace({ name: "大柴旦翡翠湖", category: "attraction", location: { lng: 95.3523, lat: 37.8499 } });
+    assert(dcd.cityName === "大柴旦", "place near 大柴旦 auto-filled cityName=大柴旦");
+    // 显式传 cityName 优先于自动填充；距所有 stop >150km 的中途点归属为 null（不阻断）
+    const explicit = await mkPlace({ name: "U型公路", category: "attraction", location: { lng: 97.2, lat: 37.3 }, cityName: "格尔木" });
+    assert(explicit.cityName === "格尔木", "explicit cityName wins over auto-fill");
+    const nowhere = await mkPlace({ name: "中途荒野点", category: "other", location: { lng: 97.2, lat: 37.3 } });
+    assert(nowhere.cityName === null, "place >150km from all stops gets cityName=null");
+
+    // 城际移动：day2 自驾段（transitMode=drive → 真实路由），day3 未指定（向后兼容直线段）
+    await api(`/trips/${mcTrip.id}/entries`, { method: "POST", body: JSON.stringify({ entryType: "place", placeId: xz.id, dayIndex: 1 }) });
+    const driveEntry = await api(`/trips/${mcTrip.id}/entries`, {
+      method: "POST",
+      body: JSON.stringify({ entryType: "transit", dayIndex: 2, position: 0, fromPlaceId: xz.id, toPlaceId: qhk.id, transitMode: "drive" }),
+    });
+    await api(`/trips/${mcTrip.id}/entries`, { method: "POST", body: JSON.stringify({ entryType: "place", placeId: qhk.id, dayIndex: 2 }) });
+    const plainEntry = await api(`/trips/${mcTrip.id}/entries`, {
+      method: "POST",
+      body: JSON.stringify({ entryType: "transit", dayIndex: 3, position: 0, fromPlaceId: qhk.id, toPlaceId: dcd.id }),
+    });
+    await api(`/trips/${mcTrip.id}/entries`, { method: "POST", body: JSON.stringify({ entryType: "place", placeId: dcd.id, dayIndex: 3 }) });
+
+    const { bundle: mcBundle } = await api(`/trips/${mcTrip.id}`);
+    const rideLeg = (entryId: string) =>
+      mcBundle.legs.find((l: any) => l.fromEntryId === entryId && l.toEntryId === entryId);
+    const driveLeg = rideLeg(driveEntry.entryId);
+    assert(driveLeg?.mode === "drive", "transitMode=drive ride leg uses real routing (mode=drive)");
+    assert(
+      Array.isArray(driveLeg?.polyline) && driveLeg.polyline.length >= 2 && driveLeg.distanceM > 0,
+      "drive ride leg carries polyline + distance (real route or fallback)",
+    );
+    assert(rideLeg(plainEntry.entryId)?.mode === "transit", "transit entry without transitMode keeps straight-line leg (mode=transit)");
+    const driveDto = mcBundle.entries.find((e: any) => e.id === driveEntry.entryId);
+    assert(driveDto?.transitMode === "drive", "entry DTO exposes transitMode");
+
+    // place entry 带 transit 字段 → 422（守卫纳入 transitMode）
+    {
+      const res = await fetch(`${BASE}/api/trips/${mcTrip.id}/entries`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ entryType: "place", placeId: xz.id, dayIndex: 1, transitMode: "drive" }),
+      });
+      assert(res.status === 422, "place entry with transitMode rejected (422)");
+    }
+
+    // agent 侧多中心防编造：MCP 直连（token 落库），距任一 stop ≤200km 放行、全超 200km 拒绝
+    const { createHash } = await import("node:crypto");
+    const mcpSessionId = "smoke-mcp-multicity";
+    await client.query(
+      `INSERT INTO chat_sessions (id, trip_id, agent_registry_id, agent_label, status)
+       VALUES ($1, $2, $3, $4, 'idle') ON CONFLICT (id) DO NOTHING`,
+      [mcpSessionId, mcTrip.id, fakeAgentId, "Fake Agent (smoke)"],
+    );
+    const mcpToken = "smoke-mcp-token-multicity";
+    await client.query(
+      `INSERT INTO agent_tokens (id, chat_session_id, token_hash)
+       VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
+      ["smoke-mcp-token-multicity", mcpSessionId, createHash("sha256").update(mcpToken).digest("hex")],
+    );
+    const mcpCall = async (method: string, params: unknown, id: number) => {
+      const res = await fetch(`${BASE}/mcp`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: `Bearer ${mcpToken}`,
+          "x-yarnball-session-id": mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      });
+      return (await res.json()) as any;
+    };
+    const initRes = await mcpCall(
+      "initialize",
+      { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "smoke", version: "0" } },
+      1,
+    );
+    assert(initRes.result?.serverInfo?.name === "yarnball", "mcp initialize ok (multi-city session)");
+    // 大柴旦旁边（距 stops[0] 西宁 ~590km，单中心旧逻辑必拒；多中心 ≤200km 放行）
+    const near = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "大柴旦魔鬼城", category: "attraction", location: { lng: 95.3, lat: 37.9 } } },
+      2,
+    );
+    const nearText: string = near.result?.content?.[0]?.text ?? "";
+    assert(near.result?.isError !== true, "agent place near non-primary stop accepted (multi-center check)");
+    assert(JSON.parse(nearText).place?.cityName === "大柴旦", "agent place cityName auto-filled to nearest stop");
+    // 上海外滩：距所有 stop >200km → 拒绝并引导 search_poi
+    const far = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "外滩", category: "attraction", location: { lng: 121.49, lat: 31.24 } } },
+      3,
+    );
+    const farText: string = far.result?.content?.[0]?.text ?? "";
+    assert(
+      far.result?.isError === true && farText.includes("search_poi"),
+      "agent place >200km from all stops rejected with search_poi guidance",
+    );
+
+    await api(`/trips/${mcTrip.id}`, { method: "DELETE" });
+    console.log("  ✓ multi-city trip cleaned up");
+
     // 5. 清理 trip
     await api(`/trips/${trip.id}`, { method: "DELETE" });
     console.log("  ✓ trip cleaned up");
