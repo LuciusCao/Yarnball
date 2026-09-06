@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { ChatMessageDto } from "@yarnball/shared";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, max } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { chatChannel, type EventBus } from "../events.js";
 import { env } from "../env.js";
 import { MCP_SERVER_NAME, SESSION_ID_HEADER, mintSessionToken, revokeSessionTokens } from "../mcp/tools.js";
+import { toChatSessionDto } from "../services/mappers.js";
 import { bootstrapPrompt, buildReplayPrompt, mcpHintMessage } from "./prompts.js";
 import { decidePermission, parkPermission, type ParkedPermission } from "./permissions.js";
 import type { PendingPermission, PermissionOutcome } from "./types.js";
@@ -28,6 +29,10 @@ import type { PendingPermission, PermissionOutcome } from "./types.js";
  * resume：若上次的 acpSessionId 存在且 agent 声明 loadSession，改为
  * ctx.request("session/load", ...)。SDK 1.4 没有 load 的 builder 封装，
  * 直接发原始请求；成功后同样用 ActiveSession 的 prompt 接口继续对话。
+ *
+ * 断线自愈：句柄只活在内存，server 重启后 DB 的 status 与内存脱节。
+ * 构造时 sweep 校正残留状态；REST 层在句柄缺失时走 ensureSession 懒恢复
+ * （session/new + 压缩转录回放），恢复成功再入队 prompt，用户无感。
  */
 
 const PROMPT_TIMEOUT_MS = 60 * 60 * 1000;
@@ -36,12 +41,37 @@ const MAX_ACTIVE_SESSIONS = 32;
 
 export class AcpSessionManager {
   private handles = new Map<string, SessionHandle>();
+  /** 进行中的懒恢复（chatSessionId → promise），并发 prompt 共享同一次恢复 */
+  private recovering = new Map<string, Promise<SessionHandle>>();
 
   constructor(
     private db: Db,
     private bus: EventBus,
     private markMcpObserved: (chatSessionId: string) => void,
-  ) {}
+  ) {
+    // 启动 sweep：句柄只活在内存，server 重启后 DB 里残留的 running/starting 都是僵尸状态
+    void this.sweepStaleStatuses();
+  }
+
+  /**
+   * server 重启后的状态校正：
+   * - running → idle（回合被中断，下条 prompt 懒恢复即可继续）
+   * - starting → error（启动被中断；prompt/reconnect 仍会懒恢复，标 error 让 UI 给出重连入口）
+   */
+  private async sweepStaleStatuses() {
+    try {
+      await this.db
+        .update(schema.chatSessions)
+        .set({ status: "idle", lastError: "server 重启，连接已断开；发送消息时会自动重连", updatedAt: new Date() })
+        .where(eq(schema.chatSessions.status, "running"));
+      await this.db
+        .update(schema.chatSessions)
+        .set({ status: "error", lastError: "server 重启，会话启动被中断；发送消息或点「重新连接」会自动重连", updatedAt: new Date() })
+        .where(eq(schema.chatSessions.status, "starting"));
+    } catch (err) {
+      console.warn("[acp] stale status sweep failed:", err);
+    }
+  }
 
   get(chatSessionId: string): SessionHandle | undefined {
     return this.handles.get(chatSessionId);
@@ -49,6 +79,29 @@ export class AcpSessionManager {
 
   get size(): number {
     return this.handles.size;
+  }
+
+  /**
+   * 懒恢复：句柄缺失（server 重启 / agent 进程崩溃后被清理）时按 DB 行重建 agent 子进程，
+   * 走 startSession 的 session/new + 压缩转录回放路径。并发调用共享同一次恢复。
+   */
+  async ensureSession(row: typeof schema.chatSessions.$inferSelect): Promise<SessionHandle> {
+    const existing = this.handles.get(row.id);
+    if (existing) return existing;
+    const inflight = this.recovering.get(row.id);
+    if (inflight) return inflight;
+    const promise = (async () => {
+      await this.startSession(row);
+      const handle = this.handles.get(row.id);
+      if (!handle) throw new Error("会话句柄未建立");
+      return handle;
+    })();
+    this.recovering.set(row.id, promise);
+    try {
+      return await promise;
+    } finally {
+      this.recovering.delete(row.id);
+    }
   }
 
   async startSession(row: typeof schema.chatSessions.$inferSelect): Promise<void> {
@@ -75,7 +128,9 @@ export class AcpSessionManager {
     );
     this.handles.set(row.id, handle);
     try {
-      await handle.start();
+      // start() 挂起整个连接生命周期，不能 await；等 whenReady（session/new 完成即就绪）
+      void handle.start();
+      await handle.whenReady;
     } catch (err) {
       this.handles.delete(row.id);
       throw err;
@@ -88,8 +143,19 @@ export class AcpSessionManager {
     await handle?.close(reason);
   }
 
+  /**
+   * server 关停：进程死了但会话可恢复（acpSessionId + 转录回放都在 DB），
+   * 不标 closed（closed = 用户主动断开），标 idle + 提示，重启后 prompt 懒恢复无感继续。
+   */
   async stopAll() {
-    await Promise.allSettled([...this.handles.values()].map((h) => h.close("server shutdown")));
+    await Promise.allSettled(
+      [...this.handles.values()].map((h) =>
+        h.close("server shutdown", {
+          status: "idle",
+          lastError: "server 重启，连接已断开；发送消息时会自动重连",
+        }),
+      ),
+    );
     this.handles.clear();
   }
 }
@@ -104,6 +170,14 @@ export class SessionHandle {
   private activeSession: acp.ActiveSession | null = null;
   /** 挂起的 connectWith promise；close() 时 resolve 以退出 connectWith 回调 */
   private releaseConnect: (() => void) | null = null;
+
+  /**
+   * 就绪信号：session/new 完成、状态到 idle 时 resolve；启动失败 / 提前关闭时 reject。
+   * start() 本身挂起整个连接生命周期，调用方要等待「可用」必须等这个。
+   */
+  readonly whenReady: Promise<void>;
+  private readyResolve!: () => void;
+  private readyReject!: (err: Error) => void;
 
   private promptQueue: { text: string; resolve: () => void; reject: (err: Error) => void }[] = [];
   private draining = false;
@@ -133,13 +207,27 @@ export class SessionHandle {
     private sessionRow: typeof schema.chatSessions.$inferSelect,
     private agentSpec: { command: string; args: string[] },
     private markMcpObserved: (chatSessionId: string) => void,
-  ) {}
+  ) {
+    this.whenReady = new Promise<void>((resolve, reject) => {
+      this.readyResolve = resolve;
+      this.readyReject = reject;
+    });
+    // startSession 之外的旁观者不 await whenReady，拒绝时不触发 unhandledRejection
+    this.whenReady.catch(() => {});
+  }
 
   // ---------- 生命周期 ----------
 
   async start(): Promise<void> {
     const sessionId = this.sessionRow.id;
     await this.setStatus("starting");
+
+    // 懒恢复重建句柄时 seq 从 DB 续号：(session_id, seq) 有唯一索引，从 0 计数会撞历史消息
+    const [seqRow] = await this.db
+      .select({ maxSeq: max(schema.chatMessages.seq) })
+      .from(schema.chatMessages)
+      .where(eq(schema.chatMessages.sessionId, sessionId));
+    this.seq = seqRow?.maxSeq ?? 0;
 
     this.cwd = await mkdtemp(join(tmpdir(), `yarnball-${sessionId.slice(0, 8)}-`));
     const child = spawn(this.agentSpec.command, this.agentSpec.args, {
@@ -153,6 +241,18 @@ export class SessionHandle {
       const text = chunk.toString().trim();
       if (text) console.debug(`[acp:${sessionId}] stderr: ${text.slice(0, 500)}`);
     });
+    child.on("error", (err) => {
+      // spawn 失败（command 不存在等）：无 exit 事件，必须单独兜底，否则异常冒泡崩 server
+      if (!this.closed) {
+        void this.appendMessage({
+          turnId: null,
+          kind: "error",
+          content: { text: `agent 进程启动失败：${err.message}。请检查设置页的 agent 命令配置。` },
+        });
+        void this.setStatus("error", `agent 进程启动失败：${err.message}`);
+        this.readyReject(err);
+      }
+    });
     child.on("exit", (code, signal) => {
       if (!this.closed) {
         void this.appendMessage({
@@ -163,6 +263,7 @@ export class SessionHandle {
           },
         });
         void this.setStatus("error", `agent 进程退出 code=${code}`);
+        this.readyReject(new Error(`agent 进程退出 code=${code}`));
       }
     });
 
@@ -193,7 +294,9 @@ export class SessionHandle {
 
         await this.openSession(ctx, initResult, mcpServer);
 
-        await this.setStatus("idle");
+        // 启动/重连成功：清掉此前的 lastError（如 sweep 或自动重连失败留下的提示）
+        await this.setStatus("idle", null);
+        this.readyResolve();
         this.consumeUpdates();
 
         // 挂起直到 close()；connectWith 回调返回会关闭连接
@@ -202,6 +305,7 @@ export class SessionHandle {
         });
       })
       .catch(async (err) => {
+        this.readyReject(err as Error);
         if (this.closed) return;
         console.error(`[acp:${sessionId}] connection error:`, err);
         await this.appendMessage({
@@ -259,9 +363,12 @@ export class SessionHandle {
     return buildReplayPrompt(messages);
   }
 
-  async close(reason: string): Promise<void> {
+  /** final 缺省 closed（用户主动断开/行程删除）；server 关停时传 idle 保可恢复语义 */
+  async close(reason: string, final: { status: string; lastError?: string | null } = { status: "closed" }): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    // 启动途中被关：放行 whenReady 的等待方（已 resolve 时为 no-op）
+    this.readyReject(new Error(`session closed: ${reason}`));
 
     // 停靠中的 permission 全部结算为拒绝，防止挂死 agent
     this.settleAllPermissions();
@@ -287,7 +394,7 @@ export class SessionHandle {
 
     if (this.cwd) await rm(this.cwd, { recursive: true, force: true }).catch(() => {});
     await revokeSessionTokens(this.db, this.sessionRow.id);
-    await this.setStatus("closed");
+    await this.setStatus(final.status, final.lastError);
   }
 
   // ---------- prompt ----------
@@ -650,12 +757,23 @@ export class SessionHandle {
 
   // ---------- DB helpers ----------
 
-  private async setStatus(status: string, lastError?: string) {
-    await this.db
-      .update(schema.chatSessions)
-      .set({ status, ...(lastError !== undefined ? { lastError } : {}), updatedAt: new Date() })
-      .where(eq(schema.chatSessions.id, this.sessionRow.id))
-      .catch((err) => console.warn(`[acp:${this.sessionRow.id}] setStatus failed:`, err));
+  /** 状态落库 + SSE 推送 session 快照（前端状态灯/重连提示实时刷新，不必等轮询） */
+  private async setStatus(status: string, lastError?: string | null) {
+    try {
+      await this.db
+        .update(schema.chatSessions)
+        .set({ status, ...(lastError !== undefined ? { lastError } : {}), updatedAt: new Date() })
+        .where(eq(schema.chatSessions.id, this.sessionRow.id));
+      const [row] = await this.db
+        .select()
+        .from(schema.chatSessions)
+        .where(eq(schema.chatSessions.id, this.sessionRow.id));
+      if (row) {
+        this.bus.publish(chatChannel(this.sessionRow.id), { type: "session", session: toChatSessionDto(row) });
+      }
+    } catch (err) {
+      console.warn(`[acp:${this.sessionRow.id}] setStatus failed:`, err);
+    }
   }
 
   private async appendMessage(
