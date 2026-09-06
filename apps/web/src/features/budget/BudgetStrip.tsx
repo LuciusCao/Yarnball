@@ -12,8 +12,9 @@ import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 
 /**
- * 预算条 —— 横切关注点：常驻左面板顶部，跨 酒店/餐饮/门票 汇总。
+ * 预算条 —— 横切关注点：常驻左面板顶部，跨 住宿/美食/门票 汇总。
  * 收起时一行摘要（总花费/预算/剩余 + 未定价警示），展开显示分类条与编辑。
+ * 口径：住宿 = 每晚价 × 晚数（不按人数计）；美食/门票只计已加入行程的地点 × 人数。
  */
 export function BudgetStrip({
   tripId,
@@ -95,21 +96,23 @@ export function BudgetStrip({
         <div className="mt-2.5 space-y-2 border-t border-slate-900/8 pt-2.5">
           <BudgetRow
             label="住宿"
-            detail={summary.hotelSelected ? `${summary.nights} 晚 × ${summary.travelerCount} 人行程` : "未选酒店"}
+            detail={
+              summary.hotelSelected ? `${summary.nights} 晚 · 每晚价 × 晚数` : "未加入酒店"
+            }
             value={summary.hotelCny != null ? formatMoney(summary.hotelCny, cur) : "—"}
             color="bg-red-400"
             max={Math.max(summary.totalCny, summary.budgetCny ?? 0)}
           />
           <BudgetRow
-            label="餐饮"
-            detail="人均 × 人数"
+            label="美食"
+            detail="已加入 · 人均 × 人数"
             value={formatMoney(summary.diningCny, cur)}
             color="bg-orange-400"
             max={Math.max(summary.totalCny, summary.budgetCny ?? 0)}
           />
           <BudgetRow
             label="门票/活动"
-            detail="单价 × 人数"
+            detail="已加入 · 单价 × 人数"
             value={formatMoney(summary.ticketsCny, cur)}
             color="bg-blue-400"
             max={Math.max(summary.totalCny, summary.budgetCny ?? 0)}
