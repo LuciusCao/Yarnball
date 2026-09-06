@@ -1097,7 +1097,8 @@ export class TripService {
     };
   }
 
-  /** 顺路度分析（不落库）：把 place 插入某天每个位置的时间增量 + 最优位置。酒店锚点按天解析，换酒店日首尾锚点不同。
+  /** 顺路度分析（不落库）：把 place 插入某天每个位置的时间增量 + 最优位置。酒店锚点按天解析，换酒店日首尾锚点不同；
+   *  中间空洞夜仅首锚点（尾端开放，不假设返回已退房酒店）。
    *  transit entry 不参与插入分析（时间固定、不产生顺路增量），position 语义按 place entry 序列计。 */
   async analyzeDetour(tripId: string, placeId: string, dayIndex: number) {
     const [place] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
@@ -1140,7 +1141,9 @@ export class TripService {
     const switchDay =
       anchors.startPlaceId != null && anchors.endPlaceId != null && anchors.startPlaceId !== anchors.endPlaceId;
 
-    // 坐标矩阵：同酒店锚点 [酒店, ...entries, 目标]；换酒店日 [旧酒店, ...entries, 新酒店, 目标]；无锚点 [...entries, 目标]
+    // 坐标矩阵：同酒店锚点 [酒店, ...entries, 目标]；换酒店日 [旧酒店, ...entries, 新酒店, 目标]；
+    // 仅首锚点（中间空洞夜：前一晚有酒店、当晚无住宿）[酒店, ...entries, 目标] 且尾端开放；
+    // 无锚点 [...entries, 目标]
     const entryCoords = entries.map((e) => {
       const p = placeById.get(e.placeId!)!;
       return { lng: Number(p.lng), lat: Number(p.lat) };
@@ -1150,12 +1153,15 @@ export class TripService {
     const startCoord = coordOf(startHotel);
     const endCoord = coordOf(endHotel);
     const targetCoord = { lng: Number(target.lng), lat: Number(target.lat) };
+    const startOnlyAnchored = hotelAnchored && startCoord != null && endCoord == null;
     const points =
       hotelAnchored && startCoord && endCoord
         ? switchDay
           ? [startCoord, ...entryCoords, endCoord, targetCoord]
           : [startCoord, ...entryCoords, targetCoord]
-        : [...entryCoords, targetCoord];
+        : startOnlyAnchored
+          ? [startCoord, ...entryCoords, targetCoord]
+          : [...entryCoords, targetCoord];
     const matrix = await this.buildDurationMatrix(trip.geoProvider, points);
     const targetIdx = points.length - 1;
     const hotelIdx = hotelAnchored ? 0 : undefined;
@@ -1164,7 +1170,15 @@ export class TripService {
     const base = hotelAnchored ? 1 : 0;
     const chain = entries.map((_, i) => base + i);
 
-    const options = insertionIncrements(chain, targetIdx, matrix, hotelIdx, endHotelIdx).map((o) => ({
+    // 仅首锚点（中间空洞夜）：酒店钉在链首（本身不是可插入位置），尾端开放——与 recalcDayLegs 一致
+    // （当晚无住宿不生成返回段），不能按环路（默认 endAnchorIdx=anchorIdx）也不能按无锚点算。
+    // 把酒店作为 chain[0] 走无锚点插入分析，再剔除「插到酒店前」并把 position 平移回 entry 序列
+    const increments = startOnlyAnchored
+      ? insertionIncrements([0, ...chain], targetIdx, matrix)
+          .filter((o) => o.position > 0)
+          .map((o) => ({ position: o.position - 1, incrementS: o.incrementS }))
+      : insertionIncrements(chain, targetIdx, matrix, hotelIdx, endHotelIdx);
+    const options = increments.map((o) => ({
       position: o.position,
       incrementS: o.incrementS,
       // 插在 position k = 跟在原链路第 k-1 个 entry 后面；k=0 时锚定酒店则"从（首锚点）酒店出发后"

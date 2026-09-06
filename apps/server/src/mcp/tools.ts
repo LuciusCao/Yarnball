@@ -637,7 +637,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "set_budget",
     {
       description:
-        "设置行程总预算、出行人数和币种（如 AUD/USD/CNY）。预算面板会自动按酒店每晚×晚数、餐厅人均×人数、门票×人数汇总对比。用户提到预算时调这个。",
+        "设置行程总预算、出行人数和币种（如 AUD/USD/CNY）。预算面板自动汇总对比：住宿按已选定酒店每晚价×晚数（不按人数计），美食/门票只计已加入行程（locked）的地点（餐厅人均×人数、门票单价×人数），候选池未加入项不计入；已选定未填价酒店与已加入未填价地点计入未定价提醒。用户提到预算时调这个。",
       inputSchema: SetBudgetInput.shape,
     },
     async (input) => {
