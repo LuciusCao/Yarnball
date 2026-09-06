@@ -8,6 +8,7 @@ import {
   Crosshair,
   ExternalLink,
   Globe,
+  Hourglass,
   Link2,
   Lock,
   LockOpen,
@@ -24,7 +25,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { formatMoney, type BudgetSummary, type ChatSessionDto, type PlaceDto } from "@yarnball/shared";
+import { formatMoney, formatVisitDuration, type BudgetSummary, type ChatSessionDto, type PlaceDto } from "@yarnball/shared";
 import { api } from "../api/client";
 import { api as uxApi } from "../lib/api";
 import { useTripStore } from "../stores/tripStore";
@@ -375,9 +376,10 @@ export function TripPage() {
               )
             )}
           </div>
-          {/* 详情块（M26）：地址/营业时间/电话/官网/预订链接，有值才显示；外链新窗口打开 */}
+          {/* 详情块（M26）：地址/营业时间/预计游览时长/电话/官网/预订链接，有值才显示；外链新窗口打开 */}
           {(selectedPlace.address ||
             openingHoursOf(selectedPlace) ||
+            selectedPlace.visitDurationMin != null ||
             selectedPlace.phone ||
             selectedPlace.website ||
             selectedPlace.bookingUrl) && (
@@ -392,6 +394,12 @@ export function TripPage() {
                 <p className="flex items-start gap-1.5">
                   <Clock className="mt-0.5 size-3 shrink-0 text-slate-400" />
                   <span>{openingHoursOf(selectedPlace)}</span>
+                </p>
+              )}
+              {selectedPlace.visitDurationMin != null && (
+                <p className="flex items-center gap-1.5">
+                  <Hourglass className="size-3 shrink-0 text-slate-400" />
+                  <span>{formatVisitDuration(selectedPlace.visitDurationMin)}</span>
                 </p>
               )}
               {selectedPlace.phone && (

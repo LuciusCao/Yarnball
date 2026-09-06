@@ -123,6 +123,14 @@ export function formatMoney(amount: number | null | undefined, currency = "CNY")
   return `${CURRENCY_SYMBOLS[currency] ?? currency} ${amount.toLocaleString("zh-CN")}`;
 }
 
+/** 预计游览/用餐时长展示：不足 1 小时显示「约 X 分钟」，否则「约 X 小时」（半小时粒度） */
+export function formatVisitDuration(minutes: number | null | undefined): string {
+  if (minutes == null || minutes <= 0) return "";
+  if (minutes < 60) return `约 ${minutes} 分钟`;
+  const hours = minutes / 60;
+  return `约 ${Number.isInteger(hours) ? hours : hours.toFixed(1)} 小时`;
+}
+
 // ---------- 实体 DTO（API 返回形状） ----------
 
 export const TripDtoSchema = z.object({
@@ -164,6 +172,8 @@ export const PlaceDtoSchema = z.object({
   sourceUrl: z.string().nullable(),
   notes: z.string().nullable(),
   durationMin: z.number().nullable(),
+  /** 预计游览/用餐分钟数（景点/美食的参观时长预估，规划每日行程的参考输入；展示为「约 X 小时」） */
+  visitDurationMin: z.number().nullable(),
   /** 价格：餐厅=人均 / 景点=门票 / 酒店=每晚，币种为行程 currency */
   priceCny: z.number().nullable(),
   /** 预约方式（平台/电话/网站 + 提前天数建议） */
@@ -290,6 +300,8 @@ export const CreatePlaceInputSchema = z.object({
   sourceUrl: z.string().url().max(500).nullable().optional(),
   notes: z.string().max(4000).nullable().optional(),
   durationMin: z.number().int().min(0).max(24 * 60).nullable().optional(),
+  /** 预计游览/用餐分钟数（景点/美食尽量填写；规划每日行程的重要输入） */
+  visitDurationMin: z.number().int().min(0).max(24 * 60).nullable().optional(),
   priceCny: z.number().min(0).nullable().optional(),
   bookingInfo: z.string().max(2000).nullable().optional(),
   /** 营业时间（v1 自由文本，如「09:00-17:00 周一闭馆」） */

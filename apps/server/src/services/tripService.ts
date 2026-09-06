@@ -320,6 +320,7 @@ export class TripService {
         sourceUrl: input.sourceUrl ?? null,
         notes: input.notes ?? null,
         durationMin: input.durationMin ?? null,
+        visitDurationMin: input.visitDurationMin ?? null,
         priceCny: input.priceCny != null ? Math.round(input.priceCny) : null,
         bookingInfo: input.bookingInfo ?? null,
         openingHours: input.openingHours ?? null,
@@ -379,6 +380,7 @@ export class TripService {
     if (input.sourceUrl !== undefined) patch.sourceUrl = input.sourceUrl ?? null;
     if (input.notes !== undefined) patch.notes = input.notes ?? null;
     if (input.durationMin !== undefined) patch.durationMin = input.durationMin ?? null;
+    if (input.visitDurationMin !== undefined) patch.visitDurationMin = input.visitDurationMin ?? null;
     if (input.priceCny !== undefined)
       patch.priceCny = input.priceCny != null ? Math.round(input.priceCny) : null;
     if (input.bookingInfo !== undefined) patch.bookingInfo = input.bookingInfo ?? null;

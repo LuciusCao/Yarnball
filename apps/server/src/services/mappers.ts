@@ -61,6 +61,7 @@ export function toPlaceDto(row: PlaceRow): PlaceDto {
     sourceUrl: row.sourceUrl,
     notes: row.notes,
     durationMin: row.durationMin,
+    visitDurationMin: row.visitDurationMin,
     priceCny: row.priceCny,
     bookingInfo: row.bookingInfo,
     openingHours: row.openingHours,

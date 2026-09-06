@@ -63,6 +63,8 @@ export const places = pgTable(
     sourceUrl: text("source_url"),
     notes: text("notes"),
     durationMin: integer("duration_min"),
+    /** 预计游览/用餐分钟数（景点/美食的参观时长预估，排天参考输入） */
+    visitDurationMin: integer("visit_duration_min"),
     priceCny: integer("price_cny"),
     bookingInfo: text("booking_info"),
     /** 营业时间（v1 自由文本，如「09:00-17:00 周一闭馆」） */
