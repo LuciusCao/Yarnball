@@ -30,8 +30,10 @@ import {
 } from "./hotelStays";
 
 /**
- * 候选池面板 —— 所有「未排期」地点的大本营（整合原 HotelPanel 的候选管理 + DiningPanel 的清单）。
+ * 候选池面板 —— 全部未删地点的大本营（整合原 HotelPanel 的候选管理 + DiningPanel 的清单）。
  * 按 酒店/景点/美食/其他 分组；每项可加入行程（=确认要去，加入后才排日程）、删除；
+ * 已排期地点也进池（M20）：徽章「已加入」+ agent 推荐标记，排在各组候选之前，
+ * 「移出行程」撤销其全部日程 entry（POST /api/places/:id/unschedule），place 退回候选态不删除；
  * 酒店组支持加入多家酒店（M10 多酒店）：每家已加入酒店带 入住第N天/离店第M天 选择器，
  * 区间互相冲突的选项禁用并提示（服务端同样校验，见 M9 契约）。
  * 预订状态（M11）：每项显示 无需预订/待预订/已预订 徽章，locked 地点可点选流转；
@@ -74,16 +76,19 @@ export function CandidatesPanel({
   const cur = bundle.trip.currency;
   const scheduledPlaceIds = new Set(bundle.entries.map((e) => e.placeId));
 
-  /** 未排期地点按组归桶（酒店走 hotelCandidates 以拿到候选 id 与每晚价） */
+  /** 未排期 + 已排期地点都按组归桶（M20：已排期地点也进候选池，显示「已加入」可移出；酒店走 hotelCandidates 以拿到候选 id 与每晚价） */
   const grouped: Record<GroupKey, PlaceDto[]> = { hotel: [], attraction: [], dining: [], other: [] };
   for (const place of bundle.places) {
-    if (scheduledPlaceIds.has(place.id)) continue;
     for (const key of GROUP_ORDER) {
       if (GROUP_META[key].categories.includes(place.category)) {
         grouped[key].push(place);
         break;
       }
     }
+  }
+  // 已加入（已排期）的排在各组候选之前
+  for (const key of GROUP_ORDER) {
+    grouped[key].sort((a, b) => Number(scheduledPlaceIds.has(b.id)) - Number(scheduledPlaceIds.has(a.id)));
   }
   const hotelCandByPlaceId = new Map(bundle.hotelCandidates.map((h) => [h.placeId, h]));
   /** 多酒店（M10）：已选定住宿区间（含 legacy 单选定兜底），candidateId → stay */
@@ -124,6 +129,19 @@ export function CandidatesPanel({
     try {
       await candidatesApi.deletePlace(place.id);
       toast.success(`已删除「${place.name}」`);
+      onDataChanged();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 移出行程（M20：已排期地点撤销全部日程 entry，退回候选态；place 本身保留） */
+  async function unschedule(place: PlaceDto) {
+    setBusy(true);
+    try {
+      await candidatesApi.unschedulePlace(place.id);
       onDataChanged();
     } catch (err) {
       toast.error((err as Error).message);
@@ -266,9 +284,12 @@ export function CandidatesPanel({
                     ? (hotelCand?.pricePerNight ?? place.priceCny)
                     : place.priceCny;
                 const selected = place.id === selectedPlaceId;
+                /** 已排期（M20：也进候选池，徽章「已加入」+ agent 推荐标记，可「移出行程」撤销排期） */
+                const scheduled = scheduledPlaceIds.has(place.id);
 
                 // 是否有徽章要展示（没有就不渲染徽章行，避免多余间距）
-                const showBadges = place.createdBy === "agent" || (locked && !isHotel) || booking !== "none";
+                const showBadges =
+                  place.createdBy === "agent" || scheduled || (locked && !isHotel) || booking !== "none";
 
                 return (
                   <div
@@ -277,7 +298,9 @@ export function CandidatesPanel({
                     className={`cursor-pointer rounded-card border p-3 shadow-card transition-colors ${
                       selected
                         ? "border-scheduled/40 bg-scheduled/8 ring-1 ring-scheduled/30"
-                        : isSelectedHotel
+                        : scheduled
+                          ? "border-scheduled/30 bg-scheduled/5"
+                          : isSelectedHotel
                           ? "border-hotelpin/40 bg-hotelpin/8 ring-1 ring-hotelpin/30"
                           : pendingLocked
                             ? "border-orange-400 bg-orange-50/70 ring-1 ring-orange-300"
@@ -313,7 +336,11 @@ export function CandidatesPanel({
                                 agent 推荐
                               </Badge>
                             )}
-                            {locked && !isHotel && <Badge variant="locked">已加入</Badge>}
+                            {scheduled ? (
+                              <Badge variant="scheduled">已加入</Badge>
+                            ) : (
+                              locked && !isHotel && <Badge variant="locked">已加入</Badge>
+                            )}
                             {locked ? (
                               <button
                                 title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
@@ -396,14 +423,20 @@ export function CandidatesPanel({
                           </button>
                         )}
                         <div className="flex gap-1">
-                          {/* POI 的加入/移出开关（M20 话术）；酒店不走这里——主按钮「加入行程」已涵盖 */}
-                          {!isHotel && (
+                          {/* POI 的加入/移出开关（M20 话术）；酒店不走这里——主按钮「加入行程」已涵盖（已排期酒店除外：给移出出口） */}
+                          {(!isHotel || scheduled) && (
                             <button
-                              title={locked ? "移出行程（退回候选池，不再必排进日程）" : "加入行程（确认要去，排日程时必排）"}
+                              title={
+                                scheduled
+                                  ? "移出行程（撤销排入的日程，退回候选池）"
+                                  : locked
+                                    ? "移出行程（退回候选池，不再必排进日程）"
+                                    : "加入行程（确认要去，排日程时必排）"
+                              }
                               disabled={busy}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                void toggleLock(place);
+                                void (scheduled ? unschedule(place) : toggleLock(place));
                               }}
                               className={`flex size-7 items-center justify-center rounded-lg transition-colors disabled:opacity-50 ${
                                 locked
