@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   BedDouble,
   CalendarCheck,
+  CalendarMinus,
   Landmark,
   Lock,
   LockOpen,
@@ -444,7 +445,13 @@ export function CandidatesPanel({
                                   : "text-slate-400 hover:bg-slate-900/8 hover:text-locked"
                               }`}
                             >
-                              {locked ? <Lock className="size-3.5" /> : <LockOpen className="size-3.5" />}
+                              {scheduled ? (
+                                <CalendarMinus className="size-3.5" />
+                              ) : locked ? (
+                                <Lock className="size-3.5" />
+                              ) : (
+                                <LockOpen className="size-3.5" />
+                              )}
                             </button>
                           )}
                           <button

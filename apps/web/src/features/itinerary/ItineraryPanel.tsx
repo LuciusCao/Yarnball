@@ -364,19 +364,15 @@ export function ItineraryPanel({
                   : null;
                 return (
                   <li key={entry.id}>
-                    {/* 离开日大交通端点（M20）：末 entry 为 transit 离开时，在卡片前渲染「前往 机场/车站」 */}
+                    {/* 离开日大交通端点（M20）：末 entry 为 transit 离开时，在卡片前渲染「前往 机场/车站」；
+                        到达车站时刻 ≈ transit 的 departTime（startMin），恒按估算渲染（~ 前缀） */}
                     {kind && endTransitItem != null && i === timeline.length - 1 && (
                       <TransitAnchorRow
                         direction="return"
                         kind={kind}
                         name={transitFromName(entry, placeById) ?? "出发地"}
-                        timeMin={
-                          startMin -
-                          Math.round(
-                            ((i > 0 ? legAfter.get(timeline[i - 1].entry.id)?.durationS : null) ?? 0) / 60,
-                          )
-                        }
-                        estimated={estimated}
+                        timeMin={startMin}
+                        estimated
                         onSelect={
                           entry.fromPlaceId ? () => onSelectPlace(entry.fromPlaceId!) : undefined
                         }

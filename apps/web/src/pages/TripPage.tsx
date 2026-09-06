@@ -324,10 +324,10 @@ export function TripPage() {
               ✕
             </button>
           </div>
-          {/* 状态徽章：已排期 > 已加入 > 候选（消费 M13 令牌变体）；agent 建的地点带推荐标记 */}
+          {/* 状态徽章：排期中（scheduled 蓝）> 已加入（locked 金）> 候选（消费 M13 令牌变体，M20 措辞统一为「已加入」）；agent 建的地点带推荐标记 */}
           <div className="mt-1.5 flex flex-wrap gap-1">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
-              <Badge variant="scheduled">已排期</Badge>
+              <Badge variant="scheduled">已加入</Badge>
             ) : selectedPlace.status === "locked" ? (
               <Badge variant="locked">已加入</Badge>
             ) : (
