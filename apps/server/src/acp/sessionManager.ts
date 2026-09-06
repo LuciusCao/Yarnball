@@ -650,13 +650,16 @@ export class SessionHandle {
       return { outcome: { outcome: "selected", optionId: decision.optionId } };
     }
 
-    const parked = parkPermission({
-      sessionId: this.sessionRow.id,
-      requestId: `perm-${++this.permissionSeq}-${ctx.requestId}`,
-      toolCall: ctx.params.toolCall,
-      options: ctx.params.options,
-      resolve: () => {},
-    });
+    const parked = parkPermission(
+      {
+        sessionId: this.sessionRow.id,
+        requestId: `perm-${++this.permissionSeq}-${ctx.requestId}`,
+        toolCall: ctx.params.toolCall,
+        options: ctx.params.options,
+        resolve: () => {},
+      },
+      () => this.settlePermissionTimeout(parked),
+    );
     this.parkedPermissions.push(parked);
     await this.appendMessage({
       turnId: this.currentTurnId,
@@ -672,7 +675,26 @@ export class SessionHandle {
     return parked.agentResponse;
   }
 
-  /** UI 决策入口（REST 路由调用）。返回 false = 该 requestId 已不存在 */
+  /**
+   * 超时结算：移除 parked 记录（之后的用户点击拿到「已失效」而不是落假「已允许」），
+   * 并落一条 permission_result（带 requestId），UI 权限卡据此进入已答态。
+   */
+  private settlePermissionTimeout(parked: ParkedPermission) {
+    const idx = this.parkedPermissions.indexOf(parked);
+    if (idx !== -1) this.parkedPermissions.splice(idx, 1);
+    void this.appendMessage({
+      turnId: this.currentTurnId,
+      kind: "permission_result",
+      content: {
+        requestId: parked.pending.requestId,
+        toolCallTitle: parked.pending.toolCall.title,
+        outcome: "超时未响应，已自动拒绝",
+        autoApproved: false,
+      },
+    });
+  }
+
+  /** UI 决策入口（REST 路由调用）。返回 false = 该 requestId 已不存在（已超时结算/会话重开），调用方据此回复「已失效」 */
   userDecidesPermission(requestId: string, outcome: PermissionOutcome): boolean {
     const idx = this.parkedPermissions.findIndex((p) => p.pending.requestId === requestId);
     if (idx === -1) return false;
