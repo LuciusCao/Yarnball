@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, ne } from "drizzle-orm";
 import { execFile } from "node:child_process";
 import { z } from "zod";
 import {
@@ -107,7 +107,13 @@ export function createApi(
 
   api.delete("/trips/:tripId", async (c) => {
     const tripId = c.req.param("tripId");
-    await sessions.stopSession(tripId, "trip deleted").catch(() => {});
+    // 句柄以 chatSessionId 为键——必须按 trip 归组停，否则 agent 子进程泄漏
+    await sessions.stopByTrip(tripId, "trip deleted").catch(() => {});
+    // 无句柄的残留行（重启后 idle/error）一并置 closed 终态；随后 deleteTrip cascade 删行
+    await db
+      .update(schema.chatSessions)
+      .set({ status: "closed", updatedAt: new Date() })
+      .where(eq(schema.chatSessions.tripId, tripId));
     await tripService.deleteTrip(tripId);
     return c.json({ ok: true });
   });
@@ -409,17 +415,67 @@ export function createApi(
     return c.json({ messages });
   });
 
+  /**
+   * 懒恢复：句柄缺失（server 重启）或残留但进程已死（status=error）时重建会话，
+   * 成功返回 handle；失败把 status=error/lastError 落库并抛错，由调用方组装响应。
+   */
+  async function recoverSession(row: typeof schema.chatSessions.$inferSelect) {
+    if (row.status === "closed") throw new Error("会话已关闭，请新建会话");
+    let handle = sessions.get(row.id);
+    if (handle && row.status === "error") {
+      // 进程已死但句柄残留（agent 崩溃只置了 status）：先停掉再重建。
+      // final 必须传 error 过渡态而非默认 closed——closed 是终态，setStatus 守卫会挡住
+      // 随后新句柄 start() 的 starting/idle 写入，会话永久卡 closed（复审 P1）
+      await sessions.stopSession(row.id, "recover after error", { status: "error" }).catch(() => {});
+      handle = undefined;
+    }
+    if (handle) return handle;
+    try {
+      return await sessions.ensureSession(row);
+    } catch (err) {
+      const message = (err as Error).message;
+      // status != 'closed' 条件写：与用户并发 close（DELETE 端点）的落库存在竞态，
+      // 无条件回写会把已关闭会话「复活」成 error
+      await db
+        .update(schema.chatSessions)
+        .set({ status: "error", lastError: `自动重连失败：${message}`, updatedAt: new Date() })
+        .where(and(eq(schema.chatSessions.id, row.id), ne(schema.chatSessions.status, "closed")));
+      throw err;
+    }
+  }
+
   api.post("/chat-sessions/:sessionId/prompt", async (c) => {
     const sessionId = c.req.param("sessionId");
     const input = z.object({ text: z.string().min(1).max(20000) }).parse(await c.req.json());
     const [row] = await db.select().from(schema.chatSessions).where(eq(schema.chatSessions.id, sessionId));
     if (!row) return c.json({ error: "session not found" }, 404);
-    const handle = sessions.get(sessionId);
-    if (!handle) return c.json({ error: "session not running" }, 409);
+    if (row.status === "closed") return c.json({ error: "会话已关闭，请新建会话" }, 409);
     if (row.status === "running") return c.json({ error: "agent 正在处理上一条消息" }, 409);
+    let handle;
+    try {
+      handle = await recoverSession(row);
+    } catch (err) {
+      return c.json({ error: `agent 连接已断开，自动重连失败：${(err as Error).message}。可点「重新连接」重试。` }, 409);
+    }
     // 异步执行：SSE 推流式消息
-    void handle.enqueuePrompt(input.text).catch(() => {});
+    void handle
+      .enqueuePrompt(input.text)
+      .catch((err) => console.warn(`[api] enqueuePrompt ${sessionId} failed:`, err));
     return c.json({ ok: true });
+  });
+
+  /** 手动重连（前端「重新连接」按钮）：与 prompt 的懒恢复同路径，但不携带消息 */
+  api.post("/chat-sessions/:sessionId/reconnect", async (c) => {
+    const sessionId = c.req.param("sessionId");
+    const [row] = await db.select().from(schema.chatSessions).where(eq(schema.chatSessions.id, sessionId));
+    if (!row) return c.json({ error: "session not found" }, 404);
+    try {
+      await recoverSession(row);
+    } catch (err) {
+      return c.json({ error: `重连失败：${(err as Error).message}` }, 409);
+    }
+    const [updated] = await db.select().from(schema.chatSessions).where(eq(schema.chatSessions.id, sessionId));
+    return c.json({ ok: true, session: toChatSessionDto(updated) });
   });
 
   api.post("/chat-sessions/:sessionId/permissions/:requestId", async (c) => {
@@ -429,7 +485,13 @@ export function createApi(
       .object({ optionId: z.string().nullable() })
       .parse(await c.req.json());
     const handle = sessions.get(sessionId);
-    if (!handle) return c.json({ error: "session not running" }, 409);
+    // 停靠的 permission 随旧进程消亡，懒恢复也找不回这个 requestId——给可操作的指引而不是裸 409
+    if (!handle) {
+      return c.json(
+        { error: "会话连接已断开，该权限请求已失效。请重新发送消息（会自动重连 agent），或点「重新连接」。" },
+        409,
+      );
+    }
     const ok = handle.userDecidesPermission(requestId, {
       optionId: input.optionId,
       optionName: input.optionId ? "手动允许" : "手动拒绝",

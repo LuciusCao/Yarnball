@@ -36,6 +36,15 @@ const EXAMPLE_PROMPTS = [
   "把想去的餐厅列给我，我挑几家锁定",
 ] as const;
 
+/** 会话状态中文标签（原始 status 枚举对用户无意义） */
+const STATUS_LABEL: Record<ChatSessionDto["status"], string> = {
+  starting: "连接中",
+  idle: "已连接",
+  running: "处理中",
+  error: "连接异常",
+  closed: "已断开",
+};
+
 export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }: ChatPanelProps) {
   // GET /api/agents 现在返回全部注册 agent（含 disabled，带 command/args）——只保留 enabled
   const [agents, setAgents] = useState<AgentRegistryDto[]>([]);
@@ -44,6 +53,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   const [input, setInput] = useState("");
   const [starting, setStarting] = useState(false);
   const [planning, setPlanning] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const activeSession = useMemo(
@@ -76,7 +86,8 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
 
-  // 轮询 session 状态（running→idle 切换驱动 UI；SSE 状态推送 v2 可加）
+  // 轮询 session 状态（running→idle 切换驱动 UI；服务端状态变化也会发 SSE session 事件，
+  // 但 chat store 目前只消费 message 事件，头部状态灯仍以轮询为准）
   useEffect(() => {
     if (!activeSession) return;
     const timer = setInterval(() => onSessionsChanged(), 3000);
@@ -93,6 +104,21 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
       toast.error((err as Error).message);
     } finally {
       setStarting(false);
+    }
+  }
+
+  /** 「重新连接」：server 重启 / agent 崩溃后的手动懒恢复（与 prompt 自动恢复同路径） */
+  async function reconnect() {
+    if (!activeSession) return;
+    setReconnecting(true);
+    try {
+      await libApi.reconnectChatSession(activeSession.id);
+      onSessionsChanged();
+    } catch (err) {
+      toast.error((err as Error).message);
+      onSessionsChanged();
+    } finally {
+      setReconnecting(false);
     }
   }
 
@@ -248,19 +274,23 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   }
 
   const running = activeSession.status === "running";
+  // starting = 首次启动或断线懒恢复进行中（server 重启后 prompt/reconnect 触发）
+  const connecting = activeSession.status === "starting";
 
   return (
     <div className="flex h-full flex-col">
       {/* 会话头（右侧留出面板收起把手的高度） */}
       <div className="flex items-center gap-2 border-b border-slate-900/8 pl-3 pr-11 py-2">
-        <span className="h-2 w-2 shrink-0 rounded-full" style={{
+        <span className={`h-2 w-2 shrink-0 rounded-full ${connecting ? "animate-pulse" : ""}`} style={{
           background:
             activeSession.status === "running" ? "#f59e0b" :
             activeSession.status === "error" ? "#ef4444" :
             activeSession.status === "idle" ? "#22c55e" : "#94a3b8",
         }} />
         <span className="text-sm font-medium">{activeSession.agentLabel}</span>
-        <span className="text-xs text-slate-400">{activeSession.status}</span>
+        <span className="text-xs text-slate-400">
+          {connecting && messages.length > 0 ? "重连中" : STATUS_LABEL[activeSession.status]}
+        </span>
         <label className="ml-auto flex items-center gap-1 text-xs text-slate-500">
           <input
             type="checkbox"
@@ -283,9 +313,27 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
         </Button>
       </div>
 
+      {/* 断线恢复中：提示用户不要重复点击，恢复完成后自动回到 idle */}
+      {connecting && (
+        <div className="flex items-center gap-1.5 border-b border-amber-200/60 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700">
+          <Loader2 className="size-3 animate-spin" />
+          {messages.length > 0 ? "正在重连 agent…（恢复此前的对话上下文）" : "正在启动 agent…"}
+        </div>
+      )}
+
       {activeSession.lastError && (
-        <div className="border-b border-red-200/60 bg-red-500/10 px-3 py-1.5 text-xs text-red-600">
-          {activeSession.lastError}
+        <div className="flex items-center gap-2 border-b border-red-200/60 bg-red-500/10 px-3 py-1.5 text-xs text-red-600">
+          <span className="flex-1">{activeSession.lastError}</span>
+          {activeSession.status === "error" && (
+            <button
+              onClick={() => void reconnect()}
+              disabled={reconnecting}
+              className="flex shrink-0 items-center gap-1 rounded-md border border-red-300/70 bg-white/70 px-2 py-0.5 font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
+            >
+              {reconnecting ? <Loader2 className="size-3 animate-spin" /> : null}
+              {reconnecting ? "重连中…" : "重新连接"}
+            </button>
+          )}
         </div>
       )}
 
@@ -326,7 +374,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
         {/* 规划引导（主行动点）：把已锁定/候选地点摘要组装成预制指令发给 agent */}
         <button
           onClick={() => void planDays()}
-          disabled={running || planning}
+          disabled={running || planning || connecting}
           title="把当前已锁定/候选地点发给 agent，让它排每日行程（含 startTime 与交通段）"
           className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-xl bg-brand px-3 py-2 text-xs font-medium text-white shadow-sm transition-colors hover:bg-brand-hover disabled:opacity-50"
         >
@@ -345,14 +393,16 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
             }}
             rows={2}
             placeholder={
-              running ? "agent 处理中…" : "粘贴攻略文本，或直接说：把 Bondi Beach 安排到 Day 2"
+              running ? "agent 处理中…" :
+              connecting ? "正在重连 agent…" :
+              "粘贴攻略文本，或直接说：把 Bondi Beach 安排到 Day 2"
             }
-            disabled={running}
+            disabled={running || connecting}
             className="pr-14"
           />
           <button
             onClick={() => void send()}
-            disabled={running || !input.trim()}
+            disabled={running || connecting || !input.trim()}
             title="发送"
             className="absolute bottom-2.5 right-2 flex size-8 items-center justify-center rounded-full bg-brand text-white shadow transition-all enabled:hover:bg-brand-hover disabled:opacity-40"
           >
