@@ -185,6 +185,32 @@ export interface ToolContext {
   markMcpObserved: () => void;
 }
 
+/**
+ * 越权护栏：按 id 操作的实体必须属于本会话绑定的 trip。
+ * 实体不存在与属于其他行程返回同一文案，不泄露实体是否存在。
+ * （add_place_to_day / add_transit_entry / reorder_day / select_hotel 的 id 归属
+ *  已由 tripService 按 tripId 校验，这里只兜底 service 层未覆盖的按 id 直查路径。）
+ */
+async function assertPlaceInSessionTrip(ctx: ToolContext, placeId: string) {
+  const [row] = await ctx.db
+    .select({ tripId: schema.places.tripId })
+    .from(schema.places)
+    .where(eq(schema.places.id, placeId));
+  if (!row || row.tripId !== ctx.tripId) {
+    throw new ServiceError(403, "无权操作该资源：不属于当前会话的行程");
+  }
+}
+
+async function assertEntryInSessionTrip(ctx: ToolContext, entryId: string) {
+  const [row] = await ctx.db
+    .select({ tripId: schema.entries.tripId })
+    .from(schema.entries)
+    .where(eq(schema.entries.id, entryId));
+  if (!row || row.tripId !== ctx.tripId) {
+    throw new ServiceError(403, "无权操作该资源：不属于当前会话的行程");
+  }
+}
+
 /** 行程的 geo provider + 城市中心（搜索偏置用） */
 async function tripGeoInfo(ctx: ToolContext) {
   const [trip] = await ctx.db.select().from(schema.trips).where(eq(schema.trips.id, ctx.tripId));
@@ -311,6 +337,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     async ({ placeId, ...patch }) => {
       ctx.markMcpObserved();
       try {
+        await assertPlaceInSessionTrip(ctx, placeId);
         const place = await tripService.updatePlace(placeId, patch, "agent");
         return json({ ok: true, place });
       } catch (err) {
@@ -329,6 +356,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     async ({ placeId }) => {
       ctx.markMcpObserved();
       try {
+        await assertPlaceInSessionTrip(ctx, placeId);
         await tripService.removePlace(placeId, "agent");
         return json({ ok: true });
       } catch (err) {
@@ -347,6 +375,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     async ({ placeId }) => {
       ctx.markMcpObserved();
       try {
+        await assertPlaceInSessionTrip(ctx, placeId);
         const place = await tripService.setPlaceStatus(placeId, "locked");
         return json({ ok: true, place });
       } catch (err) {
@@ -365,6 +394,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     async ({ placeId }) => {
       ctx.markMcpObserved();
       try {
+        await assertPlaceInSessionTrip(ctx, placeId);
         const place = await tripService.setPlaceStatus(placeId, "candidate");
         return json({ ok: true, place });
       } catch (err) {
@@ -425,6 +455,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     async ({ entryId, ...patch }) => {
       ctx.markMcpObserved();
       try {
+        await assertEntryInSessionTrip(ctx, entryId);
         const entry = await tripService.updateEntry(entryId, patch);
         return json({ ok: true, entry });
       } catch (err) {
@@ -442,6 +473,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     async ({ entryId, dayIndex, position }) => {
       ctx.markMcpObserved();
       try {
+        await assertEntryInSessionTrip(ctx, entryId);
         await tripService.moveEntry(entryId, dayIndex, position);
         return json({ ok: true });
       } catch (err) {
@@ -459,6 +491,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     async ({ entryId }) => {
       ctx.markMcpObserved();
       try {
+        await assertEntryInSessionTrip(ctx, entryId);
         await tripService.removeEntry(entryId);
         return json({ ok: true });
       } catch (err) {
@@ -519,6 +552,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     async ({ placeId, dayIndex }) => {
       ctx.markMcpObserved();
       try {
+        await assertPlaceInSessionTrip(ctx, placeId);
         const analysis = await tripService.analyzeDetour(tripId, placeId, dayIndex);
         return json({ ok: true, analysis });
       } catch (err) {
