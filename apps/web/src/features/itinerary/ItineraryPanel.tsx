@@ -33,9 +33,9 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  *   数据取 legs 首/末段的 from/toPlaceId（服务端按选定酒店锚定当天首尾，M9/M11）；
  *   用酒店图标 + hotelpin 虚线卡片区别于普通 entry；出发/到店时刻随时间轴推算（~ 前缀 = 估算），
  *   首段交通时长挂在出发节点下方。大交通收口的头/尾天（机场落地/离开）服务端不锚定，节点自然不出现
- * - 无覆盖酒店的天（M17）：天头部显示「当晚未安排住宿」+「去候选池选定」引导
+ * - 无覆盖酒店的天（M17）：天头部显示「当晚未安排住宿」+「去候选池加入」引导
  *   （onOpenCandidates 由 TripPage 传入；只读分享页只有文案没有按钮）。
- *   注意 锁定 ≠ 选定：只有「选定」（带 checkInDay/checkOutDay 住宿区间）的酒店才参与路线锚定
+ *   注意（M20 话术统一）：酒店需「加入行程」（底层 select，带 checkInDay/checkOutDay 住宿区间）才参与路线锚定
  * - Day 筛选 tabs（M15，TripPage 传入 visibleDay/onVisibleDayChange 时启用）：
  *   面板顶部「全部/D1/D2…」，选中天过滤面板并同步地图聚焦
  * - readOnly（分享页）：隐藏一切编辑操作
@@ -55,7 +55,7 @@ interface ItineraryPanelProps {
    */
   visibleDay?: number | null;
   onVisibleDayChange?: (dayIndex: number | null) => void;
-  /** 打开候选池面板（M17：无覆盖酒店天的「去候选池选定」引导；TripPage 传入，分享页不传则只显示文案） */
+  /** 打开候选池面板（M17：无覆盖酒店天的「去候选池加入」引导；TripPage 传入，分享页不传则只显示文案） */
   onOpenCandidates?: () => void;
 }
 
@@ -274,7 +274,7 @@ export function ItineraryPanel({
               )}
             </header>
 
-            {/* 住宿行：平时「当晚住宿：X」，换酒店日「离店 A → 入住 B」；无覆盖时给「去候选池选定」引导（M17） */}
+            {/* 住宿行：平时「当晚住宿：X」，换酒店日「离店 A → 入住 B」；无覆盖时给「去候选池加入」引导（M17） */}
             {nightStay || switchFrom ? (
               <p className="mb-1.5 flex items-center gap-1 text-[11px] text-slate-400">
                 <BedDouble className="size-3 shrink-0" />
@@ -296,7 +296,7 @@ export function ItineraryPanel({
                 <span>
                   当晚未安排住宿
                   <span className="text-slate-300">
-                    （锁定的酒店还需「选定」并设置入离店天，才会锚定当天首尾）
+                    （酒店需加入行程并设置入离店天，才会锚定当天首尾）
                   </span>
                 </span>
                 {!readOnly && onOpenCandidates && (
@@ -724,15 +724,15 @@ function HotelAnchorRow({
   );
 }
 
-/** 「去候选池选定」引导钮（M17）：讲清 锁定 ≠ 选定——只有选定（带入住/离店天）的酒店才参与首尾锚定 */
+/** 「去候选池加入」引导钮（M17；M20 话术统一）：酒店「加入行程」（带入住/离店天）后才参与首尾锚定 */
 function SelectHotelGuide({ onClick }: { onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      title="只有「选定」酒店（带入住/离店天）才会作为当天行程的首尾锚点；候选池里仅「锁定」还不够"
+      title="酒店「加入行程」（带入住/离店天）后才会作为当天行程的首尾锚点；仅放进候选池还不够"
       className="shrink-0 rounded bg-slate-900/8 px-1.5 py-0.5 text-slate-500 transition-colors hover:bg-slate-900/15 hover:text-slate-700"
     >
-      去候选池选定 →
+      去候选池加入 →
     </button>
   );
 }

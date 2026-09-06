@@ -31,12 +31,13 @@ import {
 
 /**
  * 候选池面板 —— 所有「未排期」地点的大本营（整合原 HotelPanel 的候选管理 + DiningPanel 的清单）。
- * 按 酒店/景点/美食/其他 分组；每项可锁定（=确认要去，锁定后才排日程）、删除；
- * 酒店组支持选定多家酒店（M10 多酒店）：每家已选定酒店带 入住第N天/离店第M天 选择器，
+ * 按 酒店/景点/美食/其他 分组；每项可加入行程（=确认要去，加入后才排日程）、删除；
+ * 酒店组支持加入多家酒店（M10 多酒店）：每家已加入酒店带 入住第N天/离店第M天 选择器，
  * 区间互相冲突的选项禁用并提示（服务端同样校验，见 M9 契约）。
  * 预订状态（M11）：每项显示 无需预订/待预订/已预订 徽章，locked 地点可点选流转；
- * 待预订的锁定地点卡片高亮并在顶部汇总提醒。营业时间（openingHours）有值即展示。
- * 锁定但未选定的酒店带「已锁定·未选定住宿天」提示徽标（M17：锁定 ≠ 选定，后者才参与路线锚定）。
+ * 待预订的已加入地点卡片高亮并在顶部汇总提醒。营业时间（openingHours）有值即展示。
+ * M20：UI 话术统一为「加入行程」——酒店「加入行程」即选定住宿区间（select，含入离店天），
+ * 底层 locked/select 语义不变；酒店的 locked 状态在 UI 上降级（不再出现「已锁定·未选定住宿天」）。
  * 数据刷新：操作后走 SSE bundle 全量快照 + 主动 load 兜底，不做本地增量。
  */
 
@@ -131,15 +132,15 @@ export function CandidatesPanel({
     }
   }
 
-  /** 选定酒店：默认占未被覆盖的最长连续段；全程已覆盖则提示先调整已有酒店 */
+  /** 加入酒店：默认占未被覆盖的最长连续段；全程已覆盖则提示先调整已有酒店 */
   async function selectHotel(candidateId: string) {
     if (totalDays === 0) {
-      toast.warning("还没有行程天数，先让 agent 规划行程再选定酒店");
+      toast.warning("还没有行程天数，先让 agent 规划行程再加入酒店");
       return;
     }
     const span = largestFreeSpan(hotelStays, totalDays);
     if (!span) {
-      toast.warning("全程已被其他选定酒店覆盖，请先调整它们的入离店天");
+      toast.warning("全程已被其他已加入的酒店覆盖，请先调整它们的入离店天");
       return;
     }
     setBusy(true);
@@ -165,7 +166,7 @@ export function CandidatesPanel({
     }
   }
 
-  /** 修改已选定酒店的入离店天（重选即改期）；区间冲突由选择器禁用兜底，服务端拒绝时 toast */
+  /** 修改已加入酒店的入离店天（重选即改期）；区间冲突由选择器禁用兜底，服务端拒绝时 toast */
   async function updateStay(candidateId: string, range: HotelStayRange) {
     setBusy(true);
     try {
@@ -179,7 +180,7 @@ export function CandidatesPanel({
   }
 
   const totalCount = GROUP_ORDER.reduce((n, key) => n + grouped[key].length, 0);
-  /** 待预订的锁定地点（M11）：顶部汇总提醒 + 卡片高亮 */
+  /** 待预订的已加入地点（M11，底层仍是 locked 状态）：顶部汇总提醒 + 卡片高亮 */
   const pendingLockedCount = bundle.places.filter(
     (p) => p.status === "locked" && bookingStatusOf(p) === "pending",
   ).length;
@@ -189,7 +190,7 @@ export function CandidatesPanel({
       {pendingLockedCount > 0 && (
         <div className="mb-3 flex items-center gap-1.5 rounded-xl border border-orange-300/70 bg-orange-100/60 px-3 py-2 text-xs text-orange-700">
           <CalendarCheck className="size-3.5 shrink-0" />
-          有 {pendingLockedCount} 个锁定地点待预订，出行前记得完成预订（点徽章可标记已预订）。
+          有 {pendingLockedCount} 个已加入行程的地点待预订，出行前记得完成预订（点徽章可标记已预订）。
         </div>
       )}
       {totalCount === 0 && (
@@ -197,7 +198,7 @@ export function CandidatesPanel({
           <p className="text-xs text-slate-400">
             候选池是空的。把攻略粘给 agent，它会把想去的地点先放进这里，
             <br />
-            你锁定后再让它排进日程。
+            你加入行程后再让它排进日程。
           </p>
         </div>
       )}
@@ -258,6 +259,8 @@ export function CandidatesPanel({
                 const hotelCand = hotelCandByPlaceId.get(place.id);
                 const stay = hotelCand ? stayByCandidateId.get(hotelCand.id) : undefined;
                 const isSelectedHotel = stay != null;
+                /** 酒店候选（M20）：locked 状态在 UI 上降级——主按钮「加入行程」即含住宿区间，不再单独展示 locked 徽章与锁定开关 */
+                const isHotel = key === "hotel" && hotelCand != null;
                 const price =
                   key === "hotel"
                     ? (hotelCand?.pricePerNight ?? place.priceCny)
@@ -265,7 +268,7 @@ export function CandidatesPanel({
                 const selected = place.id === selectedPlaceId;
 
                 // 是否有徽章要展示（没有就不渲染徽章行，避免多余间距）
-                const showBadges = place.createdBy === "agent" || locked || booking !== "none";
+                const showBadges = place.createdBy === "agent" || (locked && !isHotel) || booking !== "none";
 
                 return (
                   <div
@@ -310,16 +313,7 @@ export function CandidatesPanel({
                                 agent 推荐
                               </Badge>
                             )}
-                            {locked && <Badge variant="locked">已锁定</Badge>}
-                            {/* 锁定但未选定的酒店（M17）：锁定 ≠ 选定，只有选定（带入离店天）才参与行程首尾锚定 */}
-                            {key === "hotel" && hotelCand && locked && !isSelectedHotel && (
-                              <Badge
-                                variant="orange"
-                                title="点右侧「选定」并设置入住/离店天，酒店才会作为行程每天的首尾锚点"
-                              >
-                                已锁定·未选定住宿天
-                              </Badge>
-                            )}
+                            {locked && !isHotel && <Badge variant="locked">已加入</Badge>}
                             {locked ? (
                               <button
                                 title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
@@ -351,7 +345,7 @@ export function CandidatesPanel({
                           <p className="mt-1 text-xs text-slate-500">{hotelCand.notes}</p>
                         )}
                         {isSelectedHotel && stay && (
-                          // 已选定酒店的入离店天（M10 多酒店）；阻止冒泡避免触发卡片选中
+                          // 已加入酒店的入离店天（M10 多酒店）；阻止冒泡避免触发卡片选中
                           <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
                             <HotelStayRangePicker
                               totalDays={totalDays}
@@ -380,6 +374,11 @@ export function CandidatesPanel({
                       <div className="flex shrink-0 flex-col items-end gap-1.5">
                         {hotelCand && (
                           <button
+                            title={
+                              isSelectedHotel
+                                ? "移出行程：取消该酒店的住宿区间，不再锚定每天首尾"
+                                : "加入行程：自动分配未覆盖的最长连续住宿段，可再调整入离店天"
+                            }
                             disabled={busy}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -393,25 +392,28 @@ export function CandidatesPanel({
                                 : "border border-slate-200 text-slate-600 hover:bg-slate-50"
                             }`}
                           >
-                            {isSelectedHotel ? "✓ 已选定" : "选定"}
+                            {isSelectedHotel ? "✓ 已加入" : "加入行程"}
                           </button>
                         )}
                         <div className="flex gap-1">
-                          <button
-                            title={locked ? "解锁（退回候选）" : "锁定（确认要去）"}
-                            disabled={busy}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void toggleLock(place);
-                            }}
-                            className={`flex size-7 items-center justify-center rounded-lg transition-colors disabled:opacity-50 ${
-                              locked
-                                ? "bg-locked/10 text-locked hover:bg-locked/20"
-                                : "text-slate-400 hover:bg-slate-900/8 hover:text-locked"
-                            }`}
-                          >
-                            {locked ? <Lock className="size-3.5" /> : <LockOpen className="size-3.5" />}
-                          </button>
+                          {/* POI 的加入/移出开关（M20 话术）；酒店不走这里——主按钮「加入行程」已涵盖 */}
+                          {!isHotel && (
+                            <button
+                              title={locked ? "移出行程（退回候选池，不再必排进日程）" : "加入行程（确认要去，排日程时必排）"}
+                              disabled={busy}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void toggleLock(place);
+                              }}
+                              className={`flex size-7 items-center justify-center rounded-lg transition-colors disabled:opacity-50 ${
+                                locked
+                                  ? "bg-locked/10 text-locked hover:bg-locked/20"
+                                  : "text-slate-400 hover:bg-slate-900/8 hover:text-locked"
+                              }`}
+                            >
+                              {locked ? <Lock className="size-3.5" /> : <LockOpen className="size-3.5" />}
+                            </button>
+                          )}
                           <button
                             title="删除"
                             disabled={busy}
