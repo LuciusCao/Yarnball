@@ -609,9 +609,11 @@ export type BudgetSummary = z.infer<typeof BudgetSummarySchema>;
 
 /**
  * 分享只读负载（GET /api/share/:token）：
- * bundle.trip.id 与 shareToken 已由服务端置空——分享链接是公开凭证，
- * 不能把可写标识（tripId 直达全部 /trips/:tripId/* 写端点）发给访客；
- * 预算汇总随包下发，分享页无需（也无法）再按 tripId 拉取。
+ * bundle.trip.id 与 shareToken 已由服务端置空，其余实体 id（place/entry/leg/day/
+ * hotelCandidate 及 tripId/placeId/dayId 等引用字段）全部替换为不透明别名
+ * （sha256(token:id) 截断，同一真实 id 全包一致映射）——分享链接是公开凭证，
+ * 不能把可写标识发给访客（实体级写端点无鉴权，真实 id 泄露即可越权写）；
+ * 前端仅把 id 当 React key/选中态/关联键使用。预算汇总随包下发，无需再按 tripId 拉取。
  */
 export const SharePayloadSchema = z.object({
   bundle: TripBundleSchema,

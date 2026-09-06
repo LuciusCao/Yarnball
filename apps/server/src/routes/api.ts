@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { and, asc, eq, ne } from "drizzle-orm";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   AddEntryInputSchema,
@@ -20,6 +21,7 @@ import {
   UpdateSettingsInputSchema,
   type AgentAvailability,
   type SharePayload,
+  type TripBundle,
 } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
@@ -30,6 +32,53 @@ import { getProvider } from "../services/geo.js";
 import { amapConfigured, getSettings, updateSettings } from "../services/settings.js";
 import { toAgentDto, toChatSessionDto } from "../services/mappers.js";
 import { listChatMessages } from "../services/chatStore.js";
+
+/**
+ * 分享包 id 脱敏：把 bundle 内所有真实 id（含 tripId/placeId/dayId/entryId 等引用字段）
+ * 换成 sha256(token:id) 截断 16 位的不透明别名。同一真实 id 全包映射为同一别名，
+ * 前端关联（entry.placeId → place、leg 端点、酒店候选）不断；分享链接是公开凭证，
+ * 实体级写端点（PATCH/DELETE /places/:id 等）无鉴权，访客拿别名去调只会 404。
+ * trip.id / shareToken 维持置空（可写标识不下发）。
+ */
+function aliasShareBundleIds(bundle: TripBundle, token: string): SharePayload["bundle"] {
+  const alias = (id: string) => createHash("sha256").update(`${token}:${id}`).digest("hex").slice(0, 16);
+  const ref = (id: string | null) => (id == null ? null : alias(id));
+  return {
+    trip: {
+      ...bundle.trip,
+      id: "",
+      shareToken: "",
+      selectedHotelCandidateId: ref(bundle.trip.selectedHotelCandidateId),
+    },
+    days: bundle.days.map((d) => ({ ...d, id: alias(d.id), tripId: alias(d.tripId) })),
+    places: bundle.places.map((p) => ({ ...p, id: alias(p.id), tripId: alias(p.tripId) })),
+    entries: bundle.entries.map((e) => ({
+      ...e,
+      id: alias(e.id),
+      dayId: alias(e.dayId),
+      tripId: alias(e.tripId),
+      placeId: ref(e.placeId),
+      fromPlaceId: ref(e.fromPlaceId),
+      toPlaceId: ref(e.toPlaceId),
+    })),
+    legs: bundle.legs.map((l) => ({
+      ...l,
+      id: alias(l.id),
+      dayId: alias(l.dayId),
+      tripId: alias(l.tripId),
+      fromEntryId: ref(l.fromEntryId),
+      toEntryId: ref(l.toEntryId),
+      fromPlaceId: ref(l.fromPlaceId),
+      toPlaceId: ref(l.toPlaceId),
+    })),
+    hotelCandidates: bundle.hotelCandidates.map((h) => ({
+      ...h,
+      id: alias(h.id),
+      tripId: alias(h.tripId),
+      placeId: alias(h.placeId),
+    })),
+  };
+}
 
 /**
  * REST API —— 人类直接编辑行程（与 agent 经 MCP 的编辑双入口）+ chat 会话管理 + SSE。
@@ -284,18 +333,13 @@ export function createApi(
   // ---------- share（只读） ----------
 
   api.get("/share/:token", async (c) => {
-    const trip = await tripService.getTripByShareToken(c.req.param("token"));
+    const token = c.req.param("token");
+    const trip = await tripService.getTripByShareToken(token);
     const [bundle, budget] = await Promise.all([
       tripService.getBundle(trip.id),
       tripService.getBudgetSummary(trip.id),
     ]);
-    // 防越权写：剥离可写标识。分享链接即公开凭证，trip.id 可直达全部
-    // /trips/:tripId/* 写端点、shareToken 可反向定位行程——下发时置空。
-    const sharedBundle: SharePayload["bundle"] = {
-      ...bundle,
-      trip: { ...bundle.trip, id: "", shareToken: "" },
-    };
-    return c.json({ bundle: sharedBundle, budget } satisfies SharePayload);
+    return c.json({ bundle: aliasShareBundleIds(bundle, token), budget } satisfies SharePayload);
   });
 
   // ---------- 设置（高德 key 等，DB 覆盖 > env） ----------
@@ -435,8 +479,13 @@ export function createApi(
   /**
    * 懒恢复：句柄缺失（server 重启）或残留但进程已死（status=error）时重建会话，
    * 成功返回 handle；失败把 status=error/lastError 落库并抛错，由调用方组装响应。
+   * cause 区分触发来源：auto=prompt 触发的自动重连，manual=reconnect 端点的手动重连，
+   * 落库文案据此区分（此前手动重连失败也写成「自动重连失败」，误导排查）。
    */
-  async function recoverSession(row: typeof schema.chatSessions.$inferSelect) {
+  async function recoverSession(
+    row: typeof schema.chatSessions.$inferSelect,
+    cause: "auto" | "manual" = "auto",
+  ) {
     if (row.status === "closed") throw new Error("会话已关闭，请新建会话");
     let handle = sessions.get(row.id);
     if (handle && row.status === "error") {
@@ -455,7 +504,11 @@ export function createApi(
       // 无条件回写会把已关闭会话「复活」成 error
       await db
         .update(schema.chatSessions)
-        .set({ status: "error", lastError: `自动重连失败：${message}`, updatedAt: new Date() })
+        .set({
+          status: "error",
+          lastError: `${cause === "manual" ? "手动" : "自动"}重连失败：${message}`,
+          updatedAt: new Date(),
+        })
         .where(and(eq(schema.chatSessions.id, row.id), ne(schema.chatSessions.status, "closed")));
       throw err;
     }
@@ -470,7 +523,7 @@ export function createApi(
     if (row.status === "running") return c.json({ error: "agent 正在处理上一条消息" }, 409);
     let handle;
     try {
-      handle = await recoverSession(row);
+      handle = await recoverSession(row, "auto");
     } catch (err) {
       return c.json({ error: `agent 连接已断开，自动重连失败：${(err as Error).message}。可点「重新连接」重试。` }, 409);
     }
@@ -487,7 +540,7 @@ export function createApi(
     const [row] = await db.select().from(schema.chatSessions).where(eq(schema.chatSessions.id, sessionId));
     if (!row) return c.json({ error: "session not found" }, 404);
     try {
-      await recoverSession(row);
+      await recoverSession(row, "manual");
     } catch (err) {
       return c.json({ error: `重连失败：${(err as Error).message}` }, 409);
     }
