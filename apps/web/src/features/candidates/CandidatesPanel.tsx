@@ -3,10 +3,9 @@ import {
   BedDouble,
   CalendarCheck,
   CalendarMinus,
+  CalendarPlus,
   Landmark,
   LayoutGrid,
-  Lock,
-  LockOpen,
   MapPin,
   Package,
   Sparkles,
@@ -42,7 +41,7 @@ import {
  * 预订状态（M11）：每项显示 无需预订/待预订/已预订 徽章，locked 地点可点选流转；
  * 待预订的已加入地点卡片高亮并在顶部汇总提醒。营业时间（openingHours）有值即展示。
  * M20：UI 话术统一为「加入行程」——酒店「加入行程」即选定住宿区间（select，含入离店天），
- * 底层 locked/select 语义不变；酒店的 locked 状态在 UI 上降级（不再出现「已锁定·未选定住宿天」）。
+ * 底层 locked/select 语义不变；酒店的 locked 状态在 UI 上降级（不再单独展示加入状态与开关）。
  * 数据刷新：操作后走 SSE bundle 全量快照 + 主动 load 兜底，不做本地增量。
  * M25：面板顶部 segmented 切换（全部/酒店/景点/美食，各带数量徽标=该类别候选总数含已加入；
  * 「其他」类别只在「全部」视图出现）。默认「全部」= 原分组视图；切到类别 tab = 该类别单组列表
@@ -342,7 +341,7 @@ export function CandidatesPanel({
                 const hotelCand = hotelCandByPlaceId.get(place.id);
                 const stay = hotelCand ? stayByCandidateId.get(hotelCand.id) : undefined;
                 const isSelectedHotel = stay != null;
-                /** 酒店候选（M20）：locked 状态在 UI 上降级——主按钮「加入行程」即含住宿区间，不再单独展示 locked 徽章与锁定开关 */
+                /** 酒店候选（M20）：locked 状态在 UI 上降级——主按钮「加入行程」即含住宿区间，不再单独展示 locked 徽章与加入/移出开关 */
                 const isHotel = key === "hotel" && hotelCand != null;
                 const price =
                   key === "hotel"
@@ -526,12 +525,10 @@ export function CandidatesPanel({
                                   : "text-slate-400 hover:bg-slate-900/8 hover:text-locked"
                               }`}
                             >
-                              {scheduled ? (
+                              {scheduled || locked ? (
                                 <CalendarMinus className="size-3.5" />
-                              ) : locked ? (
-                                <Lock className="size-3.5" />
                               ) : (
-                                <LockOpen className="size-3.5" />
+                                <CalendarPlus className="size-3.5" />
                               )}
                             </button>
                           )}

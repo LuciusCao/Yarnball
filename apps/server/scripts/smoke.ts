@@ -10,6 +10,8 @@
  *      → tool_call → 回合结束
  *   4. permission_flow：另开会话，断言 permission_request 出现、UI 应答后
  *      agent 收到决策
+ *   4.8 unlock_luggage_flow：锁定简化（agent 可改 locked 地点信息字段、
+ *      删除已排期地点被拒）+ 换酒店日行李动线（酒店再次入队、legs 正确）
  *   5. 清理（关会话）
  */
 
@@ -727,6 +729,103 @@ async function main() {
       const { bundle: nameBundle } = await api(`/trips/${mcTrip.id}`);
       const ariaPlaces = nameBundle.places.filter((p: any) => p.name.startsWith("Aria"));
       assert(ariaPlaces.length === 1, "dedup: exactly one Aria place after suffix-variant duplicate signal");
+    }
+
+    // 4.8 unlock_luggage_flow（M54）：锁定简化 + 换酒店日行李动线
+    console.log("-- unlock_luggage_flow --");
+    // ① agent 可 update locked 地点（信息字段补全不再被锁定拦截；lockedPlace 由 dedup flow 建好，status=locked）
+    {
+      const upd = await mcpCall(
+        "tools/call",
+        { name: "update_place", arguments: { placeId: lockedPlace.id, website: "https://example.com/locked-shop", notes: "agent 补全备注" } },
+        20,
+      );
+      const updBody = JSON.parse(upd.result?.content?.[0]?.text ?? "{}");
+      assert(
+        upd.result?.isError !== true && updBody.place?.website === "https://example.com/locked-shop",
+        "unlock: agent update_place on a locked place succeeds",
+      );
+      const { bundle: b1 } = await api(`/trips/${mcTrip.id}`);
+      const p = b1.places.find((x: any) => x.id === lockedPlace.id);
+      assert(p?.status === "locked" && p?.notes === "agent 补全备注", "unlock: locked place keeps status, info fields updated");
+    }
+    // ② 已排进行程（有 entry 引用）的地点 agent 不可直接删除——须先移出行程；未排期的可删
+    {
+      // xz（西宁站）已排在 day1 → 拒绝
+      const delScheduled = await mcpCall("tools/call", { name: "remove_place", arguments: { placeId: xz.id } }, 21);
+      const delText: string = delScheduled.result?.content?.[0]?.text ?? "";
+      assert(
+        delScheduled.result?.isError === true && delText.includes("移出行程"),
+        "unlock: agent remove_place on a scheduled place rejected with unschedule guidance",
+      );
+      // foodPlace（炕锅羊肉，candidate，未排期）→ 可删
+      const delCandidate = await mcpCall("tools/call", { name: "remove_place", arguments: { placeId: foodPlace.id } }, 22);
+      assert(
+        delCandidate.result?.isError !== true && JSON.parse(delCandidate.result?.content?.[0]?.text ?? "{}").ok === true,
+        "unlock: agent remove_place on an unscheduled candidate succeeds",
+      );
+      const { bundle: b2 } = await api(`/trips/${mcTrip.id}`);
+      assert(
+        b2.places.some((x: any) => x.id === xz.id) && !b2.places.some((x: any) => x.id === foodPlace.id),
+        "unlock: scheduled place kept, unscheduled candidate gone",
+      );
+    }
+    // ③ 换酒店日行李动线：酒店 place 作为行程节点再次入队（傍晚回 A 取行李），legs 正确计算
+    {
+      const { trip: lgTrip } = await api("/trips", {
+        method: "POST",
+        body: JSON.stringify({ title: "smoke-换酒店行李", destinationCity: "杭州" }),
+      });
+      const mkHotel = async (body: Record<string, unknown>) =>
+        (await api(`/trips/${lgTrip.id}/hotel-candidates`, { method: "POST", body: JSON.stringify(body) })) as any;
+      const hotelA = await mkHotel({ name: "湖滨酒店A", location: { lng: 120.16, lat: 30.25 }, pricePerNight: 500 });
+      const hotelB = await mkHotel({ name: "西溪酒店B", location: { lng: 120.06, lat: 30.27 }, pricePerNight: 400 });
+      const spot = (await api(`/trips/${lgTrip.id}/places`, {
+        method: "POST",
+        body: JSON.stringify({ name: "灵隐寺", category: "attraction", location: { lng: 120.1, lat: 30.24 } }),
+      })).place;
+      // 先排 day2（惰性建 day，行程天数才够 select-hotel 的区间校验）：
+      // 离店 A（寄存）→ 游玩 → 傍晚回 A 取行李（同一 place 再次入队）→ 赴 B 入住（尾锚点）
+      const spotEntry = await api(`/trips/${lgTrip.id}/entries`, {
+        method: "POST",
+        body: JSON.stringify({ entryType: "place", placeId: spot.id, dayIndex: 2, startTime: "10:00" }),
+      });
+      const pickupEntry = await api(`/trips/${lgTrip.id}/entries`, {
+        method: "POST",
+        body: JSON.stringify({ entryType: "place", placeId: hotelA.place.id, dayIndex: 2, startTime: "17:30", note: "回酒店取行李" }),
+      });
+      assert(pickupEntry.entryId && pickupEntry.entryId !== spotEntry.entryId, "luggage: hotel place re-enqueued as a second entry on the same day");
+      // A 住第 1 晚、B 住第 2 晚 → day2 为换酒店日（首锚点=A，尾锚点=B）；select 触发 legs 重算
+      await api(`/trips/${lgTrip.id}/select-hotel`, {
+        method: "POST",
+        body: JSON.stringify({ candidateId: hotelA.candidate.id, checkInDay: 1, checkOutDay: 2 }),
+      });
+      await api(`/trips/${lgTrip.id}/select-hotel`, {
+        method: "POST",
+        body: JSON.stringify({ candidateId: hotelB.candidate.id, checkInDay: 2, checkOutDay: 3 }),
+      });
+      const { bundle: lgBundle } = await api(`/trips/${lgTrip.id}`);
+      const lgDay = lgBundle.days.find((d: any) => d.dayIndex === 2);
+      const lgLegs = lgBundle.legs.filter((l: any) => l.dayId === lgDay.id).sort((a: any, b: any) => a.seq - b.seq);
+      // 链：A（首锚点）→ 灵隐寺 → A（取行李 entry）→ B（尾锚点），共 3 段
+      assert(lgLegs.length === 3, `luggage: hotel-swap day has 3 legs (got ${lgLegs.length})`);
+      assert(
+        lgLegs[0].fromPlaceId === hotelA.place.id && lgLegs[0].toEntryId === spotEntry.entryId,
+        "luggage: leg 0 = 酒店A（首锚点）→ 景点",
+      );
+      assert(
+        lgLegs[1].fromEntryId === spotEntry.entryId && lgLegs[1].toEntryId === pickupEntry.entryId,
+        "luggage: leg 1 = 景点 → 酒店A（取行李）",
+      );
+      assert(
+        lgLegs[2].fromEntryId === pickupEntry.entryId && lgLegs[2].toPlaceId === hotelB.place.id,
+        "luggage: leg 2 = 酒店A（取行李）→ 酒店B（尾锚点）",
+      );
+      assert(
+        lgLegs.every((l: any) => l.distanceM != null && l.durationS != null),
+        "luggage: all legs computed with distance + duration",
+      );
+      await api(`/trips/${lgTrip.id}`, { method: "DELETE" });
     }
 
     await api(`/trips/${mcTrip.id}`, { method: "DELETE" });
