@@ -17,6 +17,14 @@ export const TRANSIT_KIND_META: Record<TransitKind, { label: string }> = {
   intercity: { label: "城市间" },
 };
 
+/** 大交通方式展示文案（M39 多城市/环线：drive=自驾段走真实路由，卡片带里程/时长） */
+export const TRANSIT_MODE_META: Record<NonNullable<EntryDto["transitMode"]>, { label: string }> = {
+  flight: { label: "飞机" },
+  train: { label: "火车" },
+  drive: { label: "自驾" },
+  bus: { label: "大巴" },
+};
+
 export function isTransitEntry(entry: EntryDto): boolean {
   return entry.entryType === "transit";
 }

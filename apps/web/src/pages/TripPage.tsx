@@ -346,8 +346,12 @@ export function TripPage() {
           ‹
         </Link>
         <h1 className="glass-text text-sm font-semibold">{trip.title}</h1>
-        <span className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500">
-          {trip.destinationCity}
+        <span
+          className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500"
+          title={trip.stops.length > 1 ? `途经地（按游览顺序）：${trip.stops.map((s) => s.name).join(" → ")}` : undefined}
+        >
+          {/* 多城市（M39）：信息条直接展示途经地链；单城市仍是目的地名 */}
+          {trip.stops.length > 1 ? trip.stops.map((s) => s.name).join(" → ") : trip.destinationCity}
         </span>
         {trip.geoProvider === "osm" && (
           <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-700">

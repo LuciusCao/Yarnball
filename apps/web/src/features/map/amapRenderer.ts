@@ -62,6 +62,23 @@ export class AMapRenderer implements MapRenderer {
       this.overlays.push(m);
     }
 
+    // 途经地标记层（M39 多城市）：深色描边白底胶囊 + 序号，置于地点标记之下（zIndex 90），不可点击
+    for (const stop of specs.stops) {
+      const m = new this.AMap.Marker({
+        position: [stop.position.lng, stop.position.lat],
+        title: `途经地 ${stop.index}：${stop.name}`,
+        zIndex: 90,
+        label: {
+          content: `<div style="white-space:nowrap;font-size:11px;font-weight:600;padding:2px 8px;border-radius:9999px;background:rgba(255,255,255,.92);color:#334155;border:1.5px solid #334155;box-shadow:0 1px 4px rgba(15,23,42,.25)">${stop.index} · ${escapeHtml(stop.name)}</div>`,
+          direction: "bottom",
+          offset: [0, 6],
+        },
+        anchor: "top-center",
+      });
+      this.map.add(m);
+      this.overlays.push(m);
+    }
+
     for (const line of specs.lines) {
       const poly = new this.AMap.Polyline({
         path: line.path.map((p) => [p.lng, p.lat]),

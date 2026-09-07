@@ -149,6 +149,16 @@ export class MapLibreRenderer implements MapRenderer {
       this.sourceIds.push("hotel-area-src");
     }
 
+    // 途经地标记层（M39 多城市）：白底深色描边胶囊 + 序号，先渲染使其被地点标记自然压在下面，不可点击
+    for (const stop of specs.stops) {
+      const el = document.createElement("div");
+      el.innerHTML = `<div style="white-space:nowrap;font-size:11px;font-weight:600;padding:2px 8px;border-radius:9999px;background:rgba(255,255,255,.92);color:#334155;border:1.5px solid #334155;box-shadow:0 1px 4px rgba(15,23,42,.25)">${stop.index} · ${escapeHtml(stop.name)}</div>`;
+      const marker = new maplibregl.Marker({ element: el, anchor: "top" })
+        .setLngLat([stop.position.lng, stop.position.lat])
+        .addTo(map);
+      this.markers.push(marker);
+    }
+
     // markers：Tahoe 风玻璃胶囊徽标（选中态高亮环；候选半透明）
     for (const spec of specs.markers) {
       const selected = spec.placeId === selectedPlaceId;
@@ -170,9 +180,13 @@ export class MapLibreRenderer implements MapRenderer {
 
   fit(specs: OverlaySpecs): void {
     const map = this.map;
-    if (!map || specs.markers.length === 0) return;
-    const lngs = specs.markers.map((m) => m.position.lng);
-    const lats = specs.markers.map((m) => m.position.lat);
+    const points = [
+      ...specs.markers.map((m) => m.position),
+      ...specs.stops.map((s) => s.position),
+    ];
+    if (!map || points.length === 0) return;
+    const lngs = points.map((p) => p.lng);
+    const lats = points.map((p) => p.lat);
     map.fitBounds(
       [
         [Math.min(...lngs), Math.min(...lats)],

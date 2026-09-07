@@ -68,12 +68,13 @@ export function MapCanvas({
   const provider = bundle?.trip.geoProvider ?? "osm";
   const center = bundle?.trip.location ?? null;
 
-  // 城市定位：无地点时飞到城市中心（有地点时 fit 到标记更有用）
+  // 城市定位：无地点时飞到城市中心（有地点时 fit 到标记更有用；多城市行程交给 stops fit，见下方重画 effect）
   useEffect(() => {
     if (!center || !bundle) return;
     if (bundle.places.length > 0) return;
+    if (bundle.trip.stops.filter((s) => s.center != null).length > 1) return;
     rendererRef.current?.flyTo(center, 12);
-  }, [center, bundle?.places.length]);
+  }, [center, bundle?.places.length, bundle?.trip.stops]);
 
   // 引擎初始化（provider 变化时重建 —— 一个页面只会有一份行程，切换行程=卸载组件）
   useEffect(() => {
@@ -100,12 +101,18 @@ export function MapCanvas({
         if (latest.bundle) {
           const specs = buildOverlaySpecs(latest.bundle, latest.visibleDayIndex, latest.hotelArea);
           renderer.render(specs, latest.selectedPlaceId);
-          const fitKey = latest.bundle.places.map((p) => p.id).sort().join(",");
           if (latest.bundle.places.length > 0) {
             renderer.fit(specs);
-            fittedRef.current = fitKey;
-          } else if (latest.bundle.trip.location) {
-            renderer.flyTo(latest.bundle.trip.location, 12);
+            fittedRef.current = latest.bundle.places.map((p) => p.id).sort().join(",");
+          } else {
+            // 多城市（M39）：还没有地点时视野适配全部途经地；单城市退回城市中心
+            const latestStops = latest.bundle.trip.stops.filter((s) => s.center != null);
+            if (latestStops.length > 1) {
+              renderer.fit(specs);
+              fittedRef.current = `stops:${latestStops.map((s) => s.name).join(",")}`;
+            } else if (latest.bundle.trip.location) {
+              renderer.flyTo(latest.bundle.trip.location, 12);
+            }
           }
         }
       })
@@ -133,9 +140,15 @@ export function MapCanvas({
     const specs = buildOverlaySpecs(bundle, visibleDayIndex, hotelArea);
     renderer.render(specs, selectedPlaceId);
 
-    // 行程地点集合变化时 fitView 一次
-    const fitKey = bundle.places.map((p) => p.id).sort().join(",");
-    if (bundle.places.length > 0 && fitKey !== fittedRef.current) {
+    // 行程地点集合变化时 fitView 一次；多城市无地点时（M39）改为 fit 全部途经地
+    const stopsWithCenter = bundle.trip.stops.filter((s) => s.center != null);
+    const fitKey =
+      bundle.places.length > 0
+        ? bundle.places.map((p) => p.id).sort().join(",")
+        : stopsWithCenter.length > 1
+          ? `stops:${stopsWithCenter.map((s) => s.name).join(",")}`
+          : "";
+    if (fitKey && fitKey !== fittedRef.current) {
       fittedRef.current = fitKey;
       renderer.fit(specs);
     }

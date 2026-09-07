@@ -1,19 +1,21 @@
 import { useState } from "react";
 import { formatDistance, formatDuration, type TripBundle, type TransportLegDto } from "@yarnball/shared";
 import { toast } from "sonner";
-import { BedDouble, Bus, Car, Clock, Footprints, PlaneLanding, PlaneTakeoff, TrainFront, Zap } from "lucide-react";
+import { BedDouble, Bus, Car, Clock, Footprints, MapPin, PlaneLanding, PlaneTakeoff, Repeat, TrainFront, Zap } from "lucide-react";
 import { api } from "../../api/client";
 import { api as libApi } from "../../lib/api";
 import { DAY_COLORS } from "../map/MapCanvas";
 import { buildDayTimeline, formatHHMM, type TimelineItem } from "./timeline";
 import {
   TRANSIT_KIND_META,
+  TRANSIT_MODE_META,
   transitFromName,
   transitKindOf,
   transitRouteText,
   transitToName,
   type TransitKind,
 } from "./transit";
+import { groupDaysByStop, isLoopClosed, isMultiCity } from "./stops";
 import {
   conflictsWithOpeningHours,
   openingHoursOf,
@@ -41,6 +43,11 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  *   注意（M20 话术统一）：酒店需「加入行程」（底层 select，带 checkInDay/checkOutDay 住宿区间）才参与路线锚定
  * - Day 筛选 tabs（M15，TripPage 传入 visibleDay/onVisibleDayChange 时启用）：
  *   面板顶部「全部/Day 1/Day 2…」，选中天过滤面板并同步地图聚焦
+ * - 多城市（M39，trip.stops > 1）：顶部显示途经地链「西宁 → 青海湖 → …」，末段 transit
+ *   讫点回到 stops[0] 时附 🔁 环线徽标（isLoopClosed，推导不落库）；天 section 按 stop
+ *   连续分组，组头「📍 途经地 · Dn-Dm」（day→stop 推导见 stops.ts）；
+ *   大交通卡按 transitMode 区分图标/徽标（drive=🚗 自驾，卡片带真实里程/时长，数据取该
+ *   transit 的 ride leg：legs 中 fromEntryId==toEntryId==entry.id 的那条）
  * - readOnly（分享页）：隐藏一切编辑操作
  */
 
@@ -188,6 +195,11 @@ export function ItineraryPanel({
       ? sortedDays.filter((d) => d.dayIndex === visibleDay)
       : sortedDays;
 
+  /** 多城市（M39）：途经地链 + 环线徽标 + 天按 stop 连续分组；单城市全部为 null/不展示 */
+  const multiCity = isMultiCity(bundle);
+  const loopClosed = multiCity && isLoopClosed(bundle);
+  const stopGroups = groupDaysByStop(bundle, stays, shownDays);
+
   return (
     <div className="flex h-full flex-col overflow-y-auto">
       {/* Day 筛选 tabs（M15）：替代原地图左上浮条；选中天 = 面板过滤 + 地图聚焦 */}
@@ -226,7 +238,38 @@ export function ItineraryPanel({
           还没有行程。让 agent 帮你排，或在「添加地点」里手动加地点。
         </div>
       )}
-      {shownDays.map((day) => {
+      {/* 多城市途经地链（M39）：「西宁 → 青海湖 → …」；末段 transit 讫点回到首站时附 🔁 环线徽标 */}
+      {multiCity && (
+        <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 border-b border-slate-900/8 bg-white/50 px-3 py-1.5 text-[11px] text-slate-500">
+          <MapPin className="size-3 shrink-0 text-slate-400" />
+          {bundle.trip.stops.map((s, i) => (
+            <span key={`${s.name}-${i}`} className="flex items-center gap-1">
+              {i > 0 && <span className="text-slate-300">→</span>}
+              <span className="font-medium text-slate-600">{s.name}</span>
+            </span>
+          ))}
+          {loopClosed && (
+            <span className="ml-1 inline-flex items-center gap-0.5 rounded-full bg-emerald-500/12 px-1.5 py-0.5 font-medium text-emerald-700">
+              <Repeat className="size-3" />
+              环线已闭合
+            </span>
+          )}
+        </div>
+      )}
+      {(stopGroups ?? [{ stopName: null, days: shownDays }]).map((group) => (
+      <div key={group.stopName ?? `stop-unknown-${group.days[0]?.id ?? "empty"}`}>
+      {/* stop 分组头（M39）：连续同 stop 的天并成一组；推导不出归属的组不显示头 */}
+      {group.stopName != null && (
+        <header className="flex items-center gap-1.5 border-b border-slate-900/8 bg-slate-900/4 px-3 py-1.5 text-xs font-semibold text-slate-600">
+          <MapPin className="size-3.5 shrink-0 text-slate-400" />
+          {group.stopName}
+          <span className="font-normal text-slate-400">
+            · D{group.days[0].dayIndex}
+            {group.days.length > 1 ? `–D${group.days[group.days.length - 1].dayIndex}` : ""}
+          </span>
+        </header>
+      )}
+      {group.days.map((day) => {
         const color = DAY_COLORS[(day.dayIndex - 1) % DAY_COLORS.length];
         const entries = dayEntries.get(day.id) ?? [];
         const timeline = buildDayTimeline(entries, placeById, legAfter);
@@ -384,6 +427,10 @@ export function ItineraryPanel({
                         item={item}
                         kind={kind}
                         route={transitRouteText(entry, placeById) ?? place?.name ?? "大交通"}
+                        // 大交通段本身（from→to 同一 entry 的那条 leg）：自驾卡展示真实里程/时长用
+                        rideLeg={
+                          dayLegs.find((l) => l.fromEntryId === entry.id && l.toEntryId === entry.id) ?? null
+                        }
                         selected={selected}
                         readOnly={readOnly}
                         busy={busy}
@@ -525,15 +572,20 @@ export function ItineraryPanel({
           </section>
         );
       })}
+      </div>
+      ))}
     </div>
   );
 }
 
-/** 大交通卡（M11）：🛬抵达 / 🛫离开 / 🚄城市间，显示 departTime–arriveTime 与起讫名；非只读可直接编辑时间 */
+/** 大交通卡（M11）：🛬抵达 / 🛫离开 / 🚄城市间，显示 departTime–arriveTime 与起讫名；非只读可直接编辑时间。
+ *  M39：transitMode 非空时图标/徽标按方式区分（🚗 自驾 / 🚄 火车 / ✈ 飞机 / 🚌 大巴）；
+ *  自驾段（transitMode=drive）卡片内嵌真实里程/时长（ride leg，服务端走真实路由计算） */
 function TransitRow({
   item,
   kind,
   route,
+  rideLeg,
   selected,
   readOnly,
   busy,
@@ -547,6 +599,8 @@ function TransitRow({
   item: TimelineItem;
   kind: TransitKind;
   route: string;
+  /** 大交通段本身的 leg（fromEntryId==toEntryId==entry.id）；起讫纯文本时可能不存在 */
+  rideLeg: TransportLegDto | null;
   selected: boolean;
   readOnly: boolean;
   busy: boolean;
@@ -558,7 +612,19 @@ function TransitRow({
   onSaveTimes: (entryId: string, departTime: string | null, arriveTime: string | null) => Promise<void>;
 }) {
   const { entry, place, startMin, endMin, estimated } = item;
-  const Icon = kind === "arrival" ? PlaneLanding : kind === "departure" ? PlaneTakeoff : TrainFront;
+  const mode = entry.transitMode;
+  const Icon =
+    mode === "drive"
+      ? Car
+      : mode === "bus"
+        ? Bus
+        : mode === "train"
+          ? TrainFront
+          : kind === "arrival"
+            ? PlaneLanding
+            : kind === "departure"
+              ? PlaneTakeoff
+              : TrainFront;
   // 本地编辑态：失焦/回车提交；SSE 刷新后由父级按 entry.id+时间 重置 key 重挂载
   const [depart, setDepart] = useState(entry.departTime ?? "");
   const [arrive, setArrive] = useState(entry.arriveTime ?? "");
@@ -583,17 +649,31 @@ function TransitRow({
     >
       <span
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-700 text-white"
-        title={TRANSIT_KIND_META[kind].label}
+        title={`${TRANSIT_KIND_META[kind].label}${mode ? ` · ${TRANSIT_MODE_META[mode].label}` : ""}`}
       >
         <Icon className="size-3.5" />
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5 text-sm">
           <span className="truncate font-medium text-slate-800">{route}</span>
+          {mode != null && (
+            <span className="shrink-0 rounded bg-slate-900/8 px-1 text-[10px] text-slate-500">
+              {TRANSIT_MODE_META[mode].label}
+            </span>
+          )}
           <span className="shrink-0 rounded bg-slate-900/8 px-1 text-[10px] text-slate-500">
             {TRANSIT_KIND_META[kind].label}
           </span>
         </span>
+        {/* 自驾卡（M39）：真实里程/时长来自 ride leg（服务端 transitMode=drive 走真实路由计算） */}
+        {mode === "drive" && rideLeg && (
+          <span className="mt-0.5 block text-[11px] text-slate-400">
+            {rideLeg.distanceM != null ? formatDistance(rideLeg.distanceM) : ""}
+            {rideLeg.distanceM != null && rideLeg.durationS != null ? " · " : ""}
+            {rideLeg.durationS != null ? formatDuration(rideLeg.durationS) : ""}
+            {rideLeg.distanceM == null && rideLeg.durationS == null ? "里程/时长待路由计算" : ""}
+          </span>
+        )}
         {/* 时刻：只读展示 HH:MM – HH:MM；可编辑时两个 time 输入，失焦提交 */}
         {readOnly ? (
           <span className={`text-[11px] tabular-nums ${estimated ? "text-slate-300" : "text-slate-500"}`}>

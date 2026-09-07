@@ -6,6 +6,7 @@ import {
   MapPin,
   MoreHorizontal,
   Plus,
+  Route,
   Settings,
   Sparkles,
   Trash2,
@@ -109,6 +110,8 @@ export function TripListPage() {
   const [statErrors, setStatErrors] = useState<Record<string, true>>({});
   const [title, setTitle] = useState("");
   const [city, setCity] = useState("");
+  /** 额外途经地（M39 多城市）：自由文本，逗号/顿号分隔；留空 = 单城市行程 */
+  const [extraStops, setExtraStops] = useState("");
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TripDto | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -192,7 +195,16 @@ export function TripListPage() {
     if (!title.trim() || !city.trim()) return;
     setCreating(true);
     try {
-      const { trip } = await api.createTrip({ title: title.trim(), destinationCity: city.trim() });
+      // 多城市（M39）：途经地按填写顺序排在主目的地之后（stops[0] 恒为主目的地）；留空则不传，保持单城市原行为
+      const extra = extraStops
+        .split(/[,，、;；\n]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const { trip } = await api.createTrip({
+        title: title.trim(),
+        destinationCity: city.trim(),
+        ...(extra.length > 0 ? { stops: [city.trim(), ...extra] } : {}),
+      });
       navigate(`/trip/${trip.id}`);
     } catch (err) {
       toast.error("创建失败", { description: (err as Error).message });
@@ -298,8 +310,21 @@ export function TripListPage() {
               {creating ? "创建中…" : "创建行程"}
             </Button>
           </div>
+          {/* 多城市（M39）：可选途经地输入，按游览顺序逗号/顿号分隔；环线把首站写回末尾即可 */}
+          <div className="relative mt-2.5">
+            <Route className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <Input
+              value={extraStops}
+              onChange={(e) => setExtraStops(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void create()}
+              placeholder="途经地（可选）：多城市/环线按顺序填写，如「青海湖, 茶卡, 大柴旦, 敦煌」"
+              className="h-10 w-full pl-9"
+              autoComplete="off"
+            />
+          </div>
           <p className="mt-2.5 text-xs text-slate-400">
             国内目的地自动走高德引擎；海外（如澳大利亚）走开源地图引擎，无需任何配置。
+            填了途经地即为多城市行程：行程面板按途经地分组，地图标记全部途经地。
           </p>
         </section>
 
@@ -327,6 +352,11 @@ export function TripListPage() {
                       <span className="text-sm font-semibold tracking-wide drop-shadow-sm">
                         {trip.destinationCity}
                       </span>
+                      {trip.stops.length > 1 && (
+                        <span className="rounded-full bg-white/25 px-2 py-0.5 text-[10px] font-medium backdrop-blur-sm">
+                          {trip.stops.length} 个途经地
+                        </span>
+                      )}
                       {trip.geoProvider === "osm" && (
                         <span className="rounded-full bg-white/25 px-2 py-0.5 text-[10px] font-medium backdrop-blur-sm">
                           海外

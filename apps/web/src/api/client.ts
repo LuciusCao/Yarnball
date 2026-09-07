@@ -32,7 +32,7 @@ export const api = {
     }>("/config"),
 
   listTrips: () => request<{ trips: TripDto[] }>("/trips"),
-  createTrip: (input: { title: string; destinationCity: string }) =>
+  createTrip: (input: { title: string; destinationCity: string; stops?: string[] }) =>
     request<{ trip: TripDto }>("/trips", { method: "POST", body: JSON.stringify(input) }),
   deleteTrip: (tripId: string) => request<{ ok: true }>(`/trips/${tripId}`, { method: "DELETE" }),
   getBundle: (tripId: string) => request<{ bundle: TripBundle }>(`/trips/${tripId}`),

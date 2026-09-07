@@ -33,10 +33,20 @@ export interface CircleSpec {
   radiusM: number;
 }
 
+/** 途经地（stop）标记（M39 多城市）：途经地中心 + 序号；不可点击，仅作空间锚点 */
+export interface StopSpec {
+  name: string;
+  /** 1-based 游览顺序 */
+  index: number;
+  position: LngLat;
+}
+
 export interface OverlaySpecs {
   markers: MarkerSpec[];
   lines: LineSpec[];
   circle: CircleSpec | null;
+  /** 多城市行程的途经地标记层（stops ≤ 1 或筛选单天时为空） */
+  stops: StopSpec[];
 }
 
 export const DAY_COLORS = [
@@ -109,12 +119,29 @@ export function buildOverlaySpecs(
       .filter((l) => l.dayId === day.id)
       .sort((a, b) => a.seq - b.seq);
     for (const leg of dayLegs) {
-      const fromPlaceId = leg.fromEntryId
-        ? entries.find((e) => e.id === leg.fromEntryId)?.placeId
-        : leg.fromPlaceId;
-      const toPlaceId = leg.toEntryId
-        ? entries.find((e) => e.id === leg.toEntryId)?.placeId
-        : leg.toPlaceId;
+      // 端点解析（M39）：transit entry 的 placeId 常为空——大交通段本身（from==to==同一 entry）
+      // 取 entry 的 from/toPlaceId；其余以 transit 为端点的段，起点端=讫点（toPlaceId）、终点端=起点（fromPlaceId）
+      const endpointPlaceId = (
+        entryId: string | null,
+        placeIdFallback: string | null,
+        endpoint: "from" | "to",
+      ): string | null => {
+        if (!entryId) return placeIdFallback;
+        const e = entries.find((x) => x.id === entryId);
+        if (!e) return null;
+        if (e.placeId) return e.placeId;
+        return endpoint === "from" ? e.toPlaceId : e.fromPlaceId;
+      };
+      let fromPlaceId: string | null;
+      let toPlaceId: string | null;
+      if (leg.fromEntryId != null && leg.fromEntryId === leg.toEntryId) {
+        const rideEntry = entries.find((e) => e.id === leg.fromEntryId);
+        fromPlaceId = rideEntry?.fromPlaceId ?? null;
+        toPlaceId = rideEntry?.toPlaceId ?? null;
+      } else {
+        fromPlaceId = endpointPlaceId(leg.fromEntryId, leg.fromPlaceId, "from");
+        toPlaceId = endpointPlaceId(leg.toEntryId, leg.toPlaceId, "to");
+      }
       const from = fromPlaceId ? placeById.get(fromPlaceId) : undefined;
       const to = toPlaceId ? placeById.get(toPlaceId) : undefined;
       if (!from || !to) continue;
@@ -169,5 +196,12 @@ export function buildOverlaySpecs(
       visibleDayIndex == null && hotelArea
         ? { id: "hotel-area", ...hotelArea }
         : null,
+    // 途经地标记层（M39）：多城市行程在「全部天」视图显示 stop 中心 + 序号；center 解析失败的跳过
+    stops:
+      visibleDayIndex == null && bundle.trip.stops.length > 1
+        ? bundle.trip.stops.flatMap((s, i) =>
+            s.center ? [{ name: s.name, index: i + 1, position: s.center }] : [],
+          )
+        : [],
   };
 }
