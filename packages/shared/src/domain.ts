@@ -356,6 +356,8 @@ export const CreatePlaceInputSchema = z.object({
   bookingStatus: z.enum(BOOKING_STATUSES).optional(),
   /** 显式指定初始状态；缺省由服务端按创建者决定（human→locked，agent→candidate） */
   status: z.enum(PLACE_STATUSES).optional(),
+  /** 跳过模糊判重强制新建（默认 false：规范化名称相同/互为前缀 + 坐标 ≤200m 时返回 409 疑似重复信号，不创建新行） */
+  allowDuplicate: z.boolean().optional(),
 });
 export type CreatePlaceInput = z.infer<typeof CreatePlaceInputSchema>;
 
@@ -374,6 +376,22 @@ export const UnschedulePlaceResultSchema = z.object({
   removedEntries: z.number().int().min(0),
 });
 export type UnschedulePlaceResult = z.infer<typeof UnschedulePlaceResultSchema>;
+
+/** 疑似重复信号的 error.code 值（REST 409 与 MCP add_place 结构化错误共用） */
+export const POSSIBLE_DUPLICATE_CODE = "possible_duplicate" as const;
+
+/**
+ * POST /places 疑似重复（409）响应体：模糊判重（规范化名称相同/互为前缀 + 坐标 ≤200m）
+ * 命中已有 place 时不创建新行、不回填，把已有 place 带回给前端弹确认框；
+ * 用户确认是不同地点后带 allowDuplicate=true 重试强制创建。
+ * amapPoiId 精确匹配不走此信号（保持幂等返回已有 place）。
+ */
+export const PossibleDuplicatePayloadSchema = z.object({
+  error: z.string(),
+  code: z.literal(POSSIBLE_DUPLICATE_CODE),
+  existingPlace: PlaceDtoSchema,
+});
+export type PossibleDuplicatePayload = z.infer<typeof PossibleDuplicatePayloadSchema>;
 
 /** HH:MM（24 小时制） */
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;

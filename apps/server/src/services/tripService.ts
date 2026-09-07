@@ -16,6 +16,7 @@ import type {
   DayCluster,
   GeoProviderName,
   LngLat,
+  PlaceDto,
   PlaceStatus,
   SuggestDayClustersResult,
   TransportMode,
@@ -84,6 +85,18 @@ export class ServiceError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+/**
+ * 疑似重复信号（409）：createPlace 的模糊判重（规范化名称相同/互为前缀 + 坐标 ≤200m）
+ * 命中已有 place 时抛出——不创建新行、不回填已有行，把已有 place DTO 带回调用方
+ * （REST 弹确认框 / MCP 指引 agent 用 update_place 补全或带 allowDuplicate 重试）。
+ * amapPoiId 精确匹配不抛此错误（保持幂等返回已有 place）。
+ */
+export class PossibleDuplicateError extends ServiceError {
+  constructor(public existingPlace: PlaceDto) {
+    super(409, `疑似与已有地点「${existingPlace.name}」重复（名称相近且坐标距离 ≤200m），未创建新地点。`);
   }
 }
 
@@ -409,10 +422,12 @@ export class TripService {
    * 多城市改「距任一 stop.center ≤ 多中心阈值（min 距离）」。agent 被拒时应引导其先调 search_poi 拿真实坐标。
    * cityName 自动填充：显式传 > 距最近 stop.center ≤150km 归该 stop > null（归属未知不阻断）。
    * 状态机：agent 建的默认 candidate（候选池）；human 手动建的默认 locked（确认要去）。
-   * 幂等去重（REST / MCP 共用此入口）：同 trip 下 amapPoiId 精确匹配，或规范化名称匹配
-   * （完全相等 / 互为前缀，见 placeNameMatch）且坐标距离 ≤200m，
-   * 即视为同一地点——不插新行，返回已有 place，并补齐其缺失的详情字段（不覆盖已有值；
-   * agent 不补齐用户已锁定的地点，与锁定保护一致）。
+   * 判重（REST / MCP 共用此入口）：
+   * - amapPoiId 精确匹配 → 幂等返回已有 place，并补齐其缺失的详情字段（不覆盖已有值；
+   *   agent 不补齐用户已锁定的地点，与锁定保护一致）；
+   * - 规范化名称匹配（完全相等 / 互为前缀，见 placeNameMatch）且坐标距离 ≤200m → 抛
+   *   PossibleDuplicateError（409 疑似重复信号）：不插新行也不回填，是否同一家交给调用方判断；
+   * - input.allowDuplicate=true → 跳过模糊判重，直接创建（amapPoiId 幂等不受其影响）。
    */
   async createPlace(tripId: string, input: CreatePlaceInput, actor: Actor) {
     const trip = await this.getTrip(tripId);
@@ -437,47 +452,21 @@ export class TripService {
       }
     }
     const cityName = input.cityName ?? (nearest && nearest.distKm <= PLACE_CITY_ASSIGN_MAX_DIST_KM ? nearest.name : null);
-    // 幂等去重：同 trip 下 amapPoiId 精确匹配优先，其次规范化名称匹配（相等 / 互为前缀）+ 坐标距离 ≤200m
     const existingPlaces = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
-    const normalizedName = normalizePlaceName(input.name);
-    const dup =
-      (input.amapPoiId ? existingPlaces.find((p) => p.amapPoiId === input.amapPoiId) : undefined) ??
-      existingPlaces.find(
+    // amapPoiId 精确匹配 → 幂等返回已有 place 并补齐缺失字段（不插新行、不报疑似重复）
+    const exactDup = input.amapPoiId ? existingPlaces.find((p) => p.amapPoiId === input.amapPoiId) : undefined;
+    if (exactDup) return this.backfillExistingPlace(tripId, exactDup, input, cityName, actor);
+    // 模糊判重（规范化名称相等 / 互为前缀 + 坐标距离 ≤200m）→ 疑似重复信号，不静默合并：
+    // 是否同一家由调用方判断（agent 用 update_place 补全 / 人类在确认框里决定）；
+    // allowDuplicate=true 跳过此判重强制新建（同名分店、确认过的相邻不同点）
+    if (!input.allowDuplicate) {
+      const normalizedName = normalizePlaceName(input.name);
+      const fuzzyDup = existingPlaces.find(
         (p) =>
           placeNameMatch(normalizePlaceName(p.name), normalizedName) &&
           haversineM({ lng: Number(p.lng), lat: Number(p.lat) }, input.location) <= PLACE_DEDUP_MAX_DIST_M,
       );
-    if (dup) {
-      // 补齐已有行的空字段（绝不覆盖已有值）；agent 不动用户已锁定的地点（与 assertNotLockedForAgent 一致）
-      const patch: Partial<typeof schema.places.$inferInsert> = {};
-      if (!(actor === "agent" && dup.status === "locked")) {
-        if (dup.address == null && input.address != null) patch.address = input.address;
-        if (dup.website == null && input.website != null) patch.website = input.website;
-        if (dup.bookingUrl == null && input.bookingUrl != null) patch.bookingUrl = input.bookingUrl;
-        if (dup.phone == null && input.phone != null) patch.phone = input.phone;
-        if (dup.cityName == null && cityName != null) patch.cityName = cityName;
-        if (dup.amapPoiId == null && input.amapPoiId != null) patch.amapPoiId = input.amapPoiId;
-        if (dup.sourceUrl == null && input.sourceUrl != null) patch.sourceUrl = input.sourceUrl;
-        if (dup.notes == null && input.notes != null) patch.notes = input.notes;
-        if (dup.durationMin == null && input.durationMin != null) patch.durationMin = input.durationMin;
-        if (dup.visitDurationMin == null && input.visitDurationMin != null) {
-          patch.visitDurationMin = input.visitDurationMin;
-        }
-        if (dup.priceCny == null && input.priceCny != null) patch.priceCny = Math.round(input.priceCny);
-        if (dup.bookingInfo == null && input.bookingInfo != null) patch.bookingInfo = input.bookingInfo;
-        if (dup.openingHours == null && input.openingHours != null) patch.openingHours = input.openingHours;
-      }
-      if (Object.keys(patch).length > 0) {
-        const [row] = await this.db
-          .update(schema.places)
-          .set(patch)
-          .where(eq(schema.places.id, dup.id))
-          .returning();
-        await this.touchTrip(tripId);
-        await this.publishBundle(tripId);
-        return toPlaceDto(row);
-      }
-      return toPlaceDto(dup);
+      if (fuzzyDup) throw new PossibleDuplicateError(toPlaceDto(fuzzyDup));
     }
     const [row] = await this.db
       .insert(schema.places)
@@ -510,6 +499,48 @@ export class TripService {
     await this.touchTrip(tripId);
     await this.publishBundle(tripId);
     return toPlaceDto(row);
+  }
+
+  /**
+   * 幂等命中（amapPoiId 精确匹配）时复用已有 place：补齐其空字段（绝不覆盖已有值）；
+   * agent 不补齐用户已锁定的地点（与 assertNotLockedForAgent 一致）。
+   */
+  private async backfillExistingPlace(
+    tripId: string,
+    dup: typeof schema.places.$inferSelect,
+    input: CreatePlaceInput,
+    cityName: string | null,
+    actor: Actor,
+  ) {
+    const patch: Partial<typeof schema.places.$inferInsert> = {};
+    if (!(actor === "agent" && dup.status === "locked")) {
+      if (dup.address == null && input.address != null) patch.address = input.address;
+      if (dup.website == null && input.website != null) patch.website = input.website;
+      if (dup.bookingUrl == null && input.bookingUrl != null) patch.bookingUrl = input.bookingUrl;
+      if (dup.phone == null && input.phone != null) patch.phone = input.phone;
+      if (dup.cityName == null && cityName != null) patch.cityName = cityName;
+      if (dup.amapPoiId == null && input.amapPoiId != null) patch.amapPoiId = input.amapPoiId;
+      if (dup.sourceUrl == null && input.sourceUrl != null) patch.sourceUrl = input.sourceUrl;
+      if (dup.notes == null && input.notes != null) patch.notes = input.notes;
+      if (dup.durationMin == null && input.durationMin != null) patch.durationMin = input.durationMin;
+      if (dup.visitDurationMin == null && input.visitDurationMin != null) {
+        patch.visitDurationMin = input.visitDurationMin;
+      }
+      if (dup.priceCny == null && input.priceCny != null) patch.priceCny = Math.round(input.priceCny);
+      if (dup.bookingInfo == null && input.bookingInfo != null) patch.bookingInfo = input.bookingInfo;
+      if (dup.openingHours == null && input.openingHours != null) patch.openingHours = input.openingHours;
+    }
+    if (Object.keys(patch).length > 0) {
+      const [row] = await this.db
+        .update(schema.places)
+        .set(patch)
+        .where(eq(schema.places.id, dup.id))
+        .returning();
+      await this.touchTrip(tripId);
+      await this.publishBundle(tripId);
+      return toPlaceDto(row);
+    }
+    return toPlaceDto(dup);
   }
 
   /**
@@ -1485,7 +1516,8 @@ export class TripService {
 
   async addHotelCandidate(tripId: string, input: CreateHotelCandidateInput, actor: Actor) {
     const place = await this.createPlace(tripId, { ...input, category: "hotel" }, actor);
-    // createPlace 幂等去重可能返回已有 place：同一 place 只保留一条酒店候选行，避免重复候选指向同一地点
+    // createPlace 的 amapPoiId 幂等可能返回已有 place：同一 place 只保留一条酒店候选行，避免重复候选指向同一地点
+    // （模糊判重的疑似重复会以 PossibleDuplicateError 传播给调用方，这里收不到）
     const [existing] = await this.db
       .select()
       .from(schema.hotelCandidates)

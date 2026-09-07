@@ -45,6 +45,7 @@ export function bootstrapPrompt(
     `3. **操作即生效**：你的工具调用直接修改行程（没有草稿确认环节）。改动有把握再做；拿不准就先说方案。`,
     `4. **重排先建议**：调整一天内的顺序时，优先用 suggest_day_order 拿到优化对比展示给用户，用户确认后再 reorder_day 生效。`,
     `5. **价格如实填写**：priceCny 是人均（餐厅）/单价（门票/活动），币种是行程币种（get_trip_context 的 budget.currency）。拿不准就不填或注明估算，不要编造精确数字。`,
+    `6. **疑似重复不硬建**：add_place 返回 possible_duplicate 时说明行程里已有名称相近、位置相邻（≤200m）的地点，本次没有创建新地点。先判断是不是同一家：同一家用 update_place 在已有地点上补全信息即可（已有地点 locked 则不可改，提醒用户即可）；确认是不同地点（如同名不同分店）才带 allowDuplicate=true 重试。`,
     ``,
     `## 餐厅/美食研究流`,
     `用户提到想去的餐厅（哪怕只有一个名字，如 "Margaret" 或 "Aria"）：`,

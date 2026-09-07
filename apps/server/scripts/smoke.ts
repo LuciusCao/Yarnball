@@ -391,9 +391,15 @@ async function main() {
       "agent place >200km from all stops rejected with search_poi guidance",
     );
 
-    // place_dedup_flow：幂等去重——agent 重复 add 同名同坐标美食只产生一条候选（REST 路径同样生效）
+    // place_dedup_flow：疑似重复信号化——模糊判重（规范化名称相等/互为前缀 + 坐标 ≤200m）默认不创建、
+    // 返回疑似重复信号（MCP 结构化错误 / REST 409）；amapPoiId 精确匹配保持幂等返回；
+    // allowDuplicate=true 跳过模糊判重强制创建
     console.log("-- place_dedup_flow --");
     const parsePlace = (r: any) => JSON.parse(r.result?.content?.[0]?.text ?? "{}").place;
+    const parseDupSignal = (r: any) => {
+      const body = JSON.parse(r.result?.content?.[0]?.text ?? "{}");
+      return body.error === "possible_duplicate" ? body : null;
+    };
     // 首次 add：建候选（大柴旦附近，防编造范围内）
     const food1 = await mcpCall(
       "tools/call",
@@ -402,27 +408,61 @@ async function main() {
     );
     const foodPlace = parsePlace(food1);
     assert(food1.result?.isError !== true && foodPlace?.id, "dedup: first add_place creates candidate");
-    // 重复 add：名称带尾随空白（规范化后相同）+ 坐标偏移 ~44m（<200m）→ 返回已有 place，不插新行；
-    // 同时补齐已有行缺失的 openingHours
+    // 模糊命中：名称带尾随空白（规范化后相同）+ 坐标偏移 ~44m（<200m）→ 疑似重复信号，不插新行也不回填
     const food2 = await mcpCall(
       "tools/call",
       { name: "add_place", arguments: { name: "炕锅羊肉 ", category: "restaurant", location: { lng: 95.3605, lat: 37.854 }, openingHours: "10:00-22:00" } },
       11,
     );
-    const foodPlace2 = parsePlace(food2);
-    assert(food2.result?.isError !== true && foodPlace2?.id === foodPlace.id, "dedup: same-name nearby add returns existing place");
-    assert(foodPlace2?.openingHours === "10:00-22:00", "dedup: missing openingHours backfilled on existing place");
-    assert(foodPlace2?.priceCny === 80, "dedup: existing fields not overwritten (priceCny kept)");
-    // REST（human）路径同样走 createPlace：同名同坐标不插新行
-    const restDup = await mkPlace({ name: "炕锅羊肉", category: "restaurant", location: { lng: 95.36, lat: 37.854 } });
-    assert(restDup.id === foodPlace.id, "dedup: REST create also returns existing place (no new row)");
+    const foodDup = parseDupSignal(food2);
+    assert(food2.result?.isError === true && !!foodDup, "dedup: fuzzy-hit add_place returns possible_duplicate signal (no creation)");
+    assert(foodDup?.existingPlace?.id === foodPlace.id, "dedup: signal carries the existing place");
+    assert(foodDup?.existingPlace?.openingHours == null, "dedup: fuzzy signal does NOT backfill the existing place");
+    assert(
+      typeof foodDup?.guidance === "string" && foodDup.guidance.includes("update_place") && foodDup.guidance.includes("allowDuplicate"),
+      "dedup: signal guides agent to update_place or retry with allowDuplicate",
+    );
+    // REST（human）路径同样走 createPlace：模糊命中 → 409 + 已有 place（供前端弹确认框）
+    const restDupRes = await fetch(`${BASE}/api/trips/${mcTrip.id}/places`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "炕锅羊肉", category: "restaurant", location: { lng: 95.36, lat: 37.854 } }),
+    });
+    const restDupBody = (await restDupRes.json()) as any;
+    assert(restDupRes.status === 409, "dedup: REST fuzzy hit returns 409 (no new row)");
+    assert(
+      restDupBody.code === "possible_duplicate" && restDupBody.existingPlace?.id === foodPlace.id,
+      "dedup: REST 409 payload carries code + existingPlace",
+    );
     // bundle 里该地点只有一条候选
     {
       const { bundle: dedupBundle } = await api(`/trips/${mcTrip.id}`);
       const foodPlaces = dedupBundle.places.filter((p: any) => p.name.trim() === "炕锅羊肉");
-      assert(foodPlaces.length === 1, "dedup: exactly one candidate for the duplicated food place");
+      assert(foodPlaces.length === 1, "dedup: exactly one candidate after fuzzy-hit signals");
+      assert(foodPlaces[0].openingHours == null, "dedup: existing place untouched by rejected duplicates");
     }
-    // 同名但坐标距离 >200m → 视为不同地点，正常新建
+    // allowDuplicate=true：用户/agent 确认是不同地点后强制创建（MCP 路径）
+    const foodForce = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "炕锅羊肉", category: "restaurant", location: { lng: 95.36, lat: 37.854 }, allowDuplicate: true } },
+      18,
+    );
+    const foodForcePlace = parsePlace(foodForce);
+    assert(
+      foodForce.result?.isError !== true && foodForcePlace?.id && foodForcePlace.id !== foodPlace.id,
+      "dedup: allowDuplicate=true forces creation despite fuzzy hit",
+    );
+    // allowDuplicate=true：REST 路径同样生效（确认框「仍然创建」重试）
+    {
+      const res = await fetch(`${BASE}/api/trips/${mcTrip.id}/places`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "炕锅羊肉", category: "restaurant", location: { lng: 95.36, lat: 37.854 }, allowDuplicate: true }),
+      });
+      const body = (await res.json()) as any;
+      assert(res.status === 201 && body.place?.id && body.place.id !== foodPlace.id, "dedup: REST allowDuplicate=true creates new row");
+    }
+    // 同名但坐标距离 >200m → 视为不同地点，正常新建（不触发疑似重复）
     const foodFar = await mcpCall(
       "tools/call",
       { name: "add_place", arguments: { name: "炕锅羊肉", category: "restaurant", location: { lng: 95.375, lat: 37.854 } } },
@@ -433,7 +473,7 @@ async function main() {
       foodFar.result?.isError !== true && foodFarPlace?.id && foodFarPlace.id !== foodPlace.id,
       "dedup: same name >200m away creates a new place",
     );
-    // amapPoiId 精确匹配：名称/坐标都不同也判重（先建带 amapPoiId 的点，再同名 id 不同名重建）
+    // amapPoiId 精确匹配：名称/坐标都不同也幂等返回已有 place（不走疑似重复信号，行为不变）
     const poi1 = await mcpCall(
       "tools/call",
       { name: "add_place", arguments: { name: "翡翠湖观景台", category: "attraction", location: { lng: 95.3523, lat: 37.8499 }, amapPoiId: "B0SMOKE0001" } },
@@ -449,7 +489,7 @@ async function main() {
     const poiPlace2 = parsePlace(poi2);
     assert(poi2.result?.isError !== true && poiPlace2?.id === poiPlace.id, "dedup: same amapPoiId matches exactly regardless of name/coords");
     assert(poiPlace2?.name === "翡翠湖观景台", "dedup: existing name not overwritten");
-    // agent 不补齐用户已锁定（locked）的已有地点：REST 建的 locked 点被 agent 重复 add 时空字段保持为空
+    // agent 对已锁定（locked）place 的模糊命中：返回疑似重复信号且不回填（locked 地点 agent 不可动）
     const lockedPlace = await mkPlace({ name: "锁定的小吃店", category: "restaurant", location: { lng: 95.362, lat: 37.856 } });
     assert(lockedPlace.status === "locked", "dedup: human REST create defaults to locked");
     const lockedDup = await mcpCall(
@@ -457,11 +497,17 @@ async function main() {
       { name: "add_place", arguments: { name: "锁定的小吃店", category: "restaurant", location: { lng: 95.362, lat: 37.856 }, openingHours: "11:00-21:00" } },
       15,
     );
-    const lockedDupPlace = parsePlace(lockedDup);
-    assert(lockedDupPlace?.id === lockedPlace.id, "dedup: agent re-add of locked place returns existing place");
-    assert(lockedDupPlace?.openingHours == null, "dedup: agent does not backfill user-locked place");
+    const lockedDupSignal = parseDupSignal(lockedDup);
+    assert(lockedDup.result?.isError === true && lockedDupSignal?.existingPlace?.id === lockedPlace.id, "dedup: agent re-add of locked place gets duplicate signal");
+    assert(lockedDupSignal?.existingPlace?.status === "locked", "dedup: signal shows existing place is locked");
+    assert(lockedDupSignal?.existingPlace?.openingHours == null, "dedup: agent duplicate signal does not backfill user-locked place");
+    {
+      const { bundle: lockedBundle } = await api(`/trips/${mcTrip.id}`);
+      const stillLocked = lockedBundle.places.find((p: any) => p.id === lockedPlace.id);
+      assert(stillLocked?.openingHours == null, "dedup: locked place in bundle still not backfilled");
+    }
 
-    // 括号后缀规范化：「Aria」 vs 「Aria（East Circular Quay）」同坐标 → 判重合并（剥全角括号后缀）
+    // 括号后缀规范化：「Aria」 vs 「Aria（East Circular Quay）」同坐标 → 疑似重复信号（剥全角括号后缀），不创建
     const aria1 = await mcpCall(
       "tools/call",
       { name: "add_place", arguments: { name: "Aria", category: "restaurant", location: { lng: 95.358, lat: 37.852 } } },
@@ -474,26 +520,34 @@ async function main() {
       { name: "add_place", arguments: { name: "Aria（East Circular Quay）", category: "restaurant", location: { lng: 95.3582, lat: 37.852 } } },
       17,
     );
+    const ariaDup = parseDupSignal(aria2);
     assert(
-      parsePlace(aria2)?.id === ariaPlace.id,
-      "dedup: parenthesized suffix stripped (「Aria（East Circular Quay）」 == 「Aria」)",
+      aria2.result?.isError === true && ariaDup?.existingPlace?.id === ariaPlace.id,
+      "dedup: parenthesized suffix variant signals duplicate (「Aria（East Circular Quay）」 ~ 「Aria」)",
     );
-    // 互为前缀（短名 ≥3 字符）+ ≤200m → 判重合并
+    // 互为前缀（短名 ≥3 字符）+ ≤200m → 疑似重复信号（REST 409）
     const hfj1 = await mkPlace({ name: "河坊街", category: "attraction", location: { lng: 95.359, lat: 37.853 } });
-    const hfj2 = await mkPlace({ name: "河坊街小吃城", category: "restaurant", location: { lng: 95.3591, lat: 37.853 } });
-    assert(hfj2.id === hfj1.id, "dedup: prefix containment within 200m merges (河坊街 / 河坊街小吃城)");
-    // 前缀包含但距离 >200m → 语义可能不同（河坊街 vs 河坊街小吃城类），不合并
+    {
+      const res = await fetch(`${BASE}/api/trips/${mcTrip.id}/places`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "河坊街小吃城", category: "restaurant", location: { lng: 95.3591, lat: 37.853 } }),
+      });
+      const body = (await res.json()) as any;
+      assert(res.status === 409 && body.existingPlace?.id === hfj1.id, "dedup: prefix containment within 200m signals duplicate (河坊街 / 河坊街小吃城)");
+    }
+    // 前缀包含但距离 >200m → 语义可能不同（河坊街 vs 河坊街小吃城类），正常新建
     const hfjFar = await mkPlace({ name: "河坊街小吃城", category: "restaurant", location: { lng: 95.375, lat: 37.853 } });
-    assert(hfjFar.id !== hfj1.id, "dedup: prefix containment >200m apart does NOT merge");
-    // 短名 <3 字符的通用词不做前缀判重（防「酒店」⊂「酒店式公寓」类假合并），即使 ≤200m
+    assert(hfjFar.id !== hfj1.id, "dedup: prefix containment >200m apart creates a new place (no signal)");
+    // 短名 <3 字符的通用词不做前缀判重（防「酒店」⊂「酒店式公寓」类假信号），即使 ≤200m
     const hotel1 = await mkPlace({ name: "酒店", category: "hotel", location: { lng: 95.361, lat: 37.8535 } });
     const hotel2 = await mkPlace({ name: "酒店式公寓", category: "hotel", location: { lng: 95.3611, lat: 37.8535 } });
-    assert(hotel2.id !== hotel1.id, "dedup: prefix with short name <3 chars does NOT merge (酒店 / 酒店式公寓)");
-    // 反向校验：括号后缀变体重复 add 后 bundle 里仍只有一条 Aria（规范化没有误建/误删其他点）
+    assert(hotel2.id !== hotel1.id, "dedup: prefix with short name <3 chars does NOT signal (酒店 / 酒店式公寓)");
+    // 反向校验：括号后缀变体被拒后 bundle 里仍只有一条 Aria（信号没有误建/误删其他点）
     {
       const { bundle: nameBundle } = await api(`/trips/${mcTrip.id}`);
       const ariaPlaces = nameBundle.places.filter((p: any) => p.name.startsWith("Aria"));
-      assert(ariaPlaces.length === 1, "dedup: exactly one Aria place after suffix-variant re-add");
+      assert(ariaPlaces.length === 1, "dedup: exactly one Aria place after suffix-variant duplicate signal");
     }
 
     await api(`/trips/${mcTrip.id}`, { method: "DELETE" });
