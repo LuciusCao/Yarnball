@@ -22,6 +22,8 @@ export interface MapRenderer {
   render(specs: ReturnType<typeof buildOverlaySpecs>, selectedPlaceId: string | null): void;
   /** fitView 到标记集合 */
   fit(specs: ReturnType<typeof buildOverlaySpecs>): void;
+  /** fitView 到一条路径（M47：选中交通段时视野适配该段起讫） */
+  fitPath(path: LngLat[]): void;
   /** 飞到指定坐标（城市定位/自愈重定位用） */
   flyTo(center: LngLat, zoom?: number): void;
   destroy(): void;
@@ -34,6 +36,8 @@ interface MapCanvasProps {
   visibleDayIndex: number | null;
   hotelArea: { center: LngLat; radiusM: number } | null;
   selectedPlaceId: string | null;
+  /** 按需显示的交通段（M47）：非空时地图只画该段路线并 fit 到起讫点 */
+  selectedLegId?: string | null;
   onSelectPlace: (placeId: string) => void;
   /** 打开设置抽屉（缺高德 Key 时引导用户去配置）；未提供时退回 .env 文案 */
   onOpenSettings?: () => void;
@@ -46,6 +50,7 @@ export function MapCanvas({
   visibleDayIndex,
   hotelArea,
   selectedPlaceId,
+  selectedLegId = null,
   onSelectPlace,
   onOpenSettings,
 }: MapCanvasProps) {
@@ -53,6 +58,8 @@ export function MapCanvas({
   const rendererRef = useRef<MapRenderer | null>(null);
   const initErrorRef = useRef<string | null>(null);
   const fittedRef = useRef<string>("");
+  /** 已 fit 的交通段 id（M47）：段选中变化才 fitPath，避免随 SSE 快照反复 fit */
+  const fittedLegRef = useRef<string>("");
   const [initError, setInitError] = useState<string | null>(null);
   /** 重试计数：+1 触发引擎重挂载（不刷新整页） */
   const [retryCount, setRetryCount] = useState(0);
@@ -62,8 +69,9 @@ export function MapCanvas({
     visibleDayIndex: number | null;
     hotelArea: { center: LngLat; radiusM: number } | null;
     selectedPlaceId: string | null;
-  }>({ bundle: null, visibleDayIndex: null, hotelArea: null, selectedPlaceId: null });
-  latestRef.current = { bundle, visibleDayIndex, hotelArea, selectedPlaceId };
+    selectedLegId: string | null;
+  }>({ bundle: null, visibleDayIndex: null, hotelArea: null, selectedPlaceId: null, selectedLegId: null });
+  latestRef.current = { bundle, visibleDayIndex, hotelArea, selectedPlaceId, selectedLegId };
 
   const provider = bundle?.trip.geoProvider ?? "osm";
   const center = bundle?.trip.location ?? null;
@@ -102,7 +110,7 @@ export function MapCanvas({
         // 否则 specs effect 已跑过、地图会空转（竞态修复）
         const latest = latestRef.current;
         if (latest.bundle) {
-          const specs = buildOverlaySpecs(latest.bundle, latest.visibleDayIndex, latest.hotelArea);
+          const specs = buildOverlaySpecs(latest.bundle, latest.visibleDayIndex, latest.hotelArea, latest.selectedLegId);
           renderer.render(specs, latest.selectedPlaceId);
           if (latest.bundle.places.length > 0) {
             renderer.fit(specs);
@@ -131,6 +139,7 @@ export function MapCanvas({
       renderer.destroy();
       rendererRef.current = null;
       fittedRef.current = "";
+      fittedLegRef.current = "";
     };
     // bundle 不进依赖（初始化一次）；provider/key 变化才重建；retryCount 变化=用户点了重试
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -140,8 +149,21 @@ export function MapCanvas({
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer || !bundle) return;
-    const specs = buildOverlaySpecs(bundle, visibleDayIndex, hotelArea);
+    const specs = buildOverlaySpecs(bundle, visibleDayIndex, hotelArea, selectedLegId);
     renderer.render(specs, selectedPlaceId);
+
+    // 选中交通段（M47）：视野 fit 到该段起讫；段选中变化才触发，清除选中后不回拉视野
+    if (selectedLegId) {
+      if (selectedLegId !== fittedLegRef.current) {
+        const line = specs.lines.find((l) => l.id === selectedLegId);
+        if (line) {
+          fittedLegRef.current = selectedLegId;
+          renderer.fitPath(line.path);
+        }
+      }
+    } else {
+      fittedLegRef.current = "";
+    }
 
     // 行程地点集合变化时 fitView 一次；多城市无地点时（M39）改为 fit 全部途经地
     const stopsWithCenter = bundle.trip.stops.filter((s) => s.center != null);
@@ -155,7 +177,7 @@ export function MapCanvas({
       fittedRef.current = fitKey;
       renderer.fit(specs);
     }
-  }, [bundle, visibleDayIndex, hotelArea, selectedPlaceId]);
+  }, [bundle, visibleDayIndex, hotelArea, selectedPlaceId, selectedLegId]);
 
   // 兜底一：缺高德 key —— 配置问题，引导去设置（区别于下面的引擎运行失败）
   if (provider === "amap" && !amapJsKey) {

@@ -80,6 +80,8 @@ export function TripPage() {
   const [chatSessions, setChatSessions] = useState<ChatSessionDto[]>([]);
   const [visibleDay, setVisibleDay] = useState<number | null>(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+  /** 按需显示的交通段（M47）：点击行程面板交通段行/大交通卡选中，地图只画该段；换天/选地点/切面板标签时清除 */
+  const [selectedLegId, setSelectedLegId] = useState<string | null>(null);
   const [hotelArea, setHotelArea] = useState<{ center: { lng: number; lat: number }; radiusM: number } | null>(null);
   const [budgetSummary, setBudgetSummary] = useState<BudgetSummary | null>(null);
   /** 面板形态：expanded（完整）/ hidden（收起到右上角的呼出钮） */
@@ -176,6 +178,26 @@ export function TripPage() {
   const openSettings = useCallback(() => {
     window.dispatchEvent(new CustomEvent(OPEN_SETTINGS_EVENT));
   }, []);
+
+  // M47 清除段选中的三个出口：选中其他地点 / 切换天 / 切换面板标签
+  const selectPlace = useCallback((placeId: string | null) => {
+    setSelectedLegId(null);
+    setSelectedPlaceId(placeId);
+  }, []);
+  const changeVisibleDay = useCallback((dayIndex: number | null) => {
+    setSelectedLegId(null);
+    setVisibleDay(dayIndex);
+  }, []);
+  const switchLeftPanel = useCallback((panel: LeftPanel | null) => {
+    setSelectedLegId(null);
+    setLeftPanel(panel);
+  }, []);
+
+  // 段被服务端删掉（entry 移除/重算）时清掉悬空的段选中
+  useEffect(() => {
+    if (!selectedLegId || !bundle) return;
+    if (!bundle.legs.some((l) => l.id === selectedLegId)) setSelectedLegId(null);
+  }, [selectedLegId, bundle]);
 
   /** 加入/移出地点（底层 locked 状态切换，M20 UI 话术统一为「加入行程」）：写后依赖 SSE bundle 全量刷新，再主动 load 兜底 */
   async function togglePlaceLock(place: PlaceDto) {
@@ -331,7 +353,8 @@ export function TripPage() {
           visibleDayIndex={visibleDay}
           hotelArea={hotelArea}
           selectedPlaceId={selectedPlaceId}
-          onSelectPlace={(id) => setSelectedPlaceId(id)}
+          selectedLegId={selectedLegId}
+          onSelectPlace={selectPlace}
           onOpenSettings={openSettings}
         />
       </div>
@@ -386,7 +409,7 @@ export function TripPage() {
               </p>
             </div>
             <button
-              onClick={() => setSelectedPlaceId(null)}
+              onClick={() => selectPlace(null)}
               className="shrink-0 rounded-full p-1 text-slate-400 hover:bg-slate-900/8 hover:text-slate-600"
             >
               ✕
@@ -629,7 +652,7 @@ export function TripPage() {
               {dockMaximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
             </button>
             <button
-              onClick={() => setLeftPanel(null)}
+              onClick={() => switchLeftPanel(null)}
               title="收起面板"
               className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-600"
             >
@@ -649,11 +672,13 @@ export function TripPage() {
                   tripId={trip.id}
                   bundle={bundle}
                   selectedPlaceId={selectedPlaceId}
-                  onSelectPlace={setSelectedPlaceId}
+                  onSelectPlace={selectPlace}
                   onDataChanged={() => void load(trip.id)}
                   visibleDay={visibleDay}
-                  onVisibleDayChange={setVisibleDay}
-                  onOpenCandidates={() => setLeftPanel("candidates")}
+                  onVisibleDayChange={changeVisibleDay}
+                  selectedLegId={selectedLegId}
+                  onSelectLeg={setSelectedLegId}
+                  onOpenCandidates={() => switchLeftPanel("candidates")}
                 />
               )}
               {leftPanel === "candidates" && (
@@ -662,7 +687,7 @@ export function TripPage() {
                   bundle={bundle}
                   hotelArea={hotelArea}
                   selectedPlaceId={selectedPlaceId}
-                  onSelectPlace={setSelectedPlaceId}
+                  onSelectPlace={selectPlace}
                   onDataChanged={() => void load(trip.id)}
                 />
               )}
@@ -677,7 +702,7 @@ export function TripPage() {
         {leftPanels.map(([key, meta]) => (
           <button
             key={key}
-            onClick={() => setLeftPanel(leftPanel === key ? null : key)}
+            onClick={() => switchLeftPanel(leftPanel === key ? null : key)}
             title={leftPanel === key ? `收起${meta.label}面板` : `展开${meta.label}面板`}
             className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
               leftPanel === key

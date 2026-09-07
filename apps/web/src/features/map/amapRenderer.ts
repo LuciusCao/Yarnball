@@ -113,6 +113,17 @@ export class AMapRenderer implements MapRenderer {
     if (markers.length > 0) this.map.setFitView(markers, false, [60, 60, 60, 60]);
   }
 
+  fitPath(path: LngLat[]): void {
+    if (!this.map || !this.AMap || path.length === 0) return;
+    const lngs = path.map((p) => p.lng);
+    const lats = path.map((p) => p.lat);
+    const bounds = new this.AMap.Bounds(
+      [Math.min(...lngs), Math.min(...lats)],
+      [Math.max(...lngs), Math.max(...lats)],
+    );
+    this.map.setBounds(bounds, false, [90, 90, 90, 90]);
+  }
+
   flyTo(center: LngLat, zoom = 12): void {
     this.map?.setZoomAndCenter(zoom, [center.lng, center.lat]);
   }

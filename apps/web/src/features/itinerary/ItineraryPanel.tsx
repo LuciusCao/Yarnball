@@ -30,7 +30,8 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  * - 大交通 entry（M11）渲染为特殊卡片：🛬抵达 / 🛫离开 / 🚄城市间，显示 departTime–arriveTime
  *   与起讫名，可直接编辑时间（PATCH /api/entries/:id）；推算时作为硬锚点（到达日从落地时间起算）
  * - 排期时段与营业时间（openingHours，能解析出时段时）完全无交叠给弱化警告；解析不了仅展示
- * - entry 之间显示交通段（模式图标 + 时长 + 距离），可手动切换 步行/驾车（M1 leg override 端点）
+ * - entry 之间显示交通段（模式图标 + 时长 + 距离），可手动切换 步行/驾车（M1 leg override 端点）；
+ *   点击交通段行/大交通卡在地图上只显示该段路线（M47 按需显示，再点一次取消；分享页不可点）
  * - 每天头部显示当晚住宿（多酒店，M10：取覆盖该天的已选定酒店）；
  *   换酒店日显示「离店 A → 入住 B」提示
  * - 酒店端点节点（M17）：每天首渲染「从 X 酒店出发」、尾渲染「返回 X 酒店」，
@@ -65,6 +66,9 @@ interface ItineraryPanelProps {
    */
   visibleDay?: number | null;
   onVisibleDayChange?: (dayIndex: number | null) => void;
+  /** 按需显示的交通段（M47）：当前选中的 legId；点击交通段行切换，地图只画该段 */
+  selectedLegId?: string | null;
+  onSelectLeg?: (legId: string | null) => void;
   /** 打开候选池面板（M17：无覆盖酒店天的「去候选池加入」引导；TripPage 传入，分享页不传则只显示文案） */
   onOpenCandidates?: () => void;
 }
@@ -78,6 +82,8 @@ export function ItineraryPanel({
   readOnly = false,
   visibleDay = null,
   onVisibleDayChange,
+  selectedLegId = null,
+  onSelectLeg,
   onOpenCandidates,
 }: ItineraryPanelProps) {
   const [busy, setBusy] = useState(false);
@@ -194,6 +200,11 @@ export function ItineraryPanel({
     dayTabsEnabled && visibleDay != null
       ? sortedDays.filter((d) => d.dayIndex === visibleDay)
       : sortedDays;
+
+  /** 交通段按需显示（M47）：点击交通段行切换选中（再点一次取消）；分享页未传 onSelectLeg 时不可点 */
+  const toggleLeg = onSelectLeg
+    ? (legId: string) => onSelectLeg(selectedLegId === legId ? null : legId)
+    : undefined;
 
   /** 多城市（M39）：途经地链 + 环线徽标 + 天按 stop 连续分组；单城市全部为 null/不展示 */
   const multiCity = isMultiCity(bundle);
@@ -389,6 +400,8 @@ export function ItineraryPanel({
                     readOnly={readOnly}
                     busy={busy}
                     onOverride={overrideMode}
+                    selected={selectedLegId === startLeg.id}
+                    onToggle={toggleLeg ? () => toggleLeg(startLeg.id) : undefined}
                   />
                 </li>
               )}
@@ -406,6 +419,9 @@ export function ItineraryPanel({
                 const kind = transit
                   ? (transitKindOf(entry, day.dayIndex, sortedDays.length) ?? "intercity")
                   : null;
+                // 大交通段本身（from→to 同一 entry 的那条 leg）：自驾卡展示真实里程/时长用；M47 点击卡片在地图上只显示该段
+                const rideLeg =
+                  dayLegs.find((l) => l.fromEntryId === entry.id && l.toEntryId === entry.id) ?? null;
                 return (
                   <li key={entry.id}>
                     {/* 离开日大交通端点（M20）：末 entry 为 transit 离开时，在卡片前渲染「前往 机场/车站」；
@@ -428,16 +444,17 @@ export function ItineraryPanel({
                         item={item}
                         kind={kind}
                         route={transitRouteText(entry, placeById) ?? place?.name ?? "大交通"}
-                        // 大交通段本身（from→to 同一 entry 的那条 leg）：自驾卡展示真实里程/时长用
-                        rideLeg={
-                          dayLegs.find((l) => l.fromEntryId === entry.id && l.toEntryId === entry.id) ?? null
-                        }
+                        rideLeg={rideLeg}
                         selected={selected}
+                        legSelected={rideLeg != null && selectedLegId === rideLeg.id}
                         readOnly={readOnly}
                         busy={busy}
                         isFirst={i === 0}
                         isLast={i === timeline.length - 1}
                         onSelect={() => place && onSelectPlace(place.id)}
+                        onToggleLeg={
+                          rideLeg != null && toggleLeg ? () => toggleLeg(rideLeg.id) : undefined
+                        }
                         onMove={(pos) => void move(entry.id, day.dayIndex, pos)}
                         onRemove={() => void removeEntry(entry.id)}
                         onSaveTimes={updateTransitTimes}
@@ -547,6 +564,8 @@ export function ItineraryPanel({
                         readOnly={readOnly}
                         busy={busy}
                         onOverride={overrideMode}
+                        selected={selectedLegId === leg.id}
+                        onToggle={toggleLeg ? () => toggleLeg(leg.id) : undefined}
                       />
                     )}
                   </li>
@@ -581,18 +600,21 @@ export function ItineraryPanel({
 
 /** 大交通卡（M11）：🛬抵达 / 🛫离开 / 🚄城市间，显示 departTime–arriveTime 与起讫名；非只读可直接编辑时间。
  *  M39：transitMode 非空时图标/徽标按方式区分（🚗 自驾 / 🚄 火车 / ✈ 飞机 / 🚌 大巴）；
- *  自驾段（transitMode=drive）卡片内嵌真实里程/时长（ride leg，服务端走真实路由计算） */
+ *  自驾段（transitMode=drive）卡片内嵌真实里程/时长（ride leg，服务端走真实路由计算）。
+ *  M47：有 rideLeg 且面板支持段选时，点击卡片切换「地图上只显示该段路线」（再点一次取消），优先于选中地点 */
 function TransitRow({
   item,
   kind,
   route,
   rideLeg,
   selected,
+  legSelected = false,
   readOnly,
   busy,
   isFirst,
   isLast,
   onSelect,
+  onToggleLeg,
   onMove,
   onRemove,
   onSaveTimes,
@@ -603,11 +625,15 @@ function TransitRow({
   /** 大交通段本身的 leg（fromEntryId==toEntryId==entry.id）；起讫纯文本时可能不存在 */
   rideLeg: TransportLegDto | null;
   selected: boolean;
+  /** 该卡对应大交通段正在地图上单独显示（M47） */
+  legSelected?: boolean;
   readOnly: boolean;
   busy: boolean;
   isFirst: boolean;
   isLast: boolean;
   onSelect: () => void;
+  /** 切换大交通段的地图单独显示（M47，有 rideLeg 且面板支持时传入）；传入后点击优先走它而非 onSelect */
+  onToggleLeg?: () => void;
   onMove: (position: number) => void;
   onRemove: () => void;
   onSaveTimes: (entryId: string, departTime: string | null, arriveTime: string | null) => Promise<void>;
@@ -642,11 +668,12 @@ function TransitRow({
   return (
     <div
       className={`group flex items-center gap-2 rounded-lg border border-dashed px-2 py-1.5 ${
-        selected
+        selected || legSelected
           ? "border-brand/50 bg-brand/10 ring-1 ring-brand/40"
           : "border-slate-300/70 bg-slate-500/5 hover:bg-slate-500/10"
-      } ${place ? "cursor-pointer" : ""}`}
-      onClick={onSelect}
+      } ${place || onToggleLeg ? "cursor-pointer" : ""}`}
+      onClick={onToggleLeg ?? onSelect}
+      title={onToggleLeg ? (legSelected ? "点击取消，地图恢复不显示交通段" : "点击在地图上只显示该段路线") : undefined}
     >
       <span
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-700 text-white"
@@ -747,24 +774,41 @@ function TransitRow({
 }
 
 /** 交通段行：图标 + 时长 + 距离；非只读时可切换 步行/驾车（覆盖后不被自动重算冲掉）。
- *  返回酒店段（toHotel）的「返回 X 酒店」由 M17 的酒店端点节点承载，这里只保留交通信息且不提供覆盖切换 */
+ *  返回酒店段（toHotel）的「返回 X 酒店」由 M17 的酒店端点节点承载，这里只保留交通信息且不提供覆盖切换。
+ *  M47：传入 onToggle 时整行可点击——点击后地图上只显示该段路线，再点一次取消；选中态用品牌色环提示 */
 function LegRow({
   leg,
   toHotel,
   readOnly,
   busy,
   onOverride,
+  selected = false,
+  onToggle,
 }: {
   leg: TransportLegDto;
   toHotel: boolean;
   readOnly: boolean;
   busy: boolean;
   onOverride: (legId: string, mode: "walk" | "drive" | null) => Promise<void>;
+  /** 该段正在地图上单独显示（M47） */
+  selected?: boolean;
+  /** 点击切换该段的地图单独显示（M47；分享页不传则不可点） */
+  onToggle?: () => void;
 }) {
   // modeOverride 非空 = 人工覆盖过（M1），自动重算不会冲掉；可点击徽标恢复自动
   const overridden = leg.modeOverride != null;
   return (
-    <div className="group/leg flex items-center gap-1 py-0.5 pl-9 text-[11px] text-slate-400">
+    <div
+      className={`group/leg flex items-center gap-1 rounded py-0.5 pl-9 text-[11px] ${
+        selected
+          ? "bg-brand/10 text-brand ring-1 ring-brand/40"
+          : onToggle
+            ? "cursor-pointer text-slate-400 hover:bg-slate-900/6 hover:text-slate-600"
+            : "text-slate-400"
+      }`}
+      onClick={onToggle}
+      title={onToggle ? (selected ? "点击取消，地图恢复不显示交通段" : "点击在地图上只显示该段路线") : undefined}
+    >
       <TransportIcon mode={leg.mode} />
       <span>
         {formatDuration(leg.durationS)}
@@ -777,7 +821,10 @@ function LegRow({
           <button
             title="恢复自动计算"
             disabled={busy}
-            onClick={() => void onOverride(leg.id, null)}
+            onClick={(e) => {
+              e.stopPropagation();
+              void onOverride(leg.id, null);
+            }}
             className="rounded bg-slate-900/8 px-1 text-[10px] text-slate-500 hover:bg-slate-900/15 disabled:opacity-40"
           >
             手动 ✕
@@ -790,7 +837,10 @@ function LegRow({
               key={mode}
               title={mode === "walk" ? "改为步行" : "改为驾车"}
               disabled={busy || leg.mode === mode}
-              onClick={() => void onOverride(leg.id, mode)}
+              onClick={(e) => {
+                e.stopPropagation();
+                void onOverride(leg.id, mode);
+              }}
               className={`rounded p-0.5 disabled:opacity-30 ${
                 leg.mode === mode
                   ? "bg-slate-900/10 text-slate-600"

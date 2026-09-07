@@ -196,6 +196,20 @@ export class MapLibreRenderer implements MapRenderer {
     );
   }
 
+  fitPath(path: LngLat[]): void {
+    const map = this.map;
+    if (!map || path.length === 0) return;
+    const lngs = path.map((p) => p.lng);
+    const lats = path.map((p) => p.lat);
+    map.fitBounds(
+      [
+        [Math.min(...lngs), Math.min(...lats)],
+        [Math.max(...lngs), Math.max(...lats)],
+      ],
+      { padding: 90, maxZoom: 15, duration: 600 },
+    );
+  }
+
   flyTo(center: LngLat, zoom = 12): void {
     this.map?.flyTo({ center: [center.lng, center.lat], zoom, duration: 900 });
   }

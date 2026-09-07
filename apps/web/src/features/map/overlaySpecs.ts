@@ -70,11 +70,13 @@ export function dayColor(dayIndex: number): string {
   return DAY_COLORS[(dayIndex - 1) % DAY_COLORS.length];
 }
 
-/** bundle → 引擎无关 overlay specs（含筛选逻辑） */
+/** bundle → 引擎无关 overlay specs（含筛选逻辑）。
+ *  交通段线按需显示（M47）：默认不画 lines；selectedLegId 非空时只画该段（实线/虚线语义保留） */
 export function buildOverlaySpecs(
   bundle: TripBundle,
   visibleDayIndex: number | null,
   hotelArea: { center: LngLat; radiusM: number } | null,
+  selectedLegId: string | null = null,
 ): OverlaySpecs {
   const placeById = new Map(bundle.places.map((p) => [p.id, p]));
 
@@ -114,54 +116,58 @@ export function buildOverlaySpecs(
       });
     });
 
-    // 交通段：按 seq 排序（含酒店往返段），酒店端点的段画虚线
-    const dayLegs = bundle.legs
-      .filter((l) => l.dayId === day.id)
-      .sort((a, b) => a.seq - b.seq);
-    for (const leg of dayLegs) {
-      // 先判真实 polyline（评审 R1 顺手项）：纯文本端点的 ride leg（fromName/toName，无 place）
-      // 解析不出端点坐标，但服务端已算好真实路由 polyline——直接画，不丢弃
-      if (leg.polyline && leg.polyline.length > 1) {
+    // 交通段（M47 按需显示）：默认不画；仅当选中该段时才生成 LineSpec。
+    // 按 seq 排序（含酒店往返段），酒店端点的段画虚线
+    if (selectedLegId != null) {
+      const dayLegs = bundle.legs
+        .filter((l) => l.dayId === day.id)
+        .sort((a, b) => a.seq - b.seq);
+      for (const leg of dayLegs) {
+        if (leg.id !== selectedLegId) continue;
+        // 先判真实 polyline（评审 R1 顺手项）：纯文本端点的 ride leg（fromName/toName，无 place）
+        // 解析不出端点坐标，但服务端已算好真实路由 polyline——直接画，不丢弃
+        if (leg.polyline && leg.polyline.length > 1) {
+          lines.push({
+            id: leg.id,
+            path: leg.polyline,
+            color,
+            dashed: !leg.fromEntryId || !leg.toEntryId,
+          });
+          continue;
+        }
+        // 端点解析（M39）：transit entry 的 placeId 常为空——大交通段本身（from==to==同一 entry）
+        // 取 entry 的 from/toPlaceId；其余以 transit 为端点的段，起点端=讫点（toPlaceId）、终点端=起点（fromPlaceId）
+        const endpointPlaceId = (
+          entryId: string | null,
+          placeIdFallback: string | null,
+          endpoint: "from" | "to",
+        ): string | null => {
+          if (!entryId) return placeIdFallback;
+          const e = entries.find((x) => x.id === entryId);
+          if (!e) return null;
+          if (e.placeId) return e.placeId;
+          return endpoint === "from" ? e.toPlaceId : e.fromPlaceId;
+        };
+        let fromPlaceId: string | null;
+        let toPlaceId: string | null;
+        if (leg.fromEntryId != null && leg.fromEntryId === leg.toEntryId) {
+          const rideEntry = entries.find((e) => e.id === leg.fromEntryId);
+          fromPlaceId = rideEntry?.fromPlaceId ?? null;
+          toPlaceId = rideEntry?.toPlaceId ?? null;
+        } else {
+          fromPlaceId = endpointPlaceId(leg.fromEntryId, leg.fromPlaceId, "from");
+          toPlaceId = endpointPlaceId(leg.toEntryId, leg.toPlaceId, "to");
+        }
+        const from = fromPlaceId ? placeById.get(fromPlaceId) : undefined;
+        const to = toPlaceId ? placeById.get(toPlaceId) : undefined;
+        if (!from || !to) continue;
         lines.push({
           id: leg.id,
-          path: leg.polyline,
+          path: [from.location, to.location],
           color,
           dashed: !leg.fromEntryId || !leg.toEntryId,
         });
-        continue;
       }
-      // 端点解析（M39）：transit entry 的 placeId 常为空——大交通段本身（from==to==同一 entry）
-      // 取 entry 的 from/toPlaceId；其余以 transit 为端点的段，起点端=讫点（toPlaceId）、终点端=起点（fromPlaceId）
-      const endpointPlaceId = (
-        entryId: string | null,
-        placeIdFallback: string | null,
-        endpoint: "from" | "to",
-      ): string | null => {
-        if (!entryId) return placeIdFallback;
-        const e = entries.find((x) => x.id === entryId);
-        if (!e) return null;
-        if (e.placeId) return e.placeId;
-        return endpoint === "from" ? e.toPlaceId : e.fromPlaceId;
-      };
-      let fromPlaceId: string | null;
-      let toPlaceId: string | null;
-      if (leg.fromEntryId != null && leg.fromEntryId === leg.toEntryId) {
-        const rideEntry = entries.find((e) => e.id === leg.fromEntryId);
-        fromPlaceId = rideEntry?.fromPlaceId ?? null;
-        toPlaceId = rideEntry?.toPlaceId ?? null;
-      } else {
-        fromPlaceId = endpointPlaceId(leg.fromEntryId, leg.fromPlaceId, "from");
-        toPlaceId = endpointPlaceId(leg.toEntryId, leg.toPlaceId, "to");
-      }
-      const from = fromPlaceId ? placeById.get(fromPlaceId) : undefined;
-      const to = toPlaceId ? placeById.get(toPlaceId) : undefined;
-      if (!from || !to) continue;
-      lines.push({
-        id: leg.id,
-        path: [from.location, to.location],
-        color,
-        dashed: !leg.fromEntryId || !leg.toEntryId,
-      });
     }
   }
 
