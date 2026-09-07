@@ -1,4 +1,4 @@
-import type { LngLat, TripBundle } from "@yarnball/shared";
+import type { LngLat, PlaceCategory, TripBundle } from "@yarnball/shared";
 import { getSelectedStays } from "../candidates/hotelStays";
 
 /**
@@ -6,11 +6,32 @@ import { getSelectedStays } from "../candidates/hotelStays";
  * MapCanvas 把 bundle 翻译成这里的 spec，各引擎只负责"怎么画"。
  */
 
+/**
+ * 类别图标（M60）：与候选池 tab 的 lucide 选型一一对应（hotel=BedDouble / restaurant=UtensilsCrossed
+ * / attraction+activity=Landmark / other=Package，见 CandidatesPanel GROUP_META）。
+ * 地图 marker 是引擎侧 HTML 字符串，用不了 lucide 组件，退化为 emoji；other 不加图标（保持钉面干净）。
+ */
+export function categoryIconEmoji(category: PlaceCategory | null): string {
+  switch (category) {
+    case "hotel":
+      return "🏨 ";
+    case "restaurant":
+      return "🍴 ";
+    case "attraction":
+    case "activity":
+      return "🏛️ ";
+    default:
+      return "";
+  }
+}
+
 export interface MarkerSpec {
   id: string; // placeId
   position: LngLat;
   /** 徽标文本，如 "D1·2 Sydney Opera House" 或 "🏨 ..." */
   label: string;
+  /** 地点类别（M60）：渲染器在 label 前加对应 emoji 图标（categoryIconEmoji） */
+  category: PlaceCategory;
   /** 背景色（天色/酒店色/锁定金/候选灰） */
   color: string;
   /** 不透明度：候选=半透明（未确认），锁定/已排期=1 */
@@ -55,7 +76,7 @@ export interface OverlaySpecs {
  */
 
 export function markerSignature(m: MarkerSpec, selected: boolean): string {
-  return JSON.stringify([m.position.lng, m.position.lat, m.label, m.color, m.opacity, selected]);
+  return JSON.stringify([m.position.lng, m.position.lat, m.label, m.category, m.color, m.opacity, selected]);
 }
 
 export function lineSignature(l: LineSpec): string {
@@ -131,6 +152,7 @@ export function buildOverlaySpecs(
         id: `e-${entry.id}`,
         position: place.location,
         label: `D${day.dayIndex}·${i + 1} ${place.name}`,
+        category: place.category,
         color,
         opacity: 1,
         placeId: place.id,
@@ -203,6 +225,7 @@ export function buildOverlaySpecs(
         id: `h-${cand.id}`,
         position: place.location,
         label: `${isSel ? "✓ " : ""}${place.name}${cand.pricePerNight ? ` · ${cand.pricePerNight}/晚` : ""}`,
+        category: place.category,
         color: isSel ? HOTEL_COLOR : locked ? LOCKED_COLOR : CANDIDATE_COLOR,
         opacity: isSel || locked ? 1 : CANDIDATE_OPACITY,
         placeId: place.id,
@@ -216,6 +239,7 @@ export function buildOverlaySpecs(
         id: `p-${place.id}`,
         position: place.location,
         label: place.name,
+        category: place.category,
         color: locked ? LOCKED_COLOR : CANDIDATE_COLOR,
         opacity: locked ? 1 : CANDIDATE_OPACITY,
         placeId: place.id,
