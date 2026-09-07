@@ -397,7 +397,8 @@ export function TripPage() {
           panelMode === "hidden" ? "right-4" : "right-[404px]"
         }`}
       >
-      <header className="glass panel-in pointer-events-auto flex items-center gap-2.5 rounded-2xl px-4 py-2">
+      {/* shrink-0：信息条不被 flex 挤压（分段条区域 min-w-0 flex-1 先让）；标题 max-w+truncate 兜底长标题把分段条挤出可视区 */}
+      <header className="glass panel-in pointer-events-auto flex shrink-0 items-center gap-2.5 rounded-2xl px-4 py-2">
         <Link
           to="/"
           className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-700"
@@ -405,7 +406,9 @@ export function TripPage() {
         >
           ‹
         </Link>
-        <h1 className="glass-text text-sm font-semibold">{trip.title}</h1>
+        <h1 className="glass-text max-w-64 truncate text-sm font-semibold" title={trip.title}>
+          {trip.title}
+        </h1>
         <span
           className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500"
           title={trip.stops.length > 1 ? `途经地（按游览顺序）：${trip.stops.map((s) => s.name).join(" → ")}` : undefined}
@@ -471,9 +474,10 @@ export function TripPage() {
       </div>
       </div>
 
-      {/* 左下：选中地点信息卡（M61 从左上信息条下方迁来；z-30 全页最高层级，可盖在顶部工具浮层之上）。可操作：加入行程/加入住宿/移出/删除 */}
+      {/* 左下：选中地点信息卡（M61 从左上信息条下方迁来；z-30 全页最高层级，可盖在顶部工具浮层之上）。可操作：加入行程/加入住宿/移出/删除。
+          窄屏（<md ≈ 可用宽度 750px 以下）工具浮层与卡片必然交叠，卡片降到 z-10 让位给浮层（浮层 z-20 盖住卡片，不再被卡片拦截点击）；收起浮层后卡片照常可用 */}
       {selectedPlace && (
-        <div className="glass panel-in rounded-card absolute bottom-4 left-4 z-30 max-h-[calc(100vh-7rem)] max-w-xs overflow-y-auto p-3.5 shadow-card">
+        <div className="glass panel-in rounded-card absolute bottom-4 left-4 z-30 max-h-[calc(100vh-7rem)] max-w-xs overflow-y-auto p-3.5 shadow-card max-md:z-10">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-slate-900">
