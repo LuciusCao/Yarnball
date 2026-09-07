@@ -1,9 +1,11 @@
 import { useState } from "react";
-import type { PoiCandidate, TripBundle } from "@yarnball/shared";
+import type { PlaceDto, PoiCandidate, TripBundle } from "@yarnball/shared";
 import { toast } from "sonner";
 import { api } from "../../api/client";
+import { api as uxApi, PossibleDuplicateError } from "../../lib/api";
 import { Button } from "../../components/ui/button";
 import { Input, Select } from "../../components/ui/input";
+import { DuplicateConfirmDialog } from "../candidates/DuplicateConfirmDialog";
 
 /** 搜索添加地点（人类直接编辑路径，与 agent 并行） */
 export function SearchAddPanel({
@@ -21,6 +23,13 @@ export function SearchAddPanel({
   const [error, setError] = useState<string | null>(null);
   const [busyPoiId, setBusyPoiId] = useState<string | null>(null);
   const [dayIndex, setDayIndex] = useState(1);
+  /** M43：疑似重复待确认（409 possible_duplicate）；确认后带 allowDuplicate 重发 */
+  const [duplicate, setDuplicate] = useState<{
+    poi: PoiCandidate;
+    asEntry: boolean;
+    existing: PlaceDto;
+  } | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   const maxDay = Math.max(bundle.days.length, 3);
 
@@ -39,25 +48,50 @@ export function SearchAddPanel({
     }
   }
 
+  /** 建点 + 按需排入某天；allowDuplicate=true 跳过模糊判重强制创建（确认框「仍要创建」走这里） */
+  async function createAndSchedule(poi: PoiCandidate, asEntry: boolean, allowDuplicate = false) {
+    const { place } = await uxApi.createPlace(tripId, {
+      name: poi.name,
+      category: "other",
+      location: poi.location,
+      address: poi.address,
+      amapPoiId: poi.poiId,
+      sourceType: "manual",
+      ...(allowDuplicate ? { allowDuplicate: true } : {}),
+    });
+    if (asEntry) {
+      await api.addEntry(tripId, place.id, dayIndex);
+    }
+    onDataChanged();
+  }
+
   async function add(poi: PoiCandidate, asEntry: boolean) {
     setBusyPoiId(poi.poiId);
     try {
-      const { place } = await api.createPlace(tripId, {
-        name: poi.name,
-        category: "other",
-        location: poi.location,
-        address: poi.address,
-        amapPoiId: poi.poiId,
-        sourceType: "manual",
-      });
-      if (asEntry) {
-        await api.addEntry(tripId, place.id, dayIndex);
-      }
-      onDataChanged();
+      await createAndSchedule(poi, asEntry);
     } catch (err) {
-      setError((err as Error).message);
+      if (err instanceof PossibleDuplicateError) {
+        setDuplicate({ poi, asEntry, existing: err.existingPlace });
+      } else {
+        setError((err as Error).message);
+      }
     } finally {
       setBusyPoiId(null);
+    }
+  }
+
+  /** 确认框「仍要创建」：带 allowDuplicate 重发；失败时关框并把错误落回面板错误行 */
+  async function confirmDuplicate() {
+    if (!duplicate) return;
+    setConfirming(true);
+    try {
+      await createAndSchedule(duplicate.poi, duplicate.asEntry, true);
+      setDuplicate(null);
+    } catch (err) {
+      setDuplicate(null);
+      setError((err as Error).message);
+    } finally {
+      setConfirming(false);
     }
   }
 
@@ -130,6 +164,17 @@ export function SearchAddPanel({
           </p>
         )}
       </div>
+
+      {/* M43：疑似重复确认框（409 possible_duplicate）；「仍要创建」带 allowDuplicate 重发 */}
+      {duplicate && (
+        <DuplicateConfirmDialog
+          pendingName={duplicate.poi.name}
+          existing={duplicate.existing}
+          busy={confirming}
+          onConfirm={() => void confirmDuplicate()}
+          onCancel={() => setDuplicate(null)}
+        />
+      )}
     </div>
   );
 }
