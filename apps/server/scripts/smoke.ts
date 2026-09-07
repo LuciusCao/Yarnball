@@ -21,6 +21,9 @@ const BASE = process.env.SMOKE_BASE ?? "http://127.0.0.1:18788";
 const FAKE_AGENT_COMMAND = process.execPath;
 const FAKE_AGENT_ARGS = [new URL("./fake-acp-agent.mjs", import.meta.url).pathname];
 
+// 每次运行一个唯一后缀：重复运行 / 中途失败重跑都不与上次残留互相干扰
+const RUN_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
 async function api(path: string, init?: RequestInit) {
   const res = await fetch(`${BASE}/api${path}`, {
     headers: { "content-type": "application/json" },
@@ -56,10 +59,10 @@ async function messages(sessionId: string) {
 }
 
 async function main() {
-  console.log("== smoke: fake agent end-to-end ==");
+  console.log(`== smoke: fake agent end-to-end (run ${RUN_ID}) ==`);
 
   // 1. 注册 fake agent
-  const fakeAgentId = "fake-agent-smoke";
+  const fakeAgentId = `fake-agent-smoke-${RUN_ID}`;
   // 直接走 DB 不行（脚本无 DB 依赖），借道：agent registry 种子没有 fake，
   // 这里用 server 端预留的 debug 端点？没有 —— 用 DB URL 直连。
   const { Client } = await import("pg");
@@ -72,13 +75,14 @@ async function main() {
     [fakeAgentId, "Fake Agent (smoke)", FAKE_AGENT_COMMAND, JSON.stringify(FAKE_AGENT_ARGS)],
   );
   console.log("  ✓ fake agent registered");
+  const smokeAgentIds = [fakeAgentId];
   const dbClose = () => client.end();
 
   try {
     // 2. trip + session
     const { trip } = await api("/trips", {
       method: "POST",
-      body: JSON.stringify({ title: "smoke-trip", destinationCity: "杭州" }),
+      body: JSON.stringify({ title: `smoke-trip-${RUN_ID}`, destinationCity: "杭州" }),
     });
     console.log(`  ✓ trip created: ${trip.id}`);
 
@@ -101,29 +105,30 @@ async function main() {
     });
 
     let msgs: Awaited<ReturnType<typeof messages>> = [];
+    // 分段：tool_call 介入封闭当前聚合段，prompt_flow（文本→工具调用→文本）
+    // 应产生两条独立的 agent_text，顺序为 user_text → agent_text → tool_call
+    // → tool_call_update → agent_text → advisory。聚合段落库与 advisory 之间有
+    // 微小窗口，整条顺序作为不变量轮询而非「看到 advisory 就瞬时断言」
+    const expectOrder = ["user_text", "agent_text", "tool_call", "tool_call_update", "agent_text", "advisory"];
     await waitUntil(
       async () => {
         msgs = await messages(session.id);
-        return msgs.some((m) => m.kind === "advisory" && String(m.content.text ?? "").includes("回合结束"));
+        return JSON.stringify(msgs.map((m) => m.kind)) === JSON.stringify(expectOrder);
       },
       15_000,
-      "turn to finish (prompt_flow)",
+      "turn to finish with expected message order (prompt_flow)",
     );
 
     const kinds = msgs.map((m) => m.kind);
     assert(kinds.includes("user_text"), "user_text message exists");
     assert(kinds.includes("tool_call"), "tool_call message exists");
     assert(kinds.includes("tool_call_update"), "tool_call_update message exists");
-    // 分段：tool_call 介入封闭当前聚合段，prompt_flow（文本→工具调用→文本）
-    // 应产生两条独立的 agent_text，顺序为 user_text → agent_text → tool_call
-    // → tool_call_update → agent_text → advisory
     const agentTexts = msgs.filter((m) => m.kind === "agent_text");
     assert(agentTexts.length === 2, `agent output split into 2 segments around tool_call (got ${agentTexts.length})`);
     assert(
       String(agentTexts[1].content.text).includes("灵隐寺"),
       "second agent_text segment mentions 灵隐寺",
     );
-    const expectOrder = ["user_text", "agent_text", "tool_call", "tool_call_update", "agent_text", "advisory"];
     assert(
       JSON.stringify(kinds) === JSON.stringify(expectOrder),
       `message order is ${expectOrder.join(" → ")} (got ${kinds.join(" → ")})`,
@@ -136,7 +141,7 @@ async function main() {
     console.log("-- permission_flow --");
     // fake agent 脚本由环境变量控制 —— 已在 spawn 前设置不了（server 侧 spawn）。
     // 所以再注册一个 permission 变体：command 带环境前缀。
-    const permAgentId = "fake-agent-smoke-perm";
+    const permAgentId = `fake-agent-smoke-perm-${RUN_ID}`;
     await client.query(
       `INSERT INTO agent_registry (id, label, command, args, enabled)
        VALUES ($1, $2, $3, $4::jsonb, true)
@@ -148,6 +153,7 @@ async function main() {
         JSON.stringify(["FAKE_SCRIPT=permission_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
       ],
     );
+    smokeAgentIds.push(permAgentId);
 
     const { session: permSession } = await api(`/trips/${trip.id}/chat-sessions`, {
       method: "POST",
@@ -198,17 +204,19 @@ async function main() {
     );
     assert(true, "agent received user's permission decision");
 
-    // permission_result 消息落库
-    assert(
-      permMsgs.some((m) => m.kind === "permission_result"),
-      "permission_result recorded",
+    // permission_result 消息由服务端异步落库：轮询不变量而非瞬时检查
+    await waitUntil(
+      async () => (await messages(permSession.id)).some((m) => m.kind === "permission_result"),
+      10_000,
+      "permission_result persisted",
     );
+    assert(true, "permission_result recorded");
 
     await api(`/chat-sessions/${permSession.id}`, { method: "DELETE" });
 
     // 4.5 mcp_call_flow：fake agent 真实调用 yarnball MCP server
     console.log("-- mcp_call_flow --");
-    const mcpAgentId = "fake-agent-smoke-mcp";
+    const mcpAgentId = `fake-agent-smoke-mcp-${RUN_ID}`;
     await client.query(
       `INSERT INTO agent_registry (id, label, command, args, enabled)
        VALUES ($1, $2, $3, $4::jsonb, true)
@@ -220,6 +228,7 @@ async function main() {
         JSON.stringify(["FAKE_SCRIPT=mcp_call_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
       ],
     );
+    smokeAgentIds.push(mcpAgentId);
 
     const { session: mcpSession } = await api(`/trips/${trip.id}/chat-sessions`, {
       method: "POST",
@@ -254,20 +263,22 @@ async function main() {
       mcpAgentText != null && String(mcpAgentText.content.text).includes("smoke-trip"),
       "get_trip_context returned the trip bound to the session",
     );
-    // /mcp 真实命中必须持久化 ground truth：has_mcp_call 落库（重启/换实例不丢）
-    {
+    // /mcp 真实命中必须持久化 ground truth：has_mcp_call 落库（重启/换实例不丢）。
+    // 落库发生在回合结束 advisory 之后的异步路径上，轮询而非瞬时检查（verify 偶发失败点）
+    await waitUntil(async () => {
       const { rows } = await client.query(
         `SELECT has_mcp_call FROM chat_sessions WHERE id = $1`,
         [mcpSession.id],
       );
-      assert(rows[0]?.has_mcp_call === true, "MCP hit persisted has_mcp_call=true to chat_sessions");
-    }
+      return rows[0]?.has_mcp_call === true;
+    }, 10_000, "has_mcp_call persisted to chat_sessions");
+    assert(true, "MCP hit persisted has_mcp_call=true to chat_sessions");
     await api(`/chat-sessions/${mcpSession.id}`, { method: "DELETE" });
 
     // 4.5.1 MCP 提示改读持久化值：DB 预置 has_mcp_call=true 的会话，新句柄纯文本回合不得误报；
     // 对照组（未置位）应在首回合收到提示
     console.log("-- mcp_hint_persistence_flow --");
-    const plainAgentId = "fake-agent-smoke-plain";
+    const plainAgentId = `fake-agent-smoke-plain-${RUN_ID}`;
     await client.query(
       `INSERT INTO agent_registry (id, label, command, args, enabled)
        VALUES ($1, $2, $3, $4::jsonb, true)
@@ -279,6 +290,7 @@ async function main() {
         JSON.stringify(["FAKE_SCRIPT=plain_text_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
       ],
     );
+    smokeAgentIds.push(plainAgentId);
     const hintOf = (ms: Awaited<ReturnType<typeof messages>>) =>
       ms.some((m) => String(m.content.text ?? "").includes("还没有出现过毛线团工具调用"));
     // 直接插 session 行（不经 startSession），模拟「重启后句柄重建」：prompt 懒恢复时新句柄从 DB 读 has_mcp_call
@@ -302,14 +314,21 @@ async function main() {
       );
       return messages(id);
     };
-    const seenMsgs = await mkPlainSession("smoke-plain-seen", true);
+    const seenId = `smoke-plain-seen-${RUN_ID}`;
+    const seenMsgs = await mkPlainSession(seenId, true);
     assert(!hintOf(seenMsgs), "session with persisted has_mcp_call=true gets no MCP hint after handle rebuild");
-    const unseenMsgs = await mkPlainSession("smoke-plain-unseen", false);
-    assert(hintOf(unseenMsgs), "session without any MCP call still gets the one-time MCP hint");
+    const unseenId = `smoke-plain-unseen-${RUN_ID}`;
+    await mkPlainSession(unseenId, false);
+    // MCP hint 在回合结束 advisory 之后的 finally 里异步落库：轮询不变量而非瞬时检查（verify 偶发失败点）
+    await waitUntil(async () => hintOf(await messages(unseenId)), 10_000, "one-time MCP hint persisted");
+    assert(true, "session without any MCP call still gets the one-time MCP hint");
+    // 直插的会话不经 startSession，句柄是 prompt 懒恢复的；用完主动关闭，不留 fake agent 子进程
+    await api(`/chat-sessions/${seenId}`, { method: "DELETE" });
+    await api(`/chat-sessions/${unseenId}`, { method: "DELETE" });
 
     // 4.5.2 perm_note_flow：permission_result 纯注记不封闭聚合段——「我先拉」+ 后半句聚成同一条 agent_text
     console.log("-- perm_note_flow --");
-    const noteAgentId = "fake-agent-smoke-note";
+    const noteAgentId = `fake-agent-smoke-note-${RUN_ID}`;
     await client.query(
       `INSERT INTO agent_registry (id, label, command, args, enabled)
        VALUES ($1, $2, $3, $4::jsonb, true)
@@ -321,6 +340,7 @@ async function main() {
         JSON.stringify(["FAKE_SCRIPT=perm_note_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
       ],
     );
+    smokeAgentIds.push(noteAgentId);
     const { session: noteSession } = await api(`/trips/${trip.id}/chat-sessions`, {
       method: "POST",
       body: JSON.stringify({ agentId: noteAgentId }),
@@ -361,7 +381,7 @@ async function main() {
     // ① 只发带 title 的 tool_call_update、不发 tool_call 初始通知（MCP 提示不得误报）；
     // ② prompt 响应 resolve 后 300ms 才补发 trailing chunk（回合结束 advisory 必须重排到回合尾部）
     console.log("-- trailing_chunk_flow --");
-    const trailAgentId = "fake-agent-smoke-trailing";
+    const trailAgentId = `fake-agent-smoke-trailing-${RUN_ID}`;
     await client.query(
       `INSERT INTO agent_registry (id, label, command, args, enabled)
        VALUES ($1, $2, $3, $4::jsonb, true)
@@ -373,6 +393,7 @@ async function main() {
         JSON.stringify(["FAKE_SCRIPT=trailing_chunk_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
       ],
     );
+    smokeAgentIds.push(trailAgentId);
 
     const { session: trailSession } = await api(`/trips/${trip.id}/chat-sessions`, {
       method: "POST",
@@ -388,7 +409,8 @@ async function main() {
       body: JSON.stringify({ text: "灵隐寺攻略，帮我解析" }),
     });
 
-    // 轮询到不变量成立而不是「看到 chunk 就断言」：chunk 落库与 advisory 重排之间有微小窗口
+    // 轮询到完整不变量成立而不是「看到 chunk 就断言」：迟到 chunk 落库、首段聚合文本落库、
+    // advisory 重排三者之间有微小窗口，任一后到的瞬时快照都可能缺首段（verify 偶发失败点）
     let trailMsgs: Awaited<ReturnType<typeof messages>> = [];
     await waitUntil(
       async () => {
@@ -397,12 +419,17 @@ async function main() {
           (m) => m.kind === "agent_text" && String(m.content.text ?? "").includes("迟到的尾部输出"),
         );
         if (!trailing) return false;
-        const turnMsgs = trailMsgs.filter((m) => m.turnId === trailing.turnId);
-        const last = turnMsgs[turnMsgs.length - 1];
-        return last?.kind === "advisory" && String(last.content.text ?? "").includes("回合结束");
+        const tm = trailMsgs.filter((m) => m.turnId === trailing.turnId);
+        const last = tm[tm.length - 1];
+        return (
+          last?.kind === "advisory" &&
+          String(last.content.text ?? "").includes("回合结束") &&
+          tm.filter((m) => m.kind === "agent_text").length === 2 &&
+          tm.some((m) => m.kind === "user_text")
+        );
       },
       15_000,
-      "advisory re-ordered to turn tail after trailing chunk",
+      "trailing chunk turn fully persisted with advisory at tail",
     );
     assert(true, "end_turn advisory is the last message of its turn despite trailing chunk");
 
@@ -448,7 +475,7 @@ async function main() {
     // 多城市行程（青甘环线迷你版：西宁-茶卡-大柴旦），顺序 = 用户指定
     const { trip: mcTrip } = await api("/trips", {
       method: "POST",
-      body: JSON.stringify({ title: "smoke-青甘迷你环线", destinationCity: "西宁", stops: ["西宁", "茶卡", "大柴旦"] }),
+      body: JSON.stringify({ title: `smoke-青甘迷你环线-${RUN_ID}`, destinationCity: "西宁", stops: ["西宁", "茶卡", "大柴旦"] }),
     });
     assert(
       mcTrip.stops?.length === 3 &&
@@ -520,17 +547,17 @@ async function main() {
 
     // agent 侧多中心防编造：MCP 直连（token 落库），距任一 stop ≤200km 放行、全超 200km 拒绝
     const { createHash } = await import("node:crypto");
-    const mcpSessionId = "smoke-mcp-multicity";
+    const mcpSessionId = `smoke-mcp-multicity-${RUN_ID}`;
     await client.query(
       `INSERT INTO chat_sessions (id, trip_id, agent_registry_id, agent_label, status)
        VALUES ($1, $2, $3, $4, 'idle') ON CONFLICT (id) DO NOTHING`,
       [mcpSessionId, mcTrip.id, fakeAgentId, "Fake Agent (smoke)"],
     );
-    const mcpToken = "smoke-mcp-token-multicity";
+    const mcpToken = `smoke-mcp-token-${RUN_ID}`;
     await client.query(
       `INSERT INTO agent_tokens (id, chat_session_id, token_hash)
        VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
-      ["smoke-mcp-token-multicity", mcpSessionId, createHash("sha256").update(mcpToken).digest("hex")],
+      [`smoke-mcp-token-row-${RUN_ID}`, mcpSessionId, createHash("sha256").update(mcpToken).digest("hex")],
     );
     const mcpCall = async (method: string, params: unknown, id: number) => {
       const res = await fetch(`${BASE}/mcp`, {
@@ -775,7 +802,7 @@ async function main() {
     {
       const { trip: lgTrip } = await api("/trips", {
         method: "POST",
-        body: JSON.stringify({ title: "smoke-换酒店行李", destinationCity: "杭州" }),
+        body: JSON.stringify({ title: `smoke-换酒店行李-${RUN_ID}`, destinationCity: "杭州" }),
       });
       const mkHotel = async (body: Record<string, unknown>) =>
         (await api(`/trips/${lgTrip.id}/hotel-candidates`, { method: "POST", body: JSON.stringify(body) })) as any;
@@ -838,6 +865,10 @@ async function main() {
 
     console.log("\n== ALL SMOKE TESTS PASSED ==");
   } finally {
+    // 本次运行注册的 fake agent 出清：agent_registry 暴露在设置页，无论成败都不留残留
+    await client
+      .query(`DELETE FROM agent_registry WHERE id = ANY($1)`, [smokeAgentIds])
+      .catch((err) => console.warn("  ! agent_registry cleanup failed:", err));
     await dbClose();
   }
 }
