@@ -104,11 +104,31 @@ const AGENT_PLACE_MULTI_STOP_MIN_DIST_KM = 200;
 /** 建点时 cityName 自动填充的归属半径：距最近途经地中心 ≤150km 则归该 stop，否则 null（归属未知不阻断） */
 const PLACE_CITY_ASSIGN_MAX_DIST_KM = 150;
 
-/** 建点幂等去重：规范化名称相同且坐标距离 ≤200m 视为同一地点（不插新行） */
+/** 建点幂等去重：规范化名称相同（或互为前缀）且坐标距离 ≤200m 视为同一地点（不插新行） */
 const PLACE_DEDUP_MAX_DIST_M = 200;
 
-/** 名称规范化（去重比较用）：大小写不敏感 + 去除全部空白（含全角空格），兼容「外婆家（西湖店）」类书写差异中的空白抖动 */
-const normalizePlaceName = (name: string) => name.toLowerCase().replace(/[\s　]+/g, "");
+/**
+ * 名称规范化（去重比较用）：小写 + 去除全部空白（含全角空格）+ 统一全半角括号 +
+ * 剥离末尾括号后缀（「外婆家（西湖店）」「Aria (West)」这类分店/方位标注与主名视为同一地点）。
+ */
+const normalizePlaceName = (name: string) =>
+  name
+    .toLowerCase()
+    .replace(/[（(]/g, "(")
+    .replace(/[）)]/g, ")")
+    .replace(/(\s*\([^)]*\))+\s*$/, "")
+    .replace(/[\s　]+/g, "");
+
+/**
+ * 去重名称匹配：规范化后完全相等，或一方是另一方的前缀（短名 ≥2 字符防误伤；
+ * 「河坊街」⊂「河坊街小吃城」这类语义不同点由 ≤200m 距离约束兜底）。
+ */
+const placeNameMatch = (a: string, b: string) => {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return short.length >= 2 && long.startsWith(short);
+};
 
 /** transit entry 大交通段时长：depart/arrive 时刻差（跨零点按次日到达计）；缺任一为 null */
 function transitDurationS(departTime: string | null, arriveTime: string | null): number | null {
@@ -387,7 +407,8 @@ export class TripService {
    * 多城市改「距任一 stop.center ≤ 多中心阈值（min 距离）」。agent 被拒时应引导其先调 search_poi 拿真实坐标。
    * cityName 自动填充：显式传 > 距最近 stop.center ≤150km 归该 stop > null（归属未知不阻断）。
    * 状态机：agent 建的默认 candidate（候选池）；human 手动建的默认 locked（确认要去）。
-   * 幂等去重（REST / MCP 共用此入口）：同 trip 下 amapPoiId 精确匹配，或规范化名称相同且坐标距离 ≤200m，
+   * 幂等去重（REST / MCP 共用此入口）：同 trip 下 amapPoiId 精确匹配，或规范化名称匹配
+   * （完全相等 / 互为前缀，见 placeNameMatch）且坐标距离 ≤200m，
    * 即视为同一地点——不插新行，返回已有 place，并补齐其缺失的详情字段（不覆盖已有值；
    * agent 不补齐用户已锁定的地点，与锁定保护一致）。
    */
@@ -414,14 +435,14 @@ export class TripService {
       }
     }
     const cityName = input.cityName ?? (nearest && nearest.distKm <= PLACE_CITY_ASSIGN_MAX_DIST_KM ? nearest.name : null);
-    // 幂等去重：同 trip 下 amapPoiId 精确匹配优先，其次规范化名称相同 + 坐标距离 ≤200m
+    // 幂等去重：同 trip 下 amapPoiId 精确匹配优先，其次规范化名称匹配（相等 / 互为前缀）+ 坐标距离 ≤200m
     const existingPlaces = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
     const normalizedName = normalizePlaceName(input.name);
     const dup =
       (input.amapPoiId ? existingPlaces.find((p) => p.amapPoiId === input.amapPoiId) : undefined) ??
       existingPlaces.find(
         (p) =>
-          normalizePlaceName(p.name) === normalizedName &&
+          placeNameMatch(normalizePlaceName(p.name), normalizedName) &&
           haversineM({ lng: Number(p.lng), lat: Number(p.lat) }, input.location) <= PLACE_DEDUP_MAX_DIST_M,
       );
     if (dup) {
