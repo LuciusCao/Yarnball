@@ -33,7 +33,9 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  * - entry 之间显示交通段（模式图标 + 时长 + 距离），可手动切换 步行/驾车（M1 leg override 端点）；
  *   点击交通段行/大交通卡在地图上只显示该段路线（M47 按需显示，再点一次取消；分享页不可点）
  * - 每天头部显示当晚住宿（多酒店，M10：取覆盖该天的已选定酒店）；
- *   换酒店日显示「离店 A → 入住 B」提示
+ *   换酒店日（M50）不再合并成一行，而是时间轴拆两条：天首「离店 · 酒店A」（时刻=离店出发，
+ *   能从酒店 openingHours/notes 解析出退房时刻时附「HH:MM 前退房」提示）、天尾「入住 · 酒店B」；
+ *   首=旧酒店、尾=新酒店的两条锚定段照常作为交通段行展示在离店/入住行之旁
  * - 酒店端点节点（M17）：每天首渲染「从 X 酒店出发」、尾渲染「返回 X 酒店」，
  *   数据取 legs 首/末段的 from/toPlaceId（服务端按选定酒店锚定当天首尾，M9/M11）；
  *   用酒店图标 + hotelpin 虚线卡片区别于普通 entry；出发/到店时刻随时间轴推算（~ 前缀 = 估算），
@@ -341,36 +343,27 @@ export function ItineraryPanel({
               )}
             </header>
 
-            {/* 住宿行：平时「当晚住宿：X」，换酒店日「离店 A → 入住 B」；无覆盖时给「去候选池加入」引导（M17） */}
-            {nightStay || switchFrom ? (
-              <p className="mb-1.5 flex items-center gap-1 text-[11px] text-slate-400">
-                <BedDouble className="size-3 shrink-0" />
-                {switchFrom ? (
-                  <span>
-                    离店 {renderStayName(switchFrom)}
-                    {nightStay ? <> → 入住 {renderStayName(nightStay)}</> : "，当晚未安排住宿"}
-                  </span>
-                ) : nightStay ? (
-                  <span>当晚住宿：{renderStayName(nightStay)}</span>
-                ) : null}
-                {!nightStay && !readOnly && onOpenCandidates && (
-                  <SelectHotelGuide onClick={onOpenCandidates} />
-                )}
-              </p>
-            ) : (
-              <p className="mb-1.5 flex items-center gap-1 text-[11px] text-slate-400">
-                <BedDouble className="size-3 shrink-0" />
+            {/* 住宿行（M50）：只看当晚覆盖——有则「当晚住宿：X」，无则「当晚未安排住宿」+引导；
+                换酒店日的「离店 旧酒店 / 入住 新酒店」已拆进时间轴首尾的酒店节点行，不在此行合并展示。
+                离店日（当晚无覆盖但前一晚有酒店）不附锚定说明——酒店在行程里，只是今晚不住 */}
+            <p className="mb-1.5 flex items-center gap-1 text-[11px] text-slate-400">
+              <BedDouble className="size-3 shrink-0" />
+              {nightStay ? (
+                <span>当晚住宿：{renderStayName(nightStay)}</span>
+              ) : (
                 <span>
                   当晚未安排住宿
-                  <span className="text-slate-300">
-                    （酒店需加入行程并设置入离店天，才会锚定当天首尾）
-                  </span>
+                  {!switchFrom && (
+                    <span className="text-slate-300">
+                      （酒店需加入行程并设置入离店天，才会锚定当天首尾）
+                    </span>
+                  )}
                 </span>
-                {!readOnly && onOpenCandidates && (
-                  <SelectHotelGuide onClick={onOpenCandidates} />
-                )}
-              </p>
-            )}
+              )}
+              {!nightStay && !readOnly && onOpenCandidates && (
+                <SelectHotelGuide onClick={onOpenCandidates} />
+              )}
+            </p>
 
             <ol className="space-y-0">
               {entries.length === 0 && (
@@ -380,29 +373,34 @@ export function ItineraryPanel({
                     : "当天暂无行程"}
                 </li>
               )}
-              {/* 酒店出发节点（M17）：首段 leg（酒店→首 entry）存在时渲染，时刻 = 首站开始 - 首段时长 */}
-              {startLeg?.fromPlaceId != null && (
+              {/* 天首酒店节点（M17；M50 换酒店日改渲染「离店 · 旧酒店」并附退房提示）：
+                  首段 leg（酒店→首 entry）存在时带时刻（= 首站开始 - 首段时长）与其交通段行；
+                  换酒店日即使无锚定段（当天无 entry / 大交通收口）也渲染离店行，保证拆分信息不丢 */}
+              {(startLeg?.fromPlaceId != null || switchFrom) && (
                 <li>
                   <HotelAnchorRow
-                    direction="depart"
-                    name={placeName(startLeg.fromPlaceId)}
+                    kind={switchFrom ? "checkout" : "depart"}
+                    name={placeName(startLeg?.fromPlaceId ?? switchFrom!.placeId)}
+                    hint={switchFrom ? checkoutTimeHint(placeById.get(switchFrom.placeId)) : null}
                     timeMin={
-                      timeline.length > 0
+                      startLeg != null && timeline.length > 0
                         ? timeline[0].startMin - Math.round((startLeg.durationS ?? 0) / 60)
                         : null
                     }
                     estimated={timeline[0]?.estimated ?? true}
-                    onSelect={() => onSelectPlace(startLeg.fromPlaceId!)}
+                    onSelect={() => onSelectPlace(startLeg?.fromPlaceId ?? switchFrom!.placeId)}
                   />
-                  <LegRow
-                    leg={startLeg}
-                    toHotel={false}
-                    readOnly={readOnly}
-                    busy={busy}
-                    onOverride={overrideMode}
-                    selected={selectedLegId === startLeg.id}
-                    onToggle={toggleLeg ? () => toggleLeg(startLeg.id) : undefined}
-                  />
+                  {startLeg && (
+                    <LegRow
+                      leg={startLeg}
+                      toHotel={false}
+                      readOnly={readOnly}
+                      busy={busy}
+                      onOverride={overrideMode}
+                      selected={selectedLegId === startLeg.id}
+                      onToggle={toggleLeg ? () => toggleLeg(startLeg.id) : undefined}
+                    />
+                  )}
                 </li>
               )}
               {timeline.map((item, i) => {
@@ -571,20 +569,22 @@ export function ItineraryPanel({
                   </li>
                 );
               })}
-              {/* 返回酒店节点（M17）：末段 leg（末 entry→酒店）的时长在其上方 LegRow 展示，时刻 = 末站结束 + 末段时长 */}
-              {endLeg?.toPlaceId != null && (
+              {/* 天尾酒店节点（M17；M50 换酒店日改渲染「入住 · 新酒店」）：末段 leg（末 entry→酒店）
+                  的时长在其上方 LegRow 展示，时刻 = 末站结束 + 末段时长；
+                  换酒店日无锚定段（当天无 entry / 大交通收口）时也渲染入住行 */}
+              {(endLeg?.toPlaceId != null || (switchFrom && nightStay)) && (
                 <li>
                   <HotelAnchorRow
-                    direction="return"
-                    name={placeName(endLeg.toPlaceId)}
+                    kind={switchFrom && nightStay ? "checkin" : "return"}
+                    name={placeName(endLeg?.toPlaceId ?? nightStay!.placeId)}
                     timeMin={
-                      timeline.length > 0
+                      endLeg != null && timeline.length > 0
                         ? timeline[timeline.length - 1].endMin +
                           Math.round((endLeg.durationS ?? 0) / 60)
                         : null
                     }
                     estimated={timeline[timeline.length - 1]?.estimated ?? true}
-                    onSelect={() => onSelectPlace(endLeg.toPlaceId!)}
+                    onSelect={() => onSelectPlace(endLeg?.toPlaceId ?? nightStay!.placeId)}
                   />
                 </li>
               )}
@@ -856,21 +856,35 @@ function LegRow({
   );
 }
 
-/** 酒店端点节点（M17）：每天首「从 X 酒店出发」/ 尾「返回 X 酒店」，点击在地图上选中酒店。
+/** 酒店端点节点（M17）：每天首「从 X 酒店出发」/ 尾「返回 X 酒店」，点击在地图上选中酒店；
+ *  M50 换酒店日拆分为天首「离店 · 旧酒店」（hint 附「HH:MM 前退房」，数据来自酒店
+ *  openingHours/notes 的退房时刻文本）与天尾「入住 · 新酒店」。
  *  hotelpin 红 + 虚线卡片区别于普通 entry 与大交通卡；时刻 ~ 前缀 = 随时间轴推算的估算值 */
 function HotelAnchorRow({
-  direction,
+  kind,
   name,
+  hint = null,
   timeMin,
   estimated,
   onSelect,
 }: {
-  direction: "depart" | "return";
+  kind: "depart" | "return" | "checkout" | "checkin";
   name: string;
+  /** 辅助提示（M50 离店行的「HH:MM 前退房」），无数据时不传 */
+  hint?: string | null;
   timeMin: number | null;
   estimated: boolean;
   onSelect: () => void;
 }) {
+  const isDepart = kind === "depart" || kind === "checkout";
+  const label =
+    kind === "depart"
+      ? "从 "
+      : kind === "return"
+        ? "返回 "
+        : kind === "checkout"
+          ? "离店 · "
+          : "入住 · ";
   return (
     <div
       className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-hotelpin/40 bg-hotelpin/8 px-2 py-1.5 transition-colors hover:bg-hotelpin/15"
@@ -880,9 +894,12 @@ function HotelAnchorRow({
         <BedDouble className="size-3.5" />
       </span>
       <span className="flex min-w-0 flex-1 items-baseline text-sm font-medium text-slate-700">
-        <span className="shrink-0">{direction === "depart" ? "从 " : "返回 "}</span>
+        <span className="shrink-0">{label}</span>
         <span className="truncate">{name}</span>
-        {direction === "depart" ? <span className="shrink-0"> 出发</span> : null}
+        {kind === "depart" ? <span className="shrink-0"> 出发</span> : null}
+        {hint && (
+          <span className="ml-1.5 shrink-0 text-[11px] font-normal text-slate-400">{hint}</span>
+        )}
       </span>
       {timeMin != null && (
         <span
@@ -891,11 +908,22 @@ function HotelAnchorRow({
         >
           {estimated ? "~" : ""}
           {formatHHMM(timeMin)}
-          {direction === "depart" ? " 出发" : " 到店"}
+          {isDepart ? " 出发" : " 到店"}
         </span>
       )}
     </div>
   );
+}
+
+/** 换酒店日离店行的退房提示（M50）：从酒店 openingHours/notes 自由文本解析退房时刻
+ *  （如「12:00 前退房」「退房时间：14:00」「14:00退房」），解析不出就不显示 */
+function checkoutTimeHint(place: TripBundle["places"][number] | undefined): string | null {
+  if (!place) return null;
+  const text = `${place.openingHours ?? ""} ${place.notes ?? ""}`;
+  const m =
+    /(\d{1,2}[:：]\d{2})\s*前?退房/.exec(text) ??
+    /退房(?:时间)?\s*(?:为|是|在|[:：])?\s*(\d{1,2}[:：]\d{2})/.exec(text);
+  return m ? `${m[1].replace("：", ":")} 前退房` : null;
 }
 
 /** 大交通端点节点（M20 追加）：到达日首「从 机场/车站 出发」、离开日尾「前往 机场/车站」，
