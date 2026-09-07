@@ -16,28 +16,47 @@ interface TripStore {
   refresh: (tripId: string) => Promise<void>;
 }
 
+/** 进行中的 bundle 请求按 tripId 去重：mount 时 load() 与 subscribe 补拉并发时只发一个请求 */
+const bundleInflight = new Map<string, Promise<void>>();
+
 export const useTripStore = create<TripStore>((set, get) => ({
   bundle: null,
   error: null,
   loading: false,
 
-  load: async (tripId: string) => {
-    set({ loading: true, error: null });
-    try {
-      const { bundle } = await api.getBundle(tripId);
-      set({ bundle, loading: false });
-    } catch (err) {
-      set({ error: (err as Error).message, loading: false });
-    }
+  load: (tripId: string) => {
+    const pending = bundleInflight.get(tripId);
+    if (pending) return pending;
+    const p = (async () => {
+      set({ loading: true, error: null });
+      try {
+        const { bundle } = await api.getBundle(tripId);
+        set({ bundle, loading: false });
+      } catch (err) {
+        set({ error: (err as Error).message, loading: false });
+      } finally {
+        bundleInflight.delete(tripId);
+      }
+    })();
+    bundleInflight.set(tripId, p);
+    return p;
   },
 
-  refresh: async (tripId: string) => {
-    try {
-      const { bundle } = await api.getBundle(tripId);
-      set({ bundle });
-    } catch {
-      // 静默：SSE 自愈路径
-    }
+  refresh: (tripId: string) => {
+    const pending = bundleInflight.get(tripId);
+    if (pending) return pending;
+    const p = (async () => {
+      try {
+        const { bundle } = await api.getBundle(tripId);
+        set({ bundle });
+      } catch {
+        // 静默：SSE 自愈路径
+      } finally {
+        bundleInflight.delete(tripId);
+      }
+    })();
+    bundleInflight.set(tripId, p);
+    return p;
   },
 
   subscribe: (tripId: string) => {
@@ -60,7 +79,7 @@ export const useTripStore = create<TripStore>((set, get) => ({
 interface ChatStore {
   messages: ChatMessageDto[];
   sessionId: string | null;
-  /** permission_request 的 requestId → 当前是否待答 */
+  /** 订阅会话的 SSE 消息流并加载历史；切换到不同 sessionId 时清空上一会话的消息 */
   subscribe: (sessionId: string) => () => void;
   reset: () => void;
   upsertMessage: (message: ChatMessageDto) => void;
@@ -73,20 +92,35 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   upsertMessage: (message) => {
     set((state) => {
       const idx = state.messages.findIndex((m) => m.id === message.id);
-      // upsert 后按 seq 稳定排序：服务端会把回合终端消息（advisory）重赋 seq 补发同 id 事件
-      //（迟到 chunk 重排，见 server promoteTurnTerminal），原位替换会让终端消息停在旧位置
+      // upsert 后需按 seq 稳定排序：服务端会把回合终端消息（advisory）重赋 seq 补发同 id 事件
+      //（迟到 chunk 重排，见 server promoteTurnTerminal），原位替换会让终端消息停在旧位置。
+      // 但绝大多数事件是尾部追加/原位更新，先 O(n) 检查有序性，仅在乱序时才全量 sort，
+      // 避免每个流式 chunk 都对长列表 O(n log n)
       const next = [...state.messages];
       if (idx === -1) next.push(message);
       else next[idx] = message;
-      next.sort((a, b) => a.seq - b.seq);
+      let ordered = true;
+      for (let i = 1; i < next.length; i++) {
+        if (next[i - 1].seq > next[i].seq) {
+          ordered = false;
+          break;
+        }
+      }
+      if (!ordered) next.sort((a, b) => a.seq - b.seq);
       return { messages: next };
     });
   },
 
   subscribe: (sessionId: string) => {
-    set({ sessionId });
+    // 切换 trip/session 时清空上一会话的消息（TripPage/ChatPanel 不随路由 param 重挂载，
+    // 否则旧会话消息会在历史合并里作为 extras 残留并累积进新会话）
+    if (get().sessionId !== sessionId) {
+      set({ messages: [], sessionId });
+    }
     // 初始加载历史
     void api.chatMessages(sessionId).then(({ messages }) => {
+      // 请求途中又切了会话：这份历史属于旧会话，直接丢弃
+      if (get().sessionId !== sessionId) return;
       // SSE 可能已经先推了新消息：按 id 合并而不是直接替换，最终同样按 seq 排序
       set((state) => {
         const existing = new Map(state.messages.map((m) => [m.id, m]));
@@ -103,7 +137,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       if (typed.type === "message" && typed.message) {
         get().upsertMessage(typed.message);
       }
-      // session 状态变化由 React Query 的定时 refetch 处理（简化）
+      // session 状态变化由 ChatPanel 的 3s 轮询（前台标签页）处理
     });
     return unsubscribe;
   },
