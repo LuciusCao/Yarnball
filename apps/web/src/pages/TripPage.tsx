@@ -153,6 +153,17 @@ export function TripPage() {
     };
   }, [tripId, cityUnresolved]);
 
+  /** 出发日期修改（信息条 date input）：null = 清除，天标签退化为「Day N」；写后靠 SSE 全量刷新 + 主动 load 兜底 */
+  async function updateStartDate(startDate: string | null) {
+    if (!tripId) return;
+    try {
+      await uxApi.updateTrip(tripId, { startDate });
+      await load(tripId);
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  }
+
   // 手动重定位按钮
   async function relocate() {
     if (!tripId) return;
@@ -381,6 +392,19 @@ export function TripPage() {
             海外
           </span>
         )}
+        {/* 出发日期（可选）：设置后每天标签显示真实日期（D1 · 9/23 周三）；清空退回 Day N */}
+        <label
+          title="出发日期（可选）：设置后行程每天显示真实日期"
+          className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
+        >
+          <CalendarDays className="size-3" />
+          <input
+            type="date"
+            value={trip.startDate ?? ""}
+            onChange={(e) => void updateStartDate(e.target.value || null)}
+            className="w-[7.2rem] cursor-pointer bg-transparent outline-none"
+          />
+        </label>
         <button
           onClick={() => void relocate()}
           title="重新定位到目的城市"

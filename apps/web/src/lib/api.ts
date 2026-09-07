@@ -7,6 +7,7 @@ import {
   type ChatSessionDto,
   type CreateAgentInput,
   type CreatePlaceInput,
+  type CreateTripInput,
   type EntryDto,
   type PlaceDto,
   type PlaceStatus,
@@ -15,10 +16,12 @@ import {
   type SetLegModeInput,
   type SuggestDayClustersResult,
   type TransportMode,
+  type TripDto,
   type UpdateAgentInput,
   type UpdateEntryInput,
   type UpdatePlaceInput,
   type UpdateSettingsInput,
+  type UpdateTripInput,
 } from "@yarnball/shared";
 
 /**
@@ -53,6 +56,22 @@ export class PossibleDuplicateError extends Error {
 }
 
 export const api = {
+  // ---------- 行程 ----------
+
+  /**
+   * 创建行程（POST /api/trips）。完整 CreateTripInput（含 startDate/stops/geoProvider）；
+   * 旧 client.ts 的 createTrip 类型窄（无 startDate），创建表单一律走这里。
+   */
+  createTrip: (input: CreateTripInput) =>
+    request<{ trip: TripDto }>("/trips", { method: "POST", body: JSON.stringify(input) }),
+
+  /** 更新行程字段（PATCH /api/trips/:tripId）：当前仅 startDate（出发日期，null = 清除） */
+  updateTrip: (tripId: string, input: UpdateTripInput) =>
+    request<{ trip: TripDto }>(`/trips/${tripId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+
   // ---------- 候选状态机 ----------
 
   /**

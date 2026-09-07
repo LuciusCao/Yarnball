@@ -303,6 +303,13 @@ export type TripBundle = z.infer<typeof TripBundleSchema>;
 
 // ---------- REST 请求体 ----------
 
+/**
+ * 日历日期（YYYY-MM-DD）：z.iso.date() 做真实日历校验（拒绝 2025-13-40、2026-02-29 这类不存在的日期，
+ * 含闰年判定）——入库的 startDate/endDate 直接驱动 formatDayLabel 的星期展示，非法日期会静默进位串天。
+ * REST（创建/更新行程）与 MCP（set_start_date）共用。
+ */
+export const CalendarDateSchema = z.iso.date();
+
 export const CreateTripInputSchema = z.object({
   title: z.string().min(1).max(120),
   destinationCity: z.string().min(1).max(60),
@@ -313,10 +320,19 @@ export const CreateTripInputSchema = z.object({
   stops: z.array(z.string().min(1).max(60)).min(1).max(20).optional(),
   /** 显式指定地理 provider；缺省按目的地自动判定（国内→amap，海外→osm） */
   geoProvider: z.enum(GEO_PROVIDERS).optional(),
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
-  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  startDate: CalendarDateSchema.nullable().optional(),
+  endDate: CalendarDateSchema.nullable().optional(),
 });
 export type CreateTripInput = z.infer<typeof CreateTripInputSchema>;
+
+/**
+ * 更新行程（PATCH /api/trips/:tripId 与 MCP set_start_date）。
+ * 当前仅出发日期：YYYY-MM-DD；传 null 清除（天标签退化为「Day N」，见 formatDayLabel）。
+ */
+export const UpdateTripInputSchema = z.object({
+  startDate: CalendarDateSchema.nullable().optional(),
+});
+export type UpdateTripInput = z.infer<typeof UpdateTripInputSchema>;
 
 /**
  * http(s) URL 白名单：agent 从不可信内容收集的链接会在前端以 <a href> 渲染，

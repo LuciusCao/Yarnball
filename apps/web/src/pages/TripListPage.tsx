@@ -14,6 +14,7 @@ import {
 import { toast } from "sonner";
 import type { TripDto } from "@yarnball/shared";
 import { api } from "../api/client";
+import { api as uxApi } from "../lib/api";
 import { OnboardingBanner } from "../features/settings/OnboardingBanner";
 import { SettingsDrawer } from "../features/settings/SettingsDrawer";
 import { Button } from "../components/ui/button";
@@ -112,6 +113,8 @@ export function TripListPage() {
   const [city, setCity] = useState("");
   /** 额外途经地（M39 多城市）：自由文本，逗号/顿号分隔；留空 = 单城市行程 */
   const [extraStops, setExtraStops] = useState("");
+  /** 出发日期（可选，YYYY-MM-DD）；不填则行程天标签退化为「Day N」 */
+  const [startDate, setStartDate] = useState("");
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<TripDto | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -200,10 +203,11 @@ export function TripListPage() {
         .split(/[,，、;；\n]+/)
         .map((s) => s.trim())
         .filter(Boolean);
-      const { trip } = await api.createTrip({
+      const { trip } = await uxApi.createTrip({
         title: title.trim(),
         destinationCity: city.trim(),
         ...(extra.length > 0 ? { stops: [city.trim(), ...extra] } : {}),
+        ...(startDate ? { startDate } : {}),
       });
       navigate(`/trip/${trip.id}`);
     } catch (err) {
@@ -309,6 +313,17 @@ export function TripListPage() {
               <Plus />
               {creating ? "创建中…" : "创建行程"}
             </Button>
+          </div>
+          {/* 出发日期（可选）：设置后行程每天显示真实日期（D1 · 9/23 周三），不填退化为 Day N */}
+          <div className="relative mt-2.5">
+            <CalendarDays className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+            <Input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              title="出发日期（可选）"
+              className="h-10 w-full pl-9 text-slate-600"
+            />
           </div>
           {/* 多城市（M39）：可选途经地输入，按游览顺序逗号/顿号分隔；环线把首站写回末尾即可 */}
           <div className="relative mt-2.5">

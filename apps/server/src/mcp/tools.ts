@@ -3,6 +3,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
+  CalendarDateSchema,
   CreateHotelCandidateInputSchema,
   CreatePlaceInputSchema,
   LngLatSchema,
@@ -179,6 +180,11 @@ const SetBudgetInput = z.object({
   currency: z.string().regex(/^[A-Z]{3}$/).optional(),
 });
 
+/** 出发日期：YYYY-MM-DD 真实日历日期（拒绝不存在的日期，见 shared CalendarDateSchema）；null = 清除（天标签退化为 Day N） */
+const SetStartDateInput = z.object({
+  startDate: CalendarDateSchema.nullable(),
+});
+
 // ---------- 注册 ----------
 
 export interface ToolContext {
@@ -259,6 +265,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
         hint:
           `字段含义：entries[].position 为天内顺序（0 起）；dayIndex 从 1 开始。` +
           ` trip.stops 为有序途经地节点（多城市/环线，stops[0] 是主目的地；单城市行程只有 1 个元素）。` +
+          ` trip.startDate 为出发日期（YYYY-MM-DD，null=未设置，用户说「X 月 X 日出发」时用 set_start_date 写回）。` +
           ` entries[].entryType：place=地点节点，transit=大交通节点（航班/高铁/城际移动，带 departTime/arriveTime 与 fromName/toName 或 fromPlaceId/toPlaceId 起讫点；transitMode：flight|train|drive|bus，drive=自驾走真实公路路线）。` +
           ` places[].cityName 为归属途经地/城市名（多城市分组依据）。` +
           ` places[].status：candidate=候选池（待用户确认），locked=用户已锁定（agent 不可改/删，只排 locked 的地点进每日行程）。` +
@@ -634,6 +641,24 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
       try {
         const range = await tripService.selectHotel(tripId, candidateId, { checkInDay, checkOutDay });
         return json({ ok: true, ...(range ?? {}) });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "set_start_date",
+    {
+      description:
+        "设置/修改行程的出发日期（YYYY-MM-DD，如 2025-09-23；传 null 清除）。用户说「9/23 出发」「改到 10 月 1 号走」时顺手调用写回——排天、订酒店都应对齐真实日期与星期（设置后每天标签显示为「D1 · 9/23 周三」）。用户没说年份时取最近未来的对应日期。",
+      inputSchema: SetStartDateInput.shape,
+    },
+    async ({ startDate }) => {
+      ctx.markMcpObserved();
+      try {
+        const trip = await tripService.updateTrip(tripId, { startDate });
+        return json({ ok: true, startDate: trip.startDate });
       } catch (err) {
         return toolError(err);
       }
