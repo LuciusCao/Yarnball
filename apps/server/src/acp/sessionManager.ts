@@ -47,19 +47,25 @@ export class AcpSessionManager {
   constructor(
     private db: Db,
     private bus: EventBus,
-    markMcpObserved: (chatSessionId: string) => void,
   ) {
-    // /mcp 的真实工具命中是 Ground Truth，直接路由到对应句柄置位——
-    // 不依赖 agent 是否上报 tool_call 通知（kimi 只发 tool_call_update，见 SessionHandle）
-    this.markMcpObserved = (chatSessionId) => {
-      this.handles.get(chatSessionId)?.noteMcpObserved();
-      markMcpObserved(chatSessionId);
-    };
     // 启动 sweep：句柄只活在内存，server 重启后 DB 里残留的 running/starting 都是僵尸状态
     void this.sweepStaleStatuses();
   }
 
-  private markMcpObserved: (chatSessionId: string) => void;
+  /**
+   * MCP 调用置位（/mcp 真实命中与 agent 通知里的 yarnball 工具卡片共用入口）：
+   * 路由到内存句柄 + 持久化 has_mcp_call——持久化值是重启/换实例不丢的 ground truth。
+   * main.ts 的 /mcp 端点回调必须直接调这里（此前经 mcpObservers Map 中转，
+   * 但该 Map 从未被填充，/mcp 命中根本到不了句柄——M45 提示误报的根因）。
+   */
+  noteMcpCall(chatSessionId: string) {
+    this.handles.get(chatSessionId)?.noteMcpObserved();
+    void this.db
+      .update(schema.chatSessions)
+      .set({ hasMcpCall: true })
+      .where(and(eq(schema.chatSessions.id, chatSessionId), eq(schema.chatSessions.hasMcpCall, false)))
+      .catch((err) => console.warn(`[acp] persist has_mcp_call failed:`, err));
+  }
 
   /**
    * server 重启后的状态校正：
@@ -128,7 +134,7 @@ export class AcpSessionManager {
     const handle = new SessionHandle(this.db, this.bus, row, {
       command: agent.command,
       args: (agent.args as string[]) ?? [],
-    }, this.markMcpObserved);
+    }, (id) => this.noteMcpCall(id));
     handle.setTripInfo(
       trip?.title ?? "",
       trip?.destinationCity ?? "",
@@ -224,6 +230,7 @@ export class SessionHandle {
 
   private firstPromptDone = false;
   private pendingReplay: string | null = null;
+  /** 内存快照，初值取自 DB 持久化的 hasMcpCall（重启/换实例后提示不误报） */
   private mcpToolCallSeen = false;
   private mcpHintSent = false;
   private tripTitle = "";
@@ -243,6 +250,8 @@ export class SessionHandle {
     });
     // startSession 之外的旁观者不 await whenReady，拒绝时不触发 unhandledRejection
     this.whenReady.catch(() => {});
+    // 持久化 ground truth 作初值：本句柄建起来之前（含 server 重启前）命中过 MCP 就不再提示
+    this.mcpToolCallSeen = sessionRow.hasMcpCall;
   }
 
   // ---------- 生命周期 ----------
@@ -506,7 +515,9 @@ export class SessionHandle {
       throw err;
     } finally {
       await this.setStatus("idle").catch(() => {});
-      // MCP 冒烟：整个会话从未见过毛线团工具调用 → 一次性提示
+      // MCP 冒烟：会话从未见过毛线团工具调用 → 一次性提示。
+      // mcpToolCallSeen 初值来自 DB 持久化的 hasMcpCall（重启/换实例不丢），
+      // 回合内的 /mcp 真实命中经 manager.noteMcpCall 路由进来置位
       if (!this.mcpToolCallSeen && !this.mcpHintSent) {
         this.mcpHintSent = true;
         await this.appendMessage({ ...mcpHintMessage() });
@@ -733,15 +744,19 @@ export class SessionHandle {
     });
 
     if (decision.action === "auto_approve") {
-      await this.appendMessage({
-        turnId: this.currentTurnId,
-        kind: "permission_result",
-        content: {
-          toolCallTitle: ctx.params.toolCall.title,
-          outcome: decision.reason,
-          autoApproved: true,
+      // 纯注记：不封闭聚合段（与 tool_call_update 同级豁免），否则「我先拉」类文本被劈成两块
+      await this.appendMessage(
+        {
+          turnId: this.currentTurnId,
+          kind: "permission_result",
+          content: {
+            toolCallTitle: ctx.params.toolCall.title,
+            outcome: decision.reason,
+            autoApproved: true,
+          },
         },
-      });
+        { closesAggregate: false },
+      );
       return { outcome: { outcome: "selected", optionId: decision.optionId } };
     }
 
@@ -777,16 +792,20 @@ export class SessionHandle {
   private settlePermissionTimeout(parked: ParkedPermission) {
     const idx = this.parkedPermissions.indexOf(parked);
     if (idx !== -1) this.parkedPermissions.splice(idx, 1);
-    void this.appendMessage({
-      turnId: this.currentTurnId,
-      kind: "permission_result",
-      content: {
-        requestId: parked.pending.requestId,
-        toolCallTitle: parked.pending.toolCall.title,
-        outcome: "超时未响应，已自动拒绝",
-        autoApproved: false,
+    // 纯注记：不封闭聚合段
+    void this.appendMessage(
+      {
+        turnId: this.currentTurnId,
+        kind: "permission_result",
+        content: {
+          requestId: parked.pending.requestId,
+          toolCallTitle: parked.pending.toolCall.title,
+          outcome: "超时未响应，已自动拒绝",
+          autoApproved: false,
+        },
       },
-    });
+      { closesAggregate: false },
+    );
   }
 
   /** UI 决策入口（REST 路由调用）。返回 false = 该 requestId 已不存在（已超时结算/会话重开），调用方据此回复「已失效」 */
@@ -795,16 +814,20 @@ export class SessionHandle {
     if (idx === -1) return false;
     const [parked] = this.parkedPermissions.splice(idx, 1);
     parked.userDecides(outcome);
-    void this.appendMessage({
-      turnId: this.currentTurnId,
-      kind: "permission_result",
-      content: {
-        requestId,
-        toolCallTitle: parked.pending.toolCall.title,
-        outcome: outcome.optionId ? `已允许（${outcome.optionName}）` : "已拒绝",
-        autoApproved: false,
+    // 纯注记：不封闭聚合段
+    void this.appendMessage(
+      {
+        turnId: this.currentTurnId,
+        kind: "permission_result",
+        content: {
+          requestId,
+          toolCallTitle: parked.pending.toolCall.title,
+          outcome: outcome.optionId ? `已允许（${outcome.optionName}）` : "已拒绝",
+          autoApproved: false,
+        },
       },
-    });
+      { closesAggregate: false },
+    );
     return true;
   }
 
@@ -922,9 +945,10 @@ export class SessionHandle {
     message: Omit<ChatMessageDto, "createdAt" | "id" | "sessionId" | "seq">,
     opts: { closesAggregate?: boolean } = {},
   ): Promise<ChatMessageDto> {
-    // 任何非聚合事件（tool_call/plan/permission/user_text/advisory…）介入即封闭当前聚合段，
+    // 任何非聚合事件（tool_call/plan/permission_request/user_text/advisory…）介入即封闭当前聚合段，
     // 后续 agent chunk 会开新段（appendAggregated 先打开新段再走这里，传 closesAggregate:false）；
-    // tool_call_update 是 tool_call 的续报，传 closesAggregate:false 例外
+    // 纯注记类传 closesAggregate:false 豁免：tool_call_update 是 tool_call 的续报，
+    // permission_result 只是权限卡的结论注记，都不应把连贯文本劈成两段
     if (opts.closesAggregate ?? true) this.openAggregateKey = null;
     const seq = ++this.seq;
     const id = crypto.randomUUID();

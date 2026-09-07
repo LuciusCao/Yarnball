@@ -252,7 +252,108 @@ async function main() {
       mcpAgentText != null && String(mcpAgentText.content.text).includes("smoke-trip"),
       "get_trip_context returned the trip bound to the session",
     );
+    // /mcp 真实命中必须持久化 ground truth：has_mcp_call 落库（重启/换实例不丢）
+    {
+      const { rows } = await client.query(
+        `SELECT has_mcp_call FROM chat_sessions WHERE id = $1`,
+        [mcpSession.id],
+      );
+      assert(rows[0]?.has_mcp_call === true, "MCP hit persisted has_mcp_call=true to chat_sessions");
+    }
     await api(`/chat-sessions/${mcpSession.id}`, { method: "DELETE" });
+
+    // 4.5.1 MCP 提示改读持久化值：DB 预置 has_mcp_call=true 的会话，新句柄纯文本回合不得误报；
+    // 对照组（未置位）应在首回合收到提示
+    console.log("-- mcp_hint_persistence_flow --");
+    const plainAgentId = "fake-agent-smoke-plain";
+    await client.query(
+      `INSERT INTO agent_registry (id, label, command, args, enabled)
+       VALUES ($1, $2, $3, $4::jsonb, true)
+       ON CONFLICT (id) DO UPDATE SET command = EXCLUDED.command, args = EXCLUDED.args`,
+      [
+        plainAgentId,
+        "Fake Agent (plain text)",
+        "/usr/bin/env",
+        JSON.stringify(["FAKE_SCRIPT=plain_text_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
+      ],
+    );
+    const hintOf = (ms: Awaited<ReturnType<typeof messages>>) =>
+      ms.some((m) => String(m.content.text ?? "").includes("还没有出现过毛线团工具调用"));
+    // 直接插 session 行（不经 startSession），模拟「重启后句柄重建」：prompt 懒恢复时新句柄从 DB 读 has_mcp_call
+    const mkPlainSession = async (id: string, hasMcpCall: boolean) => {
+      await client.query(
+        `INSERT INTO chat_sessions (id, trip_id, agent_registry_id, agent_label, status, has_mcp_call)
+         VALUES ($1, $2, $3, $4, 'idle', $5) ON CONFLICT (id) DO UPDATE SET has_mcp_call = EXCLUDED.has_mcp_call`,
+        [id, trip.id, plainAgentId, "Fake Agent (plain text)", hasMcpCall],
+      );
+      await api(`/chat-sessions/${id}/prompt`, {
+        method: "POST",
+        body: JSON.stringify({ text: "聊聊" }),
+      });
+      await waitUntil(
+        async () => {
+          const ms = await messages(id);
+          return ms.some((m) => m.kind === "advisory" && String(m.content.text ?? "").includes("回合结束"));
+        },
+        15_000,
+        `plain turn to finish (${id})`,
+      );
+      return messages(id);
+    };
+    const seenMsgs = await mkPlainSession("smoke-plain-seen", true);
+    assert(!hintOf(seenMsgs), "session with persisted has_mcp_call=true gets no MCP hint after handle rebuild");
+    const unseenMsgs = await mkPlainSession("smoke-plain-unseen", false);
+    assert(hintOf(unseenMsgs), "session without any MCP call still gets the one-time MCP hint");
+
+    // 4.5.2 perm_note_flow：permission_result 纯注记不封闭聚合段——「我先拉」+ 后半句聚成同一条 agent_text
+    console.log("-- perm_note_flow --");
+    const noteAgentId = "fake-agent-smoke-note";
+    await client.query(
+      `INSERT INTO agent_registry (id, label, command, args, enabled)
+       VALUES ($1, $2, $3, $4::jsonb, true)
+       ON CONFLICT (id) DO UPDATE SET command = EXCLUDED.command, args = EXCLUDED.args`,
+      [
+        noteAgentId,
+        "Fake Agent (perm note)",
+        "/usr/bin/env",
+        JSON.stringify(["FAKE_SCRIPT=perm_note_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
+      ],
+    );
+    const { session: noteSession } = await api(`/trips/${trip.id}/chat-sessions`, {
+      method: "POST",
+      body: JSON.stringify({ agentId: noteAgentId }),
+    });
+    await waitUntil(async () => {
+      const { sessions } = await api(`/trips/${trip.id}/chat-sessions`);
+      return sessions.find((s: any) => s.id === noteSession.id)?.status === "idle";
+    }, 15_000, "note session idle");
+
+    await api(`/chat-sessions/${noteSession.id}/prompt`, {
+      method: "POST",
+      body: JSON.stringify({ text: "看看行程" }),
+    });
+    let noteMsgs: Awaited<ReturnType<typeof messages>> = [];
+    await waitUntil(
+      async () => {
+        noteMsgs = await messages(noteSession.id);
+        return noteMsgs.some((m) => m.kind === "advisory" && String(m.content.text ?? "").includes("回合结束"));
+      },
+      15_000,
+      "perm_note_flow turn finished",
+    );
+    const noteTexts = noteMsgs.filter((m) => m.kind === "agent_text");
+    assert(
+      noteTexts.length === 1 && String(noteTexts[0].content.text) === "我先拉一下行程，稍等。",
+      `permission_result note does not split agent_text (got ${noteTexts.length} segment(s))`,
+    );
+    assert(
+      noteMsgs.some((m) => m.kind === "permission_result" && m.content.autoApproved === true),
+      "auto-approved yarnball permission note recorded",
+    );
+    // 顺序：注记落在聚合文本之后（seq 更大），但文本本身是一段
+    const noteResult = noteMsgs.find((m) => m.kind === "permission_result")!;
+    assert(noteResult.seq > noteTexts[0].seq, "permission note is sequenced after the aggregated text");
+    await api(`/chat-sessions/${noteSession.id}`, { method: "DELETE" });
 
     // 4.6 trailing_chunk_flow：kimi 实测行为回归——
     // ① 只发带 title 的 tool_call_update、不发 tool_call 初始通知（MCP 提示不得误报）；

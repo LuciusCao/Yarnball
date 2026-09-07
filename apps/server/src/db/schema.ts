@@ -199,6 +199,8 @@ export const chatSessions = pgTable(
     acpSessionId: text("acp_session_id"), // agent 侧返回的 sessionId（resume 用）
     status: text("status").notNull().default("starting"),
     allowAllPermissions: boolean("allow_all_permissions").notNull().default(false),
+    /** 会话是否命中过 yarnball MCP 工具调用（/mcp 层置位的持久化 ground truth，冒烟提示据此免误报） */
+    hasMcpCall: boolean("has_mcp_call").notNull().default(false),
     lastError: text("last_error"),
     uiContext: jsonb("ui_context"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
