@@ -69,12 +69,15 @@ export function MapCanvas({
   const center = bundle?.trip.location ?? null;
 
   // 城市定位：无地点时飞到城市中心（有地点时 fit 到标记更有用；多城市行程交给 stops fit，见下方重画 effect）
+  // stops 数组身份随每次 bundle 全量快照变化，用内容签名做依赖，避免 flyTo 随 SSE 快照反复触发
+  const stopsKey = bundle?.trip.stops.map((s) => s.name).join(",") ?? "";
   useEffect(() => {
     if (!center || !bundle) return;
     if (bundle.places.length > 0) return;
     if (bundle.trip.stops.filter((s) => s.center != null).length > 1) return;
     rendererRef.current?.flyTo(center, 12);
-  }, [center, bundle?.places.length, bundle?.trip.stops]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [center, bundle?.places.length, stopsKey]);
 
   // 引擎初始化（provider 变化时重建 —— 一个页面只会有一份行程，切换行程=卸载组件）
   useEffect(() => {

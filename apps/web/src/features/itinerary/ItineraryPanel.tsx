@@ -256,8 +256,9 @@ export function ItineraryPanel({
           )}
         </div>
       )}
-      {(stopGroups ?? [{ stopName: null, days: shownDays }]).map((group) => (
-      <div key={group.stopName ?? `stop-unknown-${group.days[0]?.id ?? "empty"}`}>
+      {/* stop 分组只合并连续同 stop 的天，环线回到起点城市会产生同名分组——key 必须带 index（评审 R1 P2） */}
+      {(stopGroups ?? [{ stopName: null, days: shownDays }]).map((group, groupIdx) => (
+      <div key={`${group.stopName ?? "stop-unknown"}-${groupIdx}`}>
       {/* stop 分组头（M39）：连续同 stop 的天并成一组；推导不出归属的组不显示头 */}
       {group.stopName != null && (
         <header className="flex items-center gap-1.5 border-b border-slate-900/8 bg-slate-900/4 px-3 py-1.5 text-xs font-semibold text-slate-600">

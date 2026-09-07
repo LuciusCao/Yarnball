@@ -119,6 +119,17 @@ export function buildOverlaySpecs(
       .filter((l) => l.dayId === day.id)
       .sort((a, b) => a.seq - b.seq);
     for (const leg of dayLegs) {
+      // 先判真实 polyline（评审 R1 顺手项）：纯文本端点的 ride leg（fromName/toName，无 place）
+      // 解析不出端点坐标，但服务端已算好真实路由 polyline——直接画，不丢弃
+      if (leg.polyline && leg.polyline.length > 1) {
+        lines.push({
+          id: leg.id,
+          path: leg.polyline,
+          color,
+          dashed: !leg.fromEntryId || !leg.toEntryId,
+        });
+        continue;
+      }
       // 端点解析（M39）：transit entry 的 placeId 常为空——大交通段本身（from==to==同一 entry）
       // 取 entry 的 from/toPlaceId；其余以 transit 为端点的段，起点端=讫点（toPlaceId）、终点端=起点（fromPlaceId）
       const endpointPlaceId = (
@@ -145,13 +156,9 @@ export function buildOverlaySpecs(
       const from = fromPlaceId ? placeById.get(fromPlaceId) : undefined;
       const to = toPlaceId ? placeById.get(toPlaceId) : undefined;
       if (!from || !to) continue;
-      const path =
-        leg.polyline && leg.polyline.length > 1
-          ? leg.polyline
-          : [from.location, to.location];
       lines.push({
         id: leg.id,
-        path,
+        path: [from.location, to.location],
         color,
         dashed: !leg.fromEntryId || !leg.toEntryId,
       });
