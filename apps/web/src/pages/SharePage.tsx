@@ -14,6 +14,7 @@ import {
   Wallet,
 } from "lucide-react";
 import {
+  formatDayLabel,
   formatMoney,
   formatVisitDuration,
   type BudgetSummary,
@@ -118,7 +119,7 @@ export function SharePage() {
                 className="glass rounded-full px-3 py-1 text-xs font-medium shadow transition-all hover:scale-105"
                 style={active ? { background: color, color: "#fff", borderColor: "transparent" } : { color }}
               >
-                Day {d.dayIndex}
+                {formatDayLabel(bundle.trip.startDate, d.dayIndex)}
               </button>
             );
           })}

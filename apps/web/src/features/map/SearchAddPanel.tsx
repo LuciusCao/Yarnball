@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { PlaceDto, PoiCandidate, TripBundle } from "@yarnball/shared";
+import { formatDayLabel } from "@yarnball/shared";
 import { toast } from "sonner";
 import { api } from "../../api/client";
 import { api as uxApi, PossibleDuplicateError } from "../../lib/api";
@@ -123,7 +124,7 @@ export function SearchAddPanel({
           >
             {Array.from({ length: Math.max(maxDay, dayIndex) }, (_, i) => i + 1).map((d) => (
               <option key={d} value={d}>
-                Day {d}
+                {formatDayLabel(bundle.trip.startDate, d)}
               </option>
             ))}
           </select>

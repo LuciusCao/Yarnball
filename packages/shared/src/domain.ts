@@ -694,3 +694,20 @@ export function formatDistance(distanceM: number | null | undefined): string {
   if (distanceM < 1000) return `${Math.round(distanceM)} 米`;
   return `${(distanceM / 1000).toFixed(1)} 公里`;
 }
+
+const WEEKDAY_NAMES = ["日", "一", "二", "三", "四", "五", "六"] as const;
+
+/**
+ * 天标签：由 trip.startDate + dayIndex（1-based）推导日期与星期，如「D1 · 9/23 周三」；
+ * startDate 缺失或非法时退化为「Day 1」。日期按本地时区逐日相加（直接构造 Date(y, m, d+n)
+ * 由引擎处理跨月/跨年进位），避免 UTC 解析串天。
+ */
+export function formatDayLabel(
+  startDate: string | null | undefined,
+  dayIndex: number,
+): string {
+  const m = startDate ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(startDate) : null;
+  if (!m) return `Day ${dayIndex}`;
+  const date = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + dayIndex - 1);
+  return `D${dayIndex} · ${date.getMonth() + 1}/${date.getDate()} 周${WEEKDAY_NAMES[date.getDay()]}`;
+}
