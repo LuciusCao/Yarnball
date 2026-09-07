@@ -165,7 +165,8 @@ export function TripPage() {
   }
 
   // 手动重定位按钮
-  async function relocate() {    if (!tripId) return;
+  async function relocate() {
+    if (!tripId) return;
     try {
       const { trip } = await api.resolveCity(tripId);
       if (trip.location) {
