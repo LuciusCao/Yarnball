@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { formatDistance, formatDuration, type TripBundle, type TransportLegDto } from "@yarnball/shared";
+import { formatDayLabel, formatDistance, formatDuration, type TripBundle, type TransportLegDto } from "@yarnball/shared";
 import { toast } from "sonner";
 import { BedDouble, Bus, Car, Clock, Footprints, MapPin, PlaneLanding, PlaneTakeoff, Repeat, TrainFront, Zap } from "lucide-react";
 import { api } from "../../api/client";
@@ -227,7 +227,7 @@ export function ItineraryPanel({
                 }`}
                 style={active ? { background: color } : { color }}
               >
-                Day {d.dayIndex}
+                {formatDayLabel(bundle.trip.startDate, d.dayIndex)}
               </button>
             );
           })}
@@ -310,11 +310,11 @@ export function ItineraryPanel({
                 className="rounded px-2 py-0.5 text-xs font-semibold text-white"
                 style={{ background: color }}
               >
-                Day {day.dayIndex}
+                {formatDayLabel(bundle.trip.startDate, day.dayIndex)}
               </span>
               <span className="text-xs text-slate-400">
                 {placeCount} 个地点
-                {day.date ? ` · ${day.date}` : ""}
+                {day.date && !bundle.trip.startDate ? ` · ${day.date}` : ""}
                 {timeline.length > 0 &&
                   ` · ${timeline[0].estimated ? "~" : ""}${formatHHMM(timeline[0].startMin)} 起`}
               </span>
