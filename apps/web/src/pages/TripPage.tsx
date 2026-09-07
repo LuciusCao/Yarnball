@@ -549,12 +549,12 @@ export function TripPage() {
               {selectedPlace.bookingInfo}
             </p>
           )}
-          {/* 酒店：已加入行程时显示并可编辑入离店天（多酒店，M10） */}
+          {/* 酒店住宿块：住宿区间展示/编辑 + 住宿维度的「加入住宿/移出住宿」操作（M59 从底部操作行拆上来，与日程维度的「移出日程」区分） */}
           {selectedHotelCand && (
             <div className="mt-1.5 rounded-lg bg-red-500/8 px-2 py-1.5 text-[11px] text-slate-600">
               <p className="flex items-center gap-1">
                 <BedDouble className="size-3 shrink-0 text-slate-400" />
-                {selectedStay ? "已加入行程的住宿" : "酒店候选（未加入，可在候选池加入行程）"}
+                {selectedStay ? "已加入行程的住宿" : "酒店候选（未加入住宿）"}
               </p>
               {selectedStay && days.length > 0 && (
                 <div className="mt-1">
@@ -573,21 +573,11 @@ export function TripPage() {
                   />
                 </div>
               )}
-            </div>
-          )}
-          {selectedPlace.notes && (
-            <p className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-slate-500">{selectedPlace.notes}</p>
-          )}
-          {/* 操作行（口径对齐候选池）：酒店主操作走 select/unselect（带默认住宿区间，不再只切 locked 造「暗 locked」态）；
-              已排期地点给「移出行程」出口（unschedule 撤销日程）；未排期 POI 走 locked 开关。
-              图标与候选池一致：locked 态显示 CalendarMinus（点击移出行程），候选态显示 CalendarPlus（点击加入行程） */}
-          <div className="mt-2.5 flex items-center gap-1.5 border-t border-slate-900/8 pt-2.5">
-            {selectedHotelCand && (
               <button
                 title={
                   selectedStay
-                    ? "移出行程：取消该酒店的住宿区间，不再锚定每天首尾"
-                    : "加入行程：自动分配未覆盖的最长连续住宿段，可再调整入离店天"
+                    ? "移出住宿：取消该酒店的住宿区间，不再锚定每天首尾"
+                    : "加入住宿：自动分配未覆盖的最长连续住宿段，可再调整入离店天"
                 }
                 disabled={placeBusy}
                 onClick={() =>
@@ -595,24 +585,37 @@ export function TripPage() {
                     ? unselectHotelStay(selectedHotelCand.id)
                     : selectHotelStay(selectedHotelCand.id))
                 }
-                className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                className={`mt-1 flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
                   selectedStay
                     ? "bg-hotelpin/10 text-hotelpin hover:bg-hotelpin/20"
                     : "bg-slate-900/8 text-slate-600 hover:bg-slate-900/15"
                 }`}
               >
                 <BedDouble className="size-3" />
-                {selectedStay ? "移出行程" : "加入行程"}
+                {selectedStay ? "移出住宿" : "加入住宿"}
               </button>
-            )}
+            </div>
+          )}
+          {selectedPlace.notes && (
+            <p className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-slate-500">{selectedPlace.notes}</p>
+          )}
+          {/* 操作行（口径对齐候选池）：酒店的住宿维度加入/移出已拆到上方住宿块（M59：「加入住宿/移出住宿」）；
+              已排期地点给「移出」出口（unschedule 撤销日程）——酒店信息卡上为与住宿按钮区分改名「移出日程」，非酒店仍叫「移出行程」；
+              未排期非酒店 POI 走 locked 开关。
+              图标与候选池一致：locked 态显示 CalendarMinus（点击移出），候选态显示 CalendarPlus（点击加入） */}
+          <div className="mt-2.5 flex items-center gap-1.5 border-t border-slate-900/8 pt-2.5">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
               <button
-                title="移出行程（撤销排入的日程，退回候选池）"
+                title={
+                  selectedHotelCand
+                    ? "移出日程（撤销排入的日程，退回候选池）"
+                    : "移出行程（撤销排入的日程，退回候选池）"
+                }
                 disabled={placeBusy}
                 onClick={() => void unschedulePlace(selectedPlace)}
                 className="flex items-center gap-1 rounded-lg bg-scheduled/10 px-2.5 py-1 text-xs font-medium text-scheduled transition-colors hover:bg-scheduled/20 disabled:opacity-50"
               >
-                <CalendarMinus className="size-3" /> 移出行程
+                <CalendarMinus className="size-3" /> {selectedHotelCand ? "移出日程" : "移出行程"}
               </button>
             ) : (
               !selectedHotelCand && (
