@@ -20,6 +20,7 @@ import type {
   SuggestDayClustersResult,
   TransportMode,
   TripBundle,
+  TripStop,
   UpdateEntryInput,
   UpdatePlaceInput,
 } from "@yarnball/shared";
@@ -92,6 +93,17 @@ const AGENT_PLACE_MAX_CITY_DIST_KM: Record<GeoProviderName, number> = {
   osm: 300, // 海外城市间距大（悉尼→蓝山 ~110km，墨尔本→大洋路 ~230km）
 };
 
+/**
+ * 多城市行程的防编造半径（千米）：距「任一」途经地中心的 min 距离阈值。
+ * 单城市行程不用它（退化为上面的单中心阈值，行为与多城市特性前完全一致）；
+ * 多城市取 max(单中心阈值, 200)——环线上相邻节点间距可达 350km（大柴旦→敦煌），
+ * 200km 覆盖绝大多数中途点位又不至于放进编造坐标。v2.1 可加走廊校验进一步兜底。
+ */
+const AGENT_PLACE_MULTI_STOP_MIN_DIST_KM = 200;
+
+/** 建点时 cityName 自动填充的归属半径：距最近途经地中心 ≤150km 则归该 stop，否则 null（归属未知不阻断） */
+const PLACE_CITY_ASSIGN_MAX_DIST_KM = 150;
+
 /** transit entry 大交通段时长：depart/arrive 时刻差（跨零点按次日到达计）；缺任一为 null */
 function transitDurationS(departTime: string | null, arriveTime: string | null): number | null {
   const parse = (t: string | null) => {
@@ -123,6 +135,31 @@ export class TripService {
   ) {}
 
   // ---------- trips ----------
+
+  /**
+   * 行程的有序途经地节点（多城市/环线）。stops 列缺省（迁移前旧行）时由镜像字段
+   * （destinationCity/cityAdcode/cityCenter）兜底构造 stops[0]，与 toTripDto 的兜底一致。
+   */
+  private stopsOfTrip(trip: {
+    stops: unknown;
+    destinationCity: string;
+    cityAdcode: string | null;
+    cityCenterLng: string | null;
+    cityCenterLat: string | null;
+  }): TripStop[] {
+    const stops = trip.stops as TripStop[] | null;
+    if (stops && stops.length > 0) return stops;
+    return [
+      {
+        name: trip.destinationCity,
+        adcode: trip.cityAdcode,
+        center:
+          trip.cityCenterLng != null && trip.cityCenterLat != null
+            ? { lng: Number(trip.cityCenterLng), lat: Number(trip.cityCenterLat) }
+            : null,
+      },
+    ];
+  }
 
   /**
    * 目的地解析 + provider 判定（创建与自愈共用）：
@@ -171,23 +208,76 @@ export class TripService {
     return { provider: "osm", adcode: null, center: null, currency: "USD" };
   }
 
+  /**
+   * 多城市途经地解析（createTrip / reResolveCity 共用）：
+   * stops[0] 走 resolveDestination 判定 provider（沿用全部现有兜底与自愈语义）；
+   * 其余节点用同一 provider 逐个 resolveCity 拿中心（高德对「青海湖」「茶卡镇」这类非行政区也能解析）。
+   * 同侧校验：任一节点解析到另一侧国家 → 422 提示拆成两个行程（一个行程一个坐标系，跨国混合不支持）。
+   * 解析失败（网络/未找到）的节点保留 name-only（center null）：防编造校验跳过它，自愈时重解析。
+   */
+  private async resolveStops(
+    names: string[],
+    forced?: GeoProviderName,
+  ): Promise<{
+    provider: GeoProviderName;
+    adcode: string | null;
+    center: LngLat | null;
+    currency: string;
+    stops: TripStop[];
+  }> {
+    const first = await this.resolveDestination(names[0], forced);
+    const stops: TripStop[] = [{ name: names[0], adcode: first.adcode, center: first.center }];
+    if (names.length === 1) return { ...first, stops };
+    const provider = getProvider(first.provider);
+    for (const name of names.slice(1)) {
+      let stop: TripStop = { name, adcode: null, center: null };
+      try {
+        const geo = await provider.resolveCity(name);
+        if (geo) {
+          const isChina = geo.country === "中国" || geo.country === "China";
+          if (first.provider === "amap" && !isChina) {
+            throw new ServiceError(
+              422,
+              `途经地「${name}」解析到海外（${geo.country ?? "国家未知"}），与主目的地「${names[0]}」（国内）不在同一侧：` +
+                `一个行程只支持单一坐标系，请拆成两个行程。`,
+            );
+          }
+          if (first.provider === "osm" && isChina) {
+            throw new ServiceError(
+              422,
+              `途经地「${name}」解析到国内，与主目的地「${names[0]}」（海外）不在同一侧：` +
+                `一个行程只支持单一坐标系，请拆成两个行程。`,
+            );
+          }
+          stop = { name, adcode: geo.adcode, center: geo.center };
+        }
+      } catch (err) {
+        if (err instanceof ServiceError) throw err;
+        console.warn(`[trip] resolve stop「${name}」failed:`, (err as Error).message);
+      }
+      stops.push(stop);
+    }
+    return { ...first, stops };
+  }
+
   async createTrip(input: CreateTripInput) {
     const id = uuid();
     const shareToken = randomBytes(16).toString("hex");
-    const resolved = await this.resolveDestination(
-      input.destinationCity,
-      input.geoProvider,
-    );
+    // 有序途经地：缺省 = [destinationCity]（单城市，行为与 stops 特性前完全一致）；
+    // 提供 stops 时首元素是主目的地，destinationCity/cityCenter 落成它的兼容镜像
+    const stopNames = input.stops?.length ? input.stops : [input.destinationCity];
+    const resolved = await this.resolveStops(stopNames, input.geoProvider);
     const [row] = await this.db
       .insert(schema.trips)
       .values({
         id,
         title: input.title,
-        destinationCity: input.destinationCity,
+        destinationCity: stopNames[0],
         cityAdcode: resolved.adcode,
         geoProvider: resolved.provider,
         cityCenterLng: resolved.center ? String(resolved.center.lng) : null,
         cityCenterLat: resolved.center ? String(resolved.center.lat) : null,
+        stops: resolved.stops,
         currency: resolved.currency,
         startDate: input.startDate ?? null,
         endDate: input.endDate ?? null,
@@ -206,7 +296,8 @@ export class TripService {
    */
   async reResolveCity(tripId: string) {
     const trip = await this.getTrip(tripId);
-    const resolved = await this.resolveDestination(trip.destinationCity);
+    // 重解析全部途经地（stops[0] 即原 destinationCity，单城市行为不变）；镜像列同步 stops[0]
+    const resolved = await this.resolveStops(this.stopsOfTrip(trip).map((s) => s.name));
     const providerChanged = resolved.provider !== trip.geoProvider;
     await this.db
       .update(schema.trips)
@@ -215,6 +306,7 @@ export class TripService {
         cityAdcode: resolved.provider === "amap" ? resolved.adcode : null,
         cityCenterLng: resolved.center ? String(resolved.center.lng) : null,
         cityCenterLat: resolved.center ? String(resolved.center.lat) : null,
+        stops: resolved.stops,
         currency: resolved.currency,
         updatedAt: new Date(),
       })
@@ -284,24 +376,35 @@ export class TripService {
   // ---------- places ----------
 
   /**
-   * 建 POI。actor=agent 时校验坐标必须落在目的城市附近（防 LLM 编造经纬度），
-   * agent 被拒时应引导其先调 search_poi 拿真实坐标。
+   * 建 POI。actor=agent 时校验坐标必须落在途经地附近（防 LLM 编造经纬度）：
+   * 单城市退化为「距 stops[0]（= 目的城市中心）≤ 单中心阈值」，与 stops 特性前完全一致；
+   * 多城市改「距任一 stop.center ≤ 多中心阈值（min 距离）」。agent 被拒时应引导其先调 search_poi 拿真实坐标。
+   * cityName 自动填充：显式传 > 距最近 stop.center ≤150km 归该 stop > null（归属未知不阻断）。
    * 状态机：agent 建的默认 candidate（候选池）；human 手动建的默认 locked（确认要去）。
    */
   async createPlace(tripId: string, input: CreatePlaceInput, actor: Actor) {
     const trip = await this.getTrip(tripId);
-    if (actor === "agent" && trip.cityCenterLng && trip.cityCenterLat) {
-      const center = { lng: Number(trip.cityCenterLng), lat: Number(trip.cityCenterLat) };
-      const distKm = haversineM(center, input.location) / 1000;
-      const maxKm = AGENT_PLACE_MAX_CITY_DIST_KM[trip.geoProvider as GeoProviderName] ?? 300;
-      if (distKm > maxKm) {
+    const stops = this.stopsOfTrip(trip);
+    // 距最近途经地中心的距离（无可用中心时为 null：创建时网络失败/自愈前的行程不校验）
+    let nearest: { name: string; distKm: number } | null = null;
+    for (const stop of stops) {
+      if (!stop.center) continue;
+      const distKm = haversineM(stop.center, input.location) / 1000;
+      if (!nearest || distKm < nearest.distKm) nearest = { name: stop.name, distKm };
+    }
+    if (actor === "agent" && nearest) {
+      const singleMaxKm = AGENT_PLACE_MAX_CITY_DIST_KM[trip.geoProvider as GeoProviderName] ?? 300;
+      const maxKm =
+        stops.length > 1 ? Math.max(singleMaxKm, AGENT_PLACE_MULTI_STOP_MIN_DIST_KM) : singleMaxKm;
+      if (nearest.distKm > maxKm) {
         throw new ServiceError(
           422,
-          `坐标距 ${trip.destinationCity} 市中心 ${Math.round(distKm)} 公里，超出合理范围（${maxKm}km）。` +
+          `坐标距 ${nearest.name} 市中心 ${Math.round(nearest.distKm)} 公里，超出合理范围（${maxKm}km）。` +
             `请先调用 search_poi 查询真实地点，使用返回的 location，不要自行填写或编造经纬度。`,
         );
       }
     }
+    const cityName = input.cityName ?? (nearest && nearest.distKm <= PLACE_CITY_ASSIGN_MAX_DIST_KM ? nearest.name : null);
     const [row] = await this.db
       .insert(schema.places)
       .values({
@@ -315,6 +418,7 @@ export class TripService {
         website: input.website ?? null,
         bookingUrl: input.bookingUrl ?? null,
         phone: input.phone ?? null,
+        cityName,
         amapPoiId: input.amapPoiId ?? null,
         sourceType: input.sourceType,
         sourceUrl: input.sourceUrl ?? null,
@@ -376,6 +480,7 @@ export class TripService {
     if (input.website !== undefined) patch.website = input.website ?? null;
     if (input.bookingUrl !== undefined) patch.bookingUrl = input.bookingUrl ?? null;
     if (input.phone !== undefined) patch.phone = input.phone ?? null;
+    if (input.cityName !== undefined) patch.cityName = input.cityName ?? null;
     if (input.amapPoiId !== undefined) patch.amapPoiId = input.amapPoiId ?? null;
     if (input.sourceUrl !== undefined) patch.sourceUrl = input.sourceUrl ?? null;
     if (input.notes !== undefined) patch.notes = input.notes ?? null;
@@ -500,11 +605,12 @@ export class TripService {
         input.toPlaceId,
         input.fromName,
         input.toName,
+        input.transitMode,
       ];
       if (transitFields.some((v) => v != null)) {
         throw new ServiceError(
           422,
-          "entryType=place 不接受 departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName",
+          "entryType=place 不接受 departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName/transitMode",
         );
       }
       const [place] = await this.db
@@ -559,6 +665,7 @@ export class TripService {
         toPlaceId: entryType === "transit" ? (input.toPlaceId ?? null) : null,
         fromName: entryType === "transit" ? (input.fromName ?? null) : null,
         toName: entryType === "transit" ? (input.toName ?? null) : null,
+        transitMode: entryType === "transit" ? (input.transitMode ?? null) : null,
       });
       await this.normalizePositionsTx(tx, day.id);
     });
@@ -583,9 +690,10 @@ export class TripService {
       input.toPlaceId,
       input.fromName,
       input.toName,
+      input.transitMode,
     ];
     if (entry.entryType !== "transit" && transitFields.some((v) => v !== undefined)) {
-      throw new ServiceError(422, "departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName 仅 transit entry 可编辑");
+      throw new ServiceError(422, "departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName/transitMode 仅 transit entry 可编辑");
     }
     for (const pid of [input.fromPlaceId, input.toPlaceId]) {
       if (!pid) continue;
@@ -609,6 +717,7 @@ export class TripService {
       if (input.toPlaceId !== undefined) patch.toPlaceId = input.toPlaceId ?? null;
       if (input.fromName !== undefined) patch.fromName = input.fromName ?? null;
       if (input.toName !== undefined) patch.toName = input.toName ?? null;
+      if (input.transitMode !== undefined) patch.transitMode = input.transitMode ?? null;
       // 起讫不变量与 add 侧一致：patch 合并后起点/讫点各自至少留一个（place 引用或自由文本）
       const effective = <K extends "fromPlaceId" | "toPlaceId" | "fromName" | "toName">(key: K) =>
         key in patch ? (patch[key] as string | null) : entry[key];
@@ -689,6 +798,7 @@ export class TripService {
           toPlaceId: entry.toPlaceId,
           fromName: entry.fromName,
           toName: entry.toName,
+          transitMode: entry.transitMode,
         });
         await this.normalizePositionsTx(tx, day.id);
       });
@@ -779,6 +889,31 @@ export class TripService {
   }
 
   /**
+   * 路由调用（经全局限流器）：失败在限流器内退避重试一次（免费 OSRM 服按速率限流返回 429，
+   * 需等限流窗口过去再试），仍失败才降级直线估算并告警（可观测：此前静默降级导致 polyline=null 无人察觉）。
+   */
+  private async routeWithRetry(
+    routeLimit: ReturnType<typeof createLimiter>,
+    geo: ReturnType<typeof getProvider>,
+    a: LngLat,
+    b: LngLat,
+    mode: TransportMode,
+    city?: string,
+  ) {
+    try {
+      return await routeLimit(() => geo.route(a, b, mode, city));
+    } catch {
+      try {
+        await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
+        return await routeLimit(() => geo.route(a, b, mode, city));
+      } catch (err) {
+        console.warn(`[routing] route(${mode}) 重试仍失败，降级直线估算:`, (err as Error).message);
+        return fallbackRoute(a, b, mode);
+      }
+    }
+  }
+
+  /**
    * 变更某天 entry / 换酒店后重算该天交通段。
    * 酒店锚点按天解析（见 getDayHotelAnchors）：普通日首尾同为当晚酒店，
    * 换酒店日首 = 旧酒店、尾 = 新酒店；当晚无覆盖的天不生成「返回酒店」段
@@ -786,7 +921,9 @@ export class TripService {
    * transit entry（大交通）参与锚定：起讫引用行程内 place 时走真实坐标展开成端点节点；
    * 首个 entry 是带坐标的 transit 到达 → 替代酒店首锚点成为当天起点；
    * 末个 entry 是带坐标的 transit 离开 → 替代酒店尾锚点收口当天。
-   * 同一 transit entry 的 from→to 节点间是大交通段本身（不走路由 provider，时长取 depart/arrive 差）。
+   * 同一 transit entry 的 from→to 节点间是大交通段本身：transitMode=drive（自驾城际段）走真实路由
+   * 拿公路 polyline/里程（depart/arrive 时刻差仍是硬锚点时长，只缺时刻时用路由时长）；
+   * 其余（航班/高铁/未指定）不调路由 provider，时长取 depart/arrive 差，polyline 为直线两点。
    * 手动 mode 覆盖（modeOverride）按端点配对保留，重算不冲掉。
    */
   async recalcDayLegs(tripId: string, dayId: string) {
@@ -896,7 +1033,7 @@ export class TripService {
         const b = to.coord;
         const override =
           overrides.get(`${endpointKey(from.entryId, from.placeId)}->${endpointKey(to.entryId, to.placeId)}`) ?? null;
-        // 同一 transit entry 的 from→to：大交通段本身，不调路由 provider
+        // 同一 transit entry 的 from→to：大交通段本身；transitMode=drive 走真实路由，其余不调路由 provider
         const isTransitRide =
           from.transitEntryId != null &&
           from.transitEntryId === to.transitEntryId &&
@@ -908,26 +1045,24 @@ export class TripService {
         let polyline: LngLat[] | null;
         if (isTransitRide) {
           const entryRow = entryById.get(from.transitEntryId!);
-          mode = override ?? "transit";
-          distanceM = Math.round(haversineM(a, b));
-          durationS = transitDurationS(entryRow?.departTime ?? null, entryRow?.arriveTime ?? null) ?? Math.round((distanceM * 1.3) / 8.5);
-          polyline = [a, b];
+          const fixedDurationS = transitDurationS(entryRow?.departTime ?? null, entryRow?.arriveTime ?? null);
+          if (entryRow?.transitMode === "drive") {
+            // 自驾城际段：真实公路 polyline/里程是环线体验本体；时刻差仍是硬锚点时长，缺时刻才用路由时长
+            mode = override ?? "drive";
+            const result = await this.routeWithRetry(routeLimit, geo, a, b, "drive", trip?.destinationCity);
+            distanceM = result.distanceM;
+            durationS = fixedDurationS ?? result.durationS;
+            // 路由失败降级（polyline=null）时补直线两点，保证自驾段在地图上不消失
+            polyline = result.polyline ?? [a, b];
+          } else {
+            mode = override ?? "transit";
+            distanceM = Math.round(haversineM(a, b));
+            durationS = fixedDurationS ?? Math.round((distanceM * 1.3) / 8.5);
+            polyline = [a, b];
+          }
         } else {
           mode = override ?? (haversineM(a, b) < 2000 ? "walk" : "drive");
-          // 失败在限流器内退避重试一次（免费 OSRM 服按速率限流返回 429，需等限流窗口过去再试），
-          // 仍失败才降级直线估算并告警（可观测：此前静默降级导致 polyline=null 无人察觉）
-          let result;
-          try {
-            result = await routeLimit(() => geo.route(a, b, mode, trip?.destinationCity));
-          } catch {
-            try {
-              await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
-              result = await routeLimit(() => geo.route(a, b, mode, trip?.destinationCity));
-            } catch (err) {
-              console.warn(`[routing] route(${mode}) 重试仍失败，降级直线估算:`, (err as Error).message);
-              result = fallbackRoute(a, b, mode);
-            }
-          }
+          const result = await this.routeWithRetry(routeLimit, geo, a, b, mode, trip?.destinationCity);
           mode = override ?? result.mode;
           distanceM = result.distanceM;
           durationS = result.durationS;

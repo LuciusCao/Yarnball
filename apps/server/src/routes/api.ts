@@ -208,8 +208,10 @@ export function createApi(
       trip?.cityCenterLng != null && trip?.cityCenterLat != null
         ? { lng: Number(trip.cityCenterLng), lat: Number(trip.cityCenterLat) }
         : null;
+    // 多城市行程可传 city 指定目标途经地偏置；缺省仍按主目的地（stops[0] 镜像）
+    const city = c.req.query("city") ?? trip?.destinationCity ?? "";
     try {
-      const candidates = await provider.searchPoi(keyword, trip?.destinationCity ?? "", bias);
+      const candidates = await provider.searchPoi(keyword, city, bias);
       return c.json({ candidates });
     } catch (err) {
       const message = (err as Error).message ?? "";
