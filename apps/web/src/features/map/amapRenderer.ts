@@ -64,7 +64,8 @@ export class AMapRenderer implements MapRenderer {
     this.syncOverlays(
       this.stopOverlays,
       specs.stops.map((stop) => ({
-        id: stop.name,
+        // key 用序号而非 name：环线行程首尾同城市时同名 stop 会冲突（review P2）
+        id: `stop-${stop.index}`,
         sig: stopSignature(stop),
         create: () => this.createStopMarker(stop),
       })),
