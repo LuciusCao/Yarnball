@@ -379,7 +379,10 @@ async function main() {
 
     // 4.6 trailing_chunk_flow：kimi 实测行为回归——
     // ① 只发带 title 的 tool_call_update、不发 tool_call 初始通知（MCP 提示不得误报）；
-    // ② prompt 响应 resolve 后 300ms 才补发 trailing chunk（回合结束 advisory 必须重排到回合尾部）
+    // ② prompt 响应 resolve 后 300ms 才补发 trailing chunk——必须并回主文本块
+    //   （同一条消息 id 原地更新），不开孤儿新段；
+    // ③ 再晚 200ms 补发迟到的 plan（真实事件）——promoteTurnTerminal 把 advisory
+    //    重排到它之后，保持「回合结束」恒为回合末条
     console.log("-- trailing_chunk_flow --");
     const trailAgentId = `fake-agent-smoke-trailing-${RUN_ID}`;
     await client.query(
@@ -409,49 +412,71 @@ async function main() {
       body: JSON.stringify({ text: "灵隐寺攻略，帮我解析" }),
     });
 
-    // 轮询到完整不变量成立而不是「看到 chunk 就断言」：迟到 chunk 落库、首段聚合文本落库、
-    // advisory 重排三者之间有微小窗口，任一后到的瞬时快照都可能缺首段（verify 偶发失败点）
+    // 先等回合收尾：主文本块 + 回合结束 advisory 落库，记下主文本块 id 供原地更新断言
     let trailMsgs: Awaited<ReturnType<typeof messages>> = [];
+    let mainTextId = "";
     await waitUntil(
       async () => {
         trailMsgs = await messages(trailSession.id);
-        const trailing = trailMsgs.find(
-          (m) => m.kind === "agent_text" && String(m.content.text ?? "").includes("迟到的尾部输出"),
+        const main = trailMsgs.find(
+          (m) => m.kind === "agent_text" && String(m.content.text ?? "").includes("正在处理你的攻略"),
         );
-        if (!trailing) return false;
-        const tm = trailMsgs.filter((m) => m.turnId === trailing.turnId);
-        const last = tm[tm.length - 1];
+        const adv = trailMsgs.find(
+          (m) => m.kind === "advisory" && String(m.content.text ?? "").includes("回合结束"),
+        );
+        if (main && adv) {
+          mainTextId = main.id;
+          return true;
+        }
+        return false;
+      },
+      15_000,
+      "trailing_chunk_flow turn finished (main text + advisory)",
+    );
+
+    // 再等两个迟到者落库：trailing chunk 并回主文本块（同 id 原地更新）+
+    // 迟到 plan 落新消息并触发 advisory 重排。三者之间有微小窗口，整条顺序作为
+    // 不变量轮询而非瞬时断言（verify 偶发失败点）
+    const expectTrailOrder = ["user_text", "tool_call_update", "agent_text", "plan", "advisory"];
+    await waitUntil(
+      async () => {
+        trailMsgs = await messages(trailSession.id);
+        const main = trailMsgs.find((m) => m.id === mainTextId);
         return (
-          last?.kind === "advisory" &&
-          String(last.content.text ?? "").includes("回合结束") &&
-          tm.filter((m) => m.kind === "agent_text").length === 2 &&
-          tm.some((m) => m.kind === "user_text")
+          !!main &&
+          String(main.content.text ?? "").includes("迟到的尾部输出") &&
+          JSON.stringify(trailMsgs.map((m) => m.kind)) === JSON.stringify(expectTrailOrder)
         );
       },
       15_000,
-      "trailing chunk turn fully persisted with advisory at tail",
+      "trailing chunk merged in place + advisory promoted to tail",
     );
-    assert(true, "end_turn advisory is the last message of its turn despite trailing chunk");
 
-    const trailing = trailMsgs.find(
-      (m) => m.kind === "agent_text" && String(m.content.text ?? "").includes("迟到的尾部输出"),
-    )!;
-    const turnMsgs = trailMsgs.filter((m) => m.turnId === trailing.turnId);
-    // 迟到 chunk 不孤悬：与回合其他消息同 turnId，且 advisory 的 seq 排在其后
-    const advisory = turnMsgs.find((m) => m.kind === "advisory")!;
+    // 迟到 chunk 并入主文本块：同一条消息 id 原地更新，不开独立的孤儿小条
+    const mainText = trailMsgs.find((m) => m.id === mainTextId)!;
     assert(
-      turnMsgs.some((m) => m.kind === "user_text") && advisory.seq > trailing.seq,
-      "trailing chunk shares the turn and sits before the re-sequenced advisory",
+      String(mainText.content.text).includes("正在处理你的攻略") &&
+        String(mainText.content.text).includes("迟到的尾部输出"),
+      "trailing chunk merged into the main agent_text block",
     );
-    // 迟到 chunk 开了新段而不是并回 advisory 之前的旧段
-    const trailAgentTexts = turnMsgs.filter((m) => m.kind === "agent_text");
+    const trailAgentTexts = trailMsgs.filter((m) => m.kind === "agent_text");
     assert(
-      trailAgentTexts.length === 2,
-      `trailing chunk forms its own segment (got ${trailAgentTexts.length} agent_text)`,
+      trailAgentTexts.length === 1 && trailAgentTexts[0].id === mainTextId,
+      `trailing chunk updated the same message id in place (no orphan segment; got ${trailAgentTexts.length} agent_text)`,
+    );
+    // advisory 仍为回合末条：迟到 plan 是真实事件，落库后 advisory 被重排到它之后
+    const lastTrailMsg = trailMsgs[trailMsgs.length - 1];
+    const latePlan = trailMsgs.find((m) => m.kind === "plan");
+    assert(
+      lastTrailMsg.kind === "advisory" &&
+        String(lastTrailMsg.content.text ?? "").includes("回合结束") &&
+        !!latePlan &&
+        lastTrailMsg.seq > latePlan.seq,
+      "end_turn advisory re-sequenced to the tail after the late plan event",
     );
     // update-only tool_call（kimi 风格）带 title → 已判定为 MCP 调用，首回合不得冒误报提示
     assert(
-      turnMsgs.some((m) => m.kind === "tool_call_update" && !turnMsgs.some((x) => x.kind === "tool_call")),
+      trailMsgs.some((m) => m.kind === "tool_call_update") && !trailMsgs.some((x) => x.kind === "tool_call"),
       "session saw tool_call_update without initial tool_call (kimi style)",
     );
     assert(
