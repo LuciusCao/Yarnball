@@ -319,6 +319,15 @@ export const CreateTripInputSchema = z.object({
 export type CreateTripInput = z.infer<typeof CreateTripInputSchema>;
 
 /**
+ * 更新行程（PATCH /api/trips/:tripId 与 MCP set_start_date）。
+ * 当前仅出发日期：YYYY-MM-DD；传 null 清除（天标签退化为「Day N」，见 formatDayLabel）。
+ */
+export const UpdateTripInputSchema = z.object({
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+});
+export type UpdateTripInput = z.infer<typeof UpdateTripInputSchema>;
+
+/**
  * http(s) URL 白名单：agent 从不可信内容收集的链接会在前端以 <a href> 渲染，
  * z.string().url() 接受 javascript:/data: 等危险 scheme，必须收窄（防 stored XSS）。
  */

@@ -20,6 +20,7 @@ import {
   UpdateEntryInputSchema,
   UpdatePlaceInputSchema,
   UpdateSettingsInputSchema,
+  UpdateTripInputSchema,
   type AgentAvailability,
   type SharePayload,
   type TripBundle,
@@ -162,6 +163,12 @@ export function createApi(
   });
 
   api.get("/trips/:tripId", async (c) => c.json({ bundle: await tripService.getBundle(c.req.param("tripId")) }));
+
+  /** 更新行程字段：当前仅 startDate（出发日期，null = 清除，天标签退化为 Day N） */
+  api.patch("/trips/:tripId", async (c) => {
+    const input = UpdateTripInputSchema.parse(await c.req.json());
+    return c.json({ trip: await tripService.updateTrip(c.req.param("tripId"), input) });
+  });
 
   api.delete("/trips/:tripId", async (c) => {
     const tripId = c.req.param("tripId");
