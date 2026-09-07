@@ -41,7 +41,9 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  *   用酒店图标 + hotelpin 虚线卡片区别于普通 entry；出发/到店时刻随时间轴推算（~ 前缀 = 估算），
  *   首段交通时长挂在出发节点下方。大交通收口的头/尾天（机场落地/离开）服务端不锚定酒店，
  *   改渲染大交通端点节点（M20：到达日「从 机场/车站 出发」、离开日「前往 机场/车站」；
- *   M57：表达的是市内转移段，图标跟随转移 leg 的 mode，样式为轻量连接行而非航班卡）
+ *   M57：表达的是市内转移段，样式为轻量连接行而非航班卡；
+ *   M58 去重：转移段 leg 存在时锚定行不再单独渲染，端点名与出发/到达时刻折进该段
+ *   LegRow 的行内前缀，同一段路只表达一次；仅 leg 缺失（坐标不全等）时锚定行作兑底渲染）
  * - 无覆盖酒店的天（M17）：天头部显示「当晚未安排住宿」+「去候选池加入」引导
  *   （onOpenCandidates 由 TripPage 传入；只读分享页只有文案没有按钮）。
  *   注意（M20 话术统一）：酒店需「加入行程」（底层 select，带 checkInDay/checkOutDay 住宿区间）才参与路线锚定
@@ -309,7 +311,8 @@ export function ItineraryPanel({
         const startLeg = dayLegs.find((l) => l.fromPlaceId != null) ?? null;
         const endLeg = [...dayLegs].reverse().find((l) => l.toPlaceId != null) ?? null;
         // 大交通端点锚定（M20 追加）：首/末 entry 为带坐标 transit（到达/离开）时服务端 recalcDayLegs
-        // 已跳过酒店锚点，面板对应渲染「从 机场/车站 出发」/「前往 机场/车站」端点节点；
+        // 已跳过酒店锚点，面板对应展示「从 机场/车站 出发」/「前往 机场/车站」端点信息
+        // （M58：折进转移段 LegRow 的前缀，无 leg 时兑底为独立锚定行）；
         // 仅一个 entry 的纯移动天不重复渲染（transit 卡本身已足够）
         const startTransitItem =
           startLeg == null && timeline.length > 1 && timeline[0]?.transit ? timeline[0] : null;
@@ -421,21 +424,37 @@ export function ItineraryPanel({
                 // 大交通段本身（from→to 同一 entry 的那条 leg）：自驾卡展示真实里程/时长用；M47 点击卡片在地图上只显示该段
                 const rideLeg =
                   dayLegs.find((l) => l.fromEntryId === entry.id && l.toEntryId === entry.id) ?? null;
-                // 大交通端点锚定行的市内转移段：离开日取驶入该 transit 的 leg，到达日取其后的 leg（调用点直接传 legAfter）
+                // 离开日驶入该 transit 的市内转移段（末站→机场/车站）：M58 后仅用于判断锚定行是否兑底渲染
                 const legBefore =
                   dayLegs.find((l) => l.toEntryId === entry.id && l.fromEntryId !== entry.id) ?? null;
+                // M58 去重：转移段存在时，端点锚定行（「从 X 出发」/「前往 X」）不再单独渲染，
+                // 端点名 + 出发/到达时刻折成对应 LegRow 的行内前缀，同一段路只表达一次
+                const startAnchorPrefix =
+                  kind != null && startTransitItem != null && i === 0 && leg != null
+                    ? `从 ${transitToName(entry, placeById) ?? "目的地"} 出发 ${
+                        (timeline[1]?.estimated ?? true) ? "~" : ""
+                      }${formatHHMM(timeline[1].startMin - Math.round((leg.durationS ?? 0) / 60))}`
+                    : null;
+                const endAnchorPrefix =
+                  endTransitItem != null &&
+                  leg != null &&
+                  leg.toEntryId === endTransitItem.entry.id &&
+                  leg.fromEntryId !== endTransitItem.entry.id
+                    ? `前往 ${transitFromName(endTransitItem.entry, placeById) ?? "出发地"} ~${formatHHMM(endTransitItem.startMin)} 到达`
+                    : null;
                 return (
                   <li key={entry.id}>
-                    {/* 离开日大交通端点（M20）：末 entry 为 transit 离开时，在卡片前渲染「前往 机场/车站」；
-                        到达车站时刻 ≈ transit 的 departTime（startMin），恒按估算渲染（~ 前缀） */}
-                    {kind && endTransitItem != null && i === timeline.length - 1 && (
+                    {/* 离开日大交通端点（M20；M58 去重）：末 entry 为 transit 离开时渲染「前往 机场/车站」，
+                        到达车站时刻 ≈ transit 的 departTime（startMin），恒按估算渲染（~ 前缀）；
+                        驶入转移段（legBefore）存在时不渲染本行，端点名与时刻已折进前序 LegRow 前缀，
+                        仅 leg 缺失（坐标不全等）时本行作兑底保住端点语义 */}
+                    {kind && endTransitItem != null && i === timeline.length - 1 && legBefore == null && (
                       <TransitAnchorRow
                         direction="return"
                         kind={kind}
                         name={transitFromName(entry, placeById) ?? "出发地"}
                         timeMin={startMin}
                         estimated
-                        leg={legBefore}
                         onSelect={
                           entry.fromPlaceId ? () => onSelectPlace(entry.fromPlaceId!) : undefined
                         }
@@ -543,19 +562,20 @@ export function ItineraryPanel({
                       )}
                     </div>
                     )}
-                    {/* 到达日大交通端点（M20）：首 entry 为 transit 到达时，在卡片后渲染「从 机场/车站 出发」，时刻 = 下一站开始 - 交通时长 */}
-                    {kind && startTransitItem != null && i === 0 && (
+                    {/* 到达日大交通端点（M20；M58 去重）：首 entry 为 transit 到达时渲染「从 机场/车站 出发」，
+                        时刻 = 下一站开始 - 交通时长；其后转移段 leg 存在时不渲染本行，端点名与时刻
+                        已折进该 LegRow 的前缀（startAnchorPrefix），仅 leg 缺失时本行作兑底 */}
+                    {kind && startTransitItem != null && i === 0 && leg == null && (
                       <TransitAnchorRow
                         direction="depart"
                         kind={kind}
                         name={transitToName(entry, placeById) ?? "目的地"}
                         timeMin={
                           timeline.length > 1
-                            ? timeline[1].startMin - Math.round((leg?.durationS ?? 0) / 60)
+                            ? timeline[1].startMin
                             : endMin
                         }
                         estimated={timeline[1]?.estimated ?? true}
-                        leg={leg ?? null}
                         onSelect={
                           entry.toPlaceId ? () => onSelectPlace(entry.toPlaceId!) : undefined
                         }
@@ -570,6 +590,7 @@ export function ItineraryPanel({
                         onOverride={overrideMode}
                         selected={selectedLegId === leg.id}
                         onToggle={toggleLeg ? () => toggleLeg(leg.id) : undefined}
+                        prefix={startAnchorPrefix ?? endAnchorPrefix}
                       />
                     )}
                   </li>
@@ -781,6 +802,8 @@ function TransitRow({
 
 /** 交通段行：图标 + 时长 + 距离；非只读时可切换 步行/驾车（覆盖后不被自动重算冲掉）。
  *  返回酒店段（toHotel）的「返回 X 酒店」由 M17 的酒店端点节点承载，这里只保留交通信息且不提供覆盖切换。
+ *  M58：大交通端点的市内转移段（transit→首站 / 末站→transit）不再单独渲染锚定行，
+ *  端点名与出发/到达时刻以 prefix 折进本行行首（如「从 悉尼机场 出发 ~10:00 ·」）。
  *  M47：传入 onToggle 时整行可点击——点击后地图上只显示该段路线，再点一次取消；选中态用品牌色环提示 */
 function LegRow({
   leg,
@@ -790,6 +813,7 @@ function LegRow({
   onOverride,
   selected = false,
   onToggle,
+  prefix = null,
 }: {
   leg: TransportLegDto;
   toHotel: boolean;
@@ -800,6 +824,8 @@ function LegRow({
   selected?: boolean;
   /** 点击切换该段的地图单独显示（M47；分享页不传则不可点） */
   onToggle?: () => void;
+  /** 行内前缀（M58）：大交通端点锚定信息折入，如「从 X 出发 ~HH:MM」/「前往 X ~HH:MM 到达」 */
+  prefix?: string | null;
 }) {
   // modeOverride 非空 = 人工覆盖过（M1），自动重算不会冲掉；可点击徽标恢复自动
   const overridden = leg.modeOverride != null;
@@ -816,7 +842,9 @@ function LegRow({
       title={onToggle ? (selected ? "点击取消，地图恢复不显示交通段" : "点击在地图上只显示该段路线") : undefined}
     >
       <TransportIcon mode={leg.mode} />
-      <span>
+      {prefix != null && <span className="min-w-0 truncate">{prefix}</span>}
+      <span className="shrink-0">
+        {prefix != null ? "· " : ""}
         {formatDuration(leg.durationS)}
         {leg.distanceM != null ? ` · ${formatDistance(leg.distanceM)}` : ""}
       </span>
@@ -932,20 +960,18 @@ function checkoutTimeHint(place: TripBundle["places"][number] | undefined): stri
   return m ? `${m[1].replace("：", ":")} 前退房` : null;
 }
 
-/** 大交通端点节点（M20 追加）：到达日首「从 机场/车站 出发」、离开日尾「前往 机场/车站」，
- *  对应服务端 recalcDayLegs 对首/末 transit 天跳过酒店锚点的行为；时刻 ~ 前缀 = 随时间轴推算的估算值；
- *  起讫引用行程内 place 时点击在地图上选中该地点。
- *  M57：这行表达的是大交通节点与首/末站之间的市内转移段，不是第二张大交通卡——
- *  样式降级为 LegRow 式轻量连接行（无深色实心圆、无虚线卡片），图标跟随转移 leg 的
- *  mode（drive=Car / transit=Bus / walk=Footprints），无 leg 数据时才退回原类别图标；
- *  有 leg 时附「驾车约 N 分钟」之类的模式提示，点明这是转移段标题 */
+/** 大交通端点节点（M20 追加；M58 起仅作无 leg 兑底）：到达日首「从 机场/车站 出发」、
+ *  离开日尾「前往 机场/车站」，对应服务端 recalcDayLegs 对首/末 transit 天跳过酒店锚点的行为；
+ *  时刻 ~ 前缀 = 随时间轴推算的估算值；起讫引用行程内 place 时点击在地图上选中该地点。
+ *  M58：对应的市内转移段 leg 存在时不再渲染本行——端点名与出发/到达时刻折进该段 LegRow 的
+ *  行内前缀，同一段路只表达一次；仅在 leg 缺失（坐标不全等）时渲染本行保住端点语义。
+ *  M57 的轻量连接行样式保留（无深色实心圆、无虚线卡片），图标退回按大交通类别 */
 function TransitAnchorRow({
   direction,
   kind,
   name,
   timeMin,
   estimated,
-  leg = null,
   onSelect,
 }: {
   direction: "depart" | "return";
@@ -953,23 +979,10 @@ function TransitAnchorRow({
   name: string;
   timeMin: number | null;
   estimated: boolean;
-  /** 大交通节点与首/末站之间的市内转移段（M57）：驱动图标与「驾车约 N 分钟」提示 */
-  leg?: TransportLegDto | null;
   onSelect?: () => void;
 }) {
-  const FallbackIcon =
-    kind === "arrival" ? PlaneLanding : kind === "departure" ? PlaneTakeoff : TrainFront;
   const Icon =
-    leg == null
-      ? FallbackIcon
-      : leg.mode === "walk"
-        ? Footprints
-        : leg.mode === "transit"
-          ? Bus
-          : Car;
-  const modeLabel =
-    leg?.mode === "walk" ? "步行" : leg?.mode === "transit" ? "公交" : leg?.mode === "drive" ? "驾车" : null;
-  const legHint = modeLabel != null && leg?.durationS != null ? `${modeLabel}约 ${formatDuration(leg.durationS)}` : null;
+    kind === "arrival" ? PlaneLanding : kind === "departure" ? PlaneTakeoff : TrainFront;
   return (
     <div
       className={`flex items-center gap-2 py-1 pl-2 transition-colors ${
@@ -979,7 +992,7 @@ function TransitAnchorRow({
     >
       <span
         className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-900/6 text-slate-400"
-        title={legHint ?? TRANSIT_KIND_META[kind].label}
+        title={TRANSIT_KIND_META[kind].label}
       >
         <Icon className="size-3" />
       </span>
@@ -987,7 +1000,6 @@ function TransitAnchorRow({
         <span className="shrink-0">{direction === "depart" ? "从 " : "前往 "}</span>
         <span className="truncate">{name}</span>
         {direction === "depart" ? <span className="shrink-0"> 出发</span> : null}
-        {legHint && <span className="ml-1.5 shrink-0 text-[11px] text-slate-400">{legHint}</span>}
       </span>
       {timeMin != null && (
         <span
