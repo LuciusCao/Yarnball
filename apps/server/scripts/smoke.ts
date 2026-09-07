@@ -670,7 +670,8 @@ async function main() {
     const poiPlace2 = parsePlace(poi2);
     assert(poi2.result?.isError !== true && poiPlace2?.id === poiPlace.id, "dedup: same amapPoiId matches exactly regardless of name/coords");
     assert(poiPlace2?.name === "翡翠湖观景台", "dedup: existing name not overwritten");
-    // agent 对已锁定（locked）place 的模糊命中：返回疑似重复信号且不回填（locked 地点 agent 不可动）
+    // agent 对 locked place 的模糊命中：返回疑似重复信号且不回填（模糊判重路径本就不回填，
+    // 与状态无关；M54 后 locked 地点信息字段可由 update_place 正常补全）
     const lockedPlace = await mkPlace({ name: "锁定的小吃店", category: "restaurant", location: { lng: 95.362, lat: 37.856 } });
     assert(lockedPlace.status === "locked", "dedup: human REST create defaults to locked");
     const lockedDup = await mcpCall(
