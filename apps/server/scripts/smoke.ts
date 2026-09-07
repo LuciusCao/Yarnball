@@ -478,14 +478,18 @@ async function main() {
       parsePlace(aria2)?.id === ariaPlace.id,
       "dedup: parenthesized suffix stripped (「Aria（East Circular Quay）」 == 「Aria」)",
     );
-    // 互为前缀（短名 ≥2 字符）+ ≤200m → 判重合并
+    // 互为前缀（短名 ≥3 字符）+ ≤200m → 判重合并
     const hfj1 = await mkPlace({ name: "河坊街", category: "attraction", location: { lng: 95.359, lat: 37.853 } });
     const hfj2 = await mkPlace({ name: "河坊街小吃城", category: "restaurant", location: { lng: 95.3591, lat: 37.853 } });
     assert(hfj2.id === hfj1.id, "dedup: prefix containment within 200m merges (河坊街 / 河坊街小吃城)");
     // 前缀包含但距离 >200m → 语义可能不同（河坊街 vs 河坊街小吃城类），不合并
     const hfjFar = await mkPlace({ name: "河坊街小吃城", category: "restaurant", location: { lng: 95.375, lat: 37.853 } });
     assert(hfjFar.id !== hfj1.id, "dedup: prefix containment >200m apart does NOT merge");
-    // 名称不含括号/前缀关系、仅类别不同的相邻点不受影响（反向校验规范化没有误伤）
+    // 短名 <3 字符的通用词不做前缀判重（防「酒店」⊂「酒店式公寓」类假合并），即使 ≤200m
+    const hotel1 = await mkPlace({ name: "酒店", category: "hotel", location: { lng: 95.361, lat: 37.8535 } });
+    const hotel2 = await mkPlace({ name: "酒店式公寓", category: "hotel", location: { lng: 95.3611, lat: 37.8535 } });
+    assert(hotel2.id !== hotel1.id, "dedup: prefix with short name <3 chars does NOT merge (酒店 / 酒店式公寓)");
+    // 反向校验：括号后缀变体重复 add 后 bundle 里仍只有一条 Aria（规范化没有误建/误删其他点）
     {
       const { bundle: nameBundle } = await api(`/trips/${mcTrip.id}`);
       const ariaPlaces = nameBundle.places.filter((p: any) => p.name.startsWith("Aria"));

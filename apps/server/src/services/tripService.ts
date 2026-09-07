@@ -120,14 +120,16 @@ const normalizePlaceName = (name: string) =>
     .replace(/[\s　]+/g, "");
 
 /**
- * 去重名称匹配：规范化后完全相等，或一方是另一方的前缀（短名 ≥2 字符防误伤；
- * 「河坊街」⊂「河坊街小吃城」这类语义不同点由 ≤200m 距离约束兜底）。
+ * 去重名称匹配：规范化后完全相等，或一方是另一方的前缀。
+ * 前缀分支要求短名 ≥3 字符（≥2 会放进「酒店」⊂「酒店式公寓」这类通用词假合并，
+ * 3 字符起才足以携带具体专名语义，如「河坊街」⊂「河坊街小吃城」）；
+ * 语义仍不同的相邻点由 ≤200m 距离约束兜底。
  */
 const placeNameMatch = (a: string, b: string) => {
   if (!a || !b) return false;
   if (a === b) return true;
   const [short, long] = a.length <= b.length ? [a, b] : [b, a];
-  return short.length >= 2 && long.startsWith(short);
+  return short.length >= 3 && long.startsWith(short);
 };
 
 /** transit entry 大交通段时长：depart/arrive 时刻差（跨零点按次日到达计）；缺任一为 null */
