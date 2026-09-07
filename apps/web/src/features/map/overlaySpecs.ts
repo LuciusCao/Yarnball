@@ -49,6 +49,27 @@ export interface OverlaySpecs {
   stops: StopSpec[];
 }
 
+/**
+ * overlay 增量更新的内容签名（M53）：渲染器按 id 比对签名，
+ * 相同签名 => 复用已挂载的 overlay 不重建，不同才增删改。
+ */
+
+export function markerSignature(m: MarkerSpec, selected: boolean): string {
+  return JSON.stringify([m.position.lng, m.position.lat, m.label, m.color, m.opacity, selected]);
+}
+
+export function lineSignature(l: LineSpec): string {
+  return JSON.stringify([l.path, l.color, l.dashed]);
+}
+
+export function stopSignature(s: StopSpec): string {
+  return JSON.stringify([s.position.lng, s.position.lat, s.name, s.index]);
+}
+
+export function circleSignature(c: CircleSpec): string {
+  return JSON.stringify([c.center.lng, c.center.lat, c.radiusM]);
+}
+
 export const DAY_COLORS = [
   "#2563eb", // blue-600
   "#ea580c", // orange-600
