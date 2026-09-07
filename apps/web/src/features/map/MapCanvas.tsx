@@ -18,7 +18,7 @@ export { DAY_COLORS, dayColor } from "./overlaySpecs";
 export interface MapRenderer {
   /** 初始化（懒加载引擎后调用一次） */
   init(container: HTMLElement, center: LngLat | null): Promise<void>;
-  /** 全量重画 overlays（数据量小，简单可靠） */
+  /** 增量重画 overlays（按 id 比对签名，只增删改变化的；M53） */
   render(specs: ReturnType<typeof buildOverlaySpecs>, selectedPlaceId: string | null): void;
   /** fitView 到标记集合 */
   fit(specs: ReturnType<typeof buildOverlaySpecs>): void;
