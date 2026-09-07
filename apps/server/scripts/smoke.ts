@@ -391,6 +391,76 @@ async function main() {
       "agent place >200km from all stops rejected with search_poi guidance",
     );
 
+    // place_dedup_flow：幂等去重——agent 重复 add 同名同坐标美食只产生一条候选（REST 路径同样生效）
+    console.log("-- place_dedup_flow --");
+    const parsePlace = (r: any) => JSON.parse(r.result?.content?.[0]?.text ?? "{}").place;
+    // 首次 add：建候选（大柴旦附近，防编造范围内）
+    const food1 = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "炕锅羊肉", category: "restaurant", location: { lng: 95.36, lat: 37.854 }, priceCny: 80 } },
+      10,
+    );
+    const foodPlace = parsePlace(food1);
+    assert(food1.result?.isError !== true && foodPlace?.id, "dedup: first add_place creates candidate");
+    // 重复 add：名称带尾随空白（规范化后相同）+ 坐标偏移 ~44m（<200m）→ 返回已有 place，不插新行；
+    // 同时补齐已有行缺失的 openingHours
+    const food2 = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "炕锅羊肉 ", category: "restaurant", location: { lng: 95.3605, lat: 37.854 }, openingHours: "10:00-22:00" } },
+      11,
+    );
+    const foodPlace2 = parsePlace(food2);
+    assert(food2.result?.isError !== true && foodPlace2?.id === foodPlace.id, "dedup: same-name nearby add returns existing place");
+    assert(foodPlace2?.openingHours === "10:00-22:00", "dedup: missing openingHours backfilled on existing place");
+    assert(foodPlace2?.priceCny === 80, "dedup: existing fields not overwritten (priceCny kept)");
+    // REST（human）路径同样走 createPlace：同名同坐标不插新行
+    const restDup = await mkPlace({ name: "炕锅羊肉", category: "restaurant", location: { lng: 95.36, lat: 37.854 } });
+    assert(restDup.id === foodPlace.id, "dedup: REST create also returns existing place (no new row)");
+    // bundle 里该地点只有一条候选
+    {
+      const { bundle: dedupBundle } = await api(`/trips/${mcTrip.id}`);
+      const foodPlaces = dedupBundle.places.filter((p: any) => p.name.trim() === "炕锅羊肉");
+      assert(foodPlaces.length === 1, "dedup: exactly one candidate for the duplicated food place");
+    }
+    // 同名但坐标距离 >200m → 视为不同地点，正常新建
+    const foodFar = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "炕锅羊肉", category: "restaurant", location: { lng: 95.375, lat: 37.854 } } },
+      12,
+    );
+    const foodFarPlace = parsePlace(foodFar);
+    assert(
+      foodFar.result?.isError !== true && foodFarPlace?.id && foodFarPlace.id !== foodPlace.id,
+      "dedup: same name >200m away creates a new place",
+    );
+    // amapPoiId 精确匹配：名称/坐标都不同也判重（先建带 amapPoiId 的点，再同名 id 不同名重建）
+    const poi1 = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "翡翠湖观景台", category: "attraction", location: { lng: 95.3523, lat: 37.8499 }, amapPoiId: "B0SMOKE0001" } },
+      13,
+    );
+    const poiPlace = parsePlace(poi1);
+    assert(poi1.result?.isError !== true && poiPlace?.id, "dedup: place with amapPoiId created");
+    const poi2 = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "另一个名字", category: "attraction", location: { lng: 95.5, lat: 37.9 }, amapPoiId: "B0SMOKE0001" } },
+      14,
+    );
+    const poiPlace2 = parsePlace(poi2);
+    assert(poi2.result?.isError !== true && poiPlace2?.id === poiPlace.id, "dedup: same amapPoiId matches exactly regardless of name/coords");
+    assert(poiPlace2?.name === "翡翠湖观景台", "dedup: existing name not overwritten");
+    // agent 不补齐用户已锁定（locked）的已有地点：REST 建的 locked 点被 agent 重复 add 时空字段保持为空
+    const lockedPlace = await mkPlace({ name: "锁定的小吃店", category: "restaurant", location: { lng: 95.362, lat: 37.856 } });
+    assert(lockedPlace.status === "locked", "dedup: human REST create defaults to locked");
+    const lockedDup = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "锁定的小吃店", category: "restaurant", location: { lng: 95.362, lat: 37.856 }, openingHours: "11:00-21:00" } },
+      15,
+    );
+    const lockedDupPlace = parsePlace(lockedDup);
+    assert(lockedDupPlace?.id === lockedPlace.id, "dedup: agent re-add of locked place returns existing place");
+    assert(lockedDupPlace?.openingHours == null, "dedup: agent does not backfill user-locked place");
+
     await api(`/trips/${mcTrip.id}`, { method: "DELETE" });
     console.log("  ✓ multi-city trip cleaned up");
 

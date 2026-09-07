@@ -104,6 +104,12 @@ const AGENT_PLACE_MULTI_STOP_MIN_DIST_KM = 200;
 /** 建点时 cityName 自动填充的归属半径：距最近途经地中心 ≤150km 则归该 stop，否则 null（归属未知不阻断） */
 const PLACE_CITY_ASSIGN_MAX_DIST_KM = 150;
 
+/** 建点幂等去重：规范化名称相同且坐标距离 ≤200m 视为同一地点（不插新行） */
+const PLACE_DEDUP_MAX_DIST_M = 200;
+
+/** 名称规范化（去重比较用）：大小写不敏感 + 去除全部空白（含全角空格），兼容「外婆家（西湖店）」类书写差异中的空白抖动 */
+const normalizePlaceName = (name: string) => name.toLowerCase().replace(/[\s　]+/g, "");
+
 /** transit entry 大交通段时长：depart/arrive 时刻差（跨零点按次日到达计）；缺任一为 null */
 function transitDurationS(departTime: string | null, arriveTime: string | null): number | null {
   const parse = (t: string | null) => {
@@ -381,6 +387,9 @@ export class TripService {
    * 多城市改「距任一 stop.center ≤ 多中心阈值（min 距离）」。agent 被拒时应引导其先调 search_poi 拿真实坐标。
    * cityName 自动填充：显式传 > 距最近 stop.center ≤150km 归该 stop > null（归属未知不阻断）。
    * 状态机：agent 建的默认 candidate（候选池）；human 手动建的默认 locked（确认要去）。
+   * 幂等去重（REST / MCP 共用此入口）：同 trip 下 amapPoiId 精确匹配，或规范化名称相同且坐标距离 ≤200m，
+   * 即视为同一地点——不插新行，返回已有 place，并补齐其缺失的详情字段（不覆盖已有值；
+   * agent 不补齐用户已锁定的地点，与锁定保护一致）。
    */
   async createPlace(tripId: string, input: CreatePlaceInput, actor: Actor) {
     const trip = await this.getTrip(tripId);
@@ -405,6 +414,48 @@ export class TripService {
       }
     }
     const cityName = input.cityName ?? (nearest && nearest.distKm <= PLACE_CITY_ASSIGN_MAX_DIST_KM ? nearest.name : null);
+    // 幂等去重：同 trip 下 amapPoiId 精确匹配优先，其次规范化名称相同 + 坐标距离 ≤200m
+    const existingPlaces = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
+    const normalizedName = normalizePlaceName(input.name);
+    const dup =
+      (input.amapPoiId ? existingPlaces.find((p) => p.amapPoiId === input.amapPoiId) : undefined) ??
+      existingPlaces.find(
+        (p) =>
+          normalizePlaceName(p.name) === normalizedName &&
+          haversineM({ lng: Number(p.lng), lat: Number(p.lat) }, input.location) <= PLACE_DEDUP_MAX_DIST_M,
+      );
+    if (dup) {
+      // 补齐已有行的空字段（绝不覆盖已有值）；agent 不动用户已锁定的地点（与 assertNotLockedForAgent 一致）
+      const patch: Partial<typeof schema.places.$inferInsert> = {};
+      if (!(actor === "agent" && dup.status === "locked")) {
+        if (dup.address == null && input.address != null) patch.address = input.address;
+        if (dup.website == null && input.website != null) patch.website = input.website;
+        if (dup.bookingUrl == null && input.bookingUrl != null) patch.bookingUrl = input.bookingUrl;
+        if (dup.phone == null && input.phone != null) patch.phone = input.phone;
+        if (dup.cityName == null && cityName != null) patch.cityName = cityName;
+        if (dup.amapPoiId == null && input.amapPoiId != null) patch.amapPoiId = input.amapPoiId;
+        if (dup.sourceUrl == null && input.sourceUrl != null) patch.sourceUrl = input.sourceUrl;
+        if (dup.notes == null && input.notes != null) patch.notes = input.notes;
+        if (dup.durationMin == null && input.durationMin != null) patch.durationMin = input.durationMin;
+        if (dup.visitDurationMin == null && input.visitDurationMin != null) {
+          patch.visitDurationMin = input.visitDurationMin;
+        }
+        if (dup.priceCny == null && input.priceCny != null) patch.priceCny = Math.round(input.priceCny);
+        if (dup.bookingInfo == null && input.bookingInfo != null) patch.bookingInfo = input.bookingInfo;
+        if (dup.openingHours == null && input.openingHours != null) patch.openingHours = input.openingHours;
+      }
+      if (Object.keys(patch).length > 0) {
+        const [row] = await this.db
+          .update(schema.places)
+          .set(patch)
+          .where(eq(schema.places.id, dup.id))
+          .returning();
+        await this.touchTrip(tripId);
+        await this.publishBundle(tripId);
+        return toPlaceDto(row);
+      }
+      return toPlaceDto(dup);
+    }
     const [row] = await this.db
       .insert(schema.places)
       .values({
@@ -1411,6 +1462,12 @@ export class TripService {
 
   async addHotelCandidate(tripId: string, input: CreateHotelCandidateInput, actor: Actor) {
     const place = await this.createPlace(tripId, { ...input, category: "hotel" }, actor);
+    // createPlace 幂等去重可能返回已有 place：同一 place 只保留一条酒店候选行，避免重复候选指向同一地点
+    const [existing] = await this.db
+      .select()
+      .from(schema.hotelCandidates)
+      .where(eq(schema.hotelCandidates.placeId, place.id));
+    if (existing) return { candidate: toHotelDto(existing), place };
     const [row] = await this.db
       .insert(schema.hotelCandidates)
       .values({
