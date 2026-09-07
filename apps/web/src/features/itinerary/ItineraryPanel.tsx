@@ -40,7 +40,8 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  *   数据取 legs 首/末段的 from/toPlaceId（服务端按选定酒店锚定当天首尾，M9/M11）；
  *   用酒店图标 + hotelpin 虚线卡片区别于普通 entry；出发/到店时刻随时间轴推算（~ 前缀 = 估算），
  *   首段交通时长挂在出发节点下方。大交通收口的头/尾天（机场落地/离开）服务端不锚定酒店，
- *   改渲染大交通端点节点（M20：到达日「从 机场/车站 出发」、离开日「前往 机场/车站」）
+ *   改渲染大交通端点节点（M20：到达日「从 机场/车站 出发」、离开日「前往 机场/车站」；
+ *   M57：表达的是市内转移段，图标跟随转移 leg 的 mode，样式为轻量连接行而非航班卡）
  * - 无覆盖酒店的天（M17）：天头部显示「当晚未安排住宿」+「去候选池加入」引导
  *   （onOpenCandidates 由 TripPage 传入；只读分享页只有文案没有按钮）。
  *   注意（M20 话术统一）：酒店需「加入行程」（底层 select，带 checkInDay/checkOutDay 住宿区间）才参与路线锚定
@@ -420,6 +421,9 @@ export function ItineraryPanel({
                 // 大交通段本身（from→to 同一 entry 的那条 leg）：自驾卡展示真实里程/时长用；M47 点击卡片在地图上只显示该段
                 const rideLeg =
                   dayLegs.find((l) => l.fromEntryId === entry.id && l.toEntryId === entry.id) ?? null;
+                // 大交通端点锚定行的市内转移段：离开日取驶入该 transit 的 leg，到达日取其后的 leg（调用点直接传 legAfter）
+                const legBefore =
+                  dayLegs.find((l) => l.toEntryId === entry.id && l.fromEntryId !== entry.id) ?? null;
                 return (
                   <li key={entry.id}>
                     {/* 离开日大交通端点（M20）：末 entry 为 transit 离开时，在卡片前渲染「前往 机场/车站」；
@@ -431,6 +435,7 @@ export function ItineraryPanel({
                         name={transitFromName(entry, placeById) ?? "出发地"}
                         timeMin={startMin}
                         estimated
+                        leg={legBefore}
                         onSelect={
                           entry.fromPlaceId ? () => onSelectPlace(entry.fromPlaceId!) : undefined
                         }
@@ -550,6 +555,7 @@ export function ItineraryPanel({
                             : endMin
                         }
                         estimated={timeline[1]?.estimated ?? true}
+                        leg={leg ?? null}
                         onSelect={
                           entry.toPlaceId ? () => onSelectPlace(entry.toPlaceId!) : undefined
                         }
@@ -927,14 +933,19 @@ function checkoutTimeHint(place: TripBundle["places"][number] | undefined): stri
 }
 
 /** 大交通端点节点（M20 追加）：到达日首「从 机场/车站 出发」、离开日尾「前往 机场/车站」，
- *  对应服务端 recalcDayLegs 对首/末 transit 天跳过酒店锚点的行为；样式对齐 TransitRow（slate 虚线卡 +
- *  类别图标），时刻 ~ 前缀 = 随时间轴推算的估算值；起讫引用行程内 place 时点击在地图上选中该地点 */
+ *  对应服务端 recalcDayLegs 对首/末 transit 天跳过酒店锚点的行为；时刻 ~ 前缀 = 随时间轴推算的估算值；
+ *  起讫引用行程内 place 时点击在地图上选中该地点。
+ *  M57：这行表达的是大交通节点与首/末站之间的市内转移段，不是第二张大交通卡——
+ *  样式降级为 LegRow 式轻量连接行（无深色实心圆、无虚线卡片），图标跟随转移 leg 的
+ *  mode（drive=Car / transit=Bus / walk=Footprints），无 leg 数据时才退回原类别图标；
+ *  有 leg 时附「驾车约 N 分钟」之类的模式提示，点明这是转移段标题 */
 function TransitAnchorRow({
   direction,
   kind,
   name,
   timeMin,
   estimated,
+  leg = null,
   onSelect,
 }: {
   direction: "depart" | "return";
@@ -942,23 +953,41 @@ function TransitAnchorRow({
   name: string;
   timeMin: number | null;
   estimated: boolean;
+  /** 大交通节点与首/末站之间的市内转移段（M57）：驱动图标与「驾车约 N 分钟」提示 */
+  leg?: TransportLegDto | null;
   onSelect?: () => void;
 }) {
-  const Icon = kind === "arrival" ? PlaneLanding : kind === "departure" ? PlaneTakeoff : TrainFront;
+  const FallbackIcon =
+    kind === "arrival" ? PlaneLanding : kind === "departure" ? PlaneTakeoff : TrainFront;
+  const Icon =
+    leg == null
+      ? FallbackIcon
+      : leg.mode === "walk"
+        ? Footprints
+        : leg.mode === "transit"
+          ? Bus
+          : Car;
+  const modeLabel =
+    leg?.mode === "walk" ? "步行" : leg?.mode === "transit" ? "公交" : leg?.mode === "drive" ? "驾车" : null;
+  const legHint = modeLabel != null && leg?.durationS != null ? `${modeLabel}约 ${formatDuration(leg.durationS)}` : null;
   return (
     <div
-      className={`flex items-center gap-2 rounded-lg border border-dashed border-slate-400/70 bg-slate-500/8 px-2 py-1.5 transition-colors ${
-        onSelect ? "cursor-pointer hover:bg-slate-500/15" : ""
+      className={`flex items-center gap-2 py-1 pl-2 transition-colors ${
+        onSelect ? "cursor-pointer hover:bg-slate-900/4 rounded" : ""
       }`}
       onClick={onSelect}
     >
-      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-700 text-white">
-        <Icon className="size-3.5" />
+      <span
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-900/6 text-slate-400"
+        title={legHint ?? TRANSIT_KIND_META[kind].label}
+      >
+        <Icon className="size-3" />
       </span>
-      <span className="flex min-w-0 flex-1 items-baseline text-sm font-medium text-slate-700">
+      <span className="flex min-w-0 flex-1 items-baseline text-xs text-slate-500">
         <span className="shrink-0">{direction === "depart" ? "从 " : "前往 "}</span>
         <span className="truncate">{name}</span>
         {direction === "depart" ? <span className="shrink-0"> 出发</span> : null}
+        {legHint && <span className="ml-1.5 shrink-0 text-[11px] text-slate-400">{legHint}</span>}
       </span>
       {timeMin != null && (
         <span
