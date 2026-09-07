@@ -444,8 +444,7 @@ export class TripService {
    * cityName 自动填充：显式传 > 距最近 stop.center ≤150km 归该 stop > null（归属未知不阻断）。
    * 状态机：agent 建的默认 candidate（候选池）；human 手动建的默认 locked（确认要去）。
    * 判重（REST / MCP 共用此入口）：
-   * - amapPoiId 精确匹配 → 幂等返回已有 place，并补齐其缺失的详情字段（不覆盖已有值；
-   *   agent 不补齐用户已锁定的地点，与锁定保护一致）；
+   * - amapPoiId 精确匹配 → 幂等返回已有 place，并补齐其缺失的详情字段（不覆盖已有值，不限状态）；
    * - 规范化名称匹配（完全相等 / 互为前缀，见 placeNameMatch）且坐标距离 ≤200m → 抛
    *   PossibleDuplicateError（409 疑似重复信号）：不插新行也不回填，是否同一家交给调用方判断；
    * - input.allowDuplicate=true → 跳过模糊判重，直接创建（amapPoiId 幂等不受其影响）。
@@ -476,7 +475,7 @@ export class TripService {
     const existingPlaces = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
     // amapPoiId 精确匹配 → 幂等返回已有 place 并补齐缺失字段（不插新行、不报疑似重复）
     const exactDup = input.amapPoiId ? existingPlaces.find((p) => p.amapPoiId === input.amapPoiId) : undefined;
-    if (exactDup) return this.backfillExistingPlace(tripId, exactDup, input, cityName, actor);
+    if (exactDup) return this.backfillExistingPlace(tripId, exactDup, input, cityName);
     // 模糊判重（规范化名称相等 / 互为前缀 + 坐标距离 ≤200m）→ 疑似重复信号，不静默合并：
     // 是否同一家由调用方判断（agent 用 update_place 补全 / 人类在确认框里决定）；
     // allowDuplicate=true 跳过此判重强制新建（同名分店、确认过的相邻不同点）
@@ -523,34 +522,31 @@ export class TripService {
   }
 
   /**
-   * 幂等命中（amapPoiId 精确匹配）时复用已有 place：补齐其空字段（绝不覆盖已有值）；
-   * agent 不补齐用户已锁定的地点（与 assertNotLockedForAgent 一致）。
+   * 幂等命中（amapPoiId 精确匹配）时复用已有 place：补齐其空字段（绝不覆盖已有值）。
+   * 不限 locked：agent 可补全任何地点的信息字段（补官网/改备注等）。
    */
   private async backfillExistingPlace(
     tripId: string,
     dup: typeof schema.places.$inferSelect,
     input: CreatePlaceInput,
     cityName: string | null,
-    actor: Actor,
   ) {
     const patch: Partial<typeof schema.places.$inferInsert> = {};
-    if (!(actor === "agent" && dup.status === "locked")) {
-      if (dup.address == null && input.address != null) patch.address = input.address;
-      if (dup.website == null && input.website != null) patch.website = input.website;
-      if (dup.bookingUrl == null && input.bookingUrl != null) patch.bookingUrl = input.bookingUrl;
-      if (dup.phone == null && input.phone != null) patch.phone = input.phone;
-      if (dup.cityName == null && cityName != null) patch.cityName = cityName;
-      if (dup.amapPoiId == null && input.amapPoiId != null) patch.amapPoiId = input.amapPoiId;
-      if (dup.sourceUrl == null && input.sourceUrl != null) patch.sourceUrl = input.sourceUrl;
-      if (dup.notes == null && input.notes != null) patch.notes = input.notes;
-      if (dup.durationMin == null && input.durationMin != null) patch.durationMin = input.durationMin;
-      if (dup.visitDurationMin == null && input.visitDurationMin != null) {
-        patch.visitDurationMin = input.visitDurationMin;
-      }
-      if (dup.priceCny == null && input.priceCny != null) patch.priceCny = Math.round(input.priceCny);
-      if (dup.bookingInfo == null && input.bookingInfo != null) patch.bookingInfo = input.bookingInfo;
-      if (dup.openingHours == null && input.openingHours != null) patch.openingHours = input.openingHours;
+    if (dup.address == null && input.address != null) patch.address = input.address;
+    if (dup.website == null && input.website != null) patch.website = input.website;
+    if (dup.bookingUrl == null && input.bookingUrl != null) patch.bookingUrl = input.bookingUrl;
+    if (dup.phone == null && input.phone != null) patch.phone = input.phone;
+    if (dup.cityName == null && cityName != null) patch.cityName = cityName;
+    if (dup.amapPoiId == null && input.amapPoiId != null) patch.amapPoiId = input.amapPoiId;
+    if (dup.sourceUrl == null && input.sourceUrl != null) patch.sourceUrl = input.sourceUrl;
+    if (dup.notes == null && input.notes != null) patch.notes = input.notes;
+    if (dup.durationMin == null && input.durationMin != null) patch.durationMin = input.durationMin;
+    if (dup.visitDurationMin == null && input.visitDurationMin != null) {
+      patch.visitDurationMin = input.visitDurationMin;
     }
+    if (dup.priceCny == null && input.priceCny != null) patch.priceCny = Math.round(input.priceCny);
+    if (dup.bookingInfo == null && input.bookingInfo != null) patch.bookingInfo = input.bookingInfo;
+    if (dup.openingHours == null && input.openingHours != null) patch.openingHours = input.openingHours;
     if (Object.keys(patch).length > 0) {
       const [row] = await this.db
         .update(schema.places)
@@ -565,19 +561,35 @@ export class TripService {
   }
 
   /**
-   * 锁定保护：locked = 用户已确认要去的地点，agent 不可改/删，
-   * 提示其请用户在界面上解锁。人类（REST 入口）不受限。
+   * 删除兜底（M54 锁定简化）：locked 不再拦截 agent——信息字段随时可改；
+   * 仅「已排进行程（有 entry 引用）的地点」agent 不可直接删除，须先移出行程
+   * （remove_entry 逐条移出 / 请用户在界面上「移出行程」）。人类（REST 入口）不受限。
    */
-  private assertNotLockedForAgent(place: { status: string; name: string }, actor: Actor) {
-    if (actor === "agent" && place.status === "locked") {
+  private async assertNotScheduledForAgent(
+    place: { id: string; name: string },
+    actor: Actor,
+  ) {
+    if (actor !== "agent") return;
+    const refs = await this.db
+      .select({ id: schema.entries.id })
+      .from(schema.entries)
+      .where(
+        or(
+          eq(schema.entries.placeId, place.id),
+          eq(schema.entries.fromPlaceId, place.id),
+          eq(schema.entries.toPlaceId, place.id),
+        ),
+      )
+      .limit(1);
+    if (refs.length > 0) {
       throw new ServiceError(
         409,
-        `「${place.name}」已被用户锁定，agent 不可修改或删除。请用户在界面上解锁后再试。`,
+        `「${place.name}」已排进行程，不可直接删除。请先用 remove_entry 移出引用它的日程条目（或请用户在界面上「移出行程」），再删除。`,
       );
     }
   }
 
-  /** 锁定/解锁地点（用户确认候选 → locked；退回候选池 → candidate） */
+  /** 加入/移出行程（用户确认候选 → locked=已加入行程；退回候选池 → candidate）。UI 话术为「加入行程/移出行程」 */
   async setPlaceStatus(placeId: string, status: PlaceStatus) {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
@@ -591,10 +603,10 @@ export class TripService {
     return toPlaceDto(row);
   }
 
-  async updatePlace(placeId: string, input: UpdatePlaceInput, actor: Actor = "human") {
+  /** M54 锁定简化：agent 可改任何地点（含 locked）的信息字段——补官网/改备注/调价等，不再有锁定拦截 */
+  async updatePlace(placeId: string, input: UpdatePlaceInput) {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
-    this.assertNotLockedForAgent(existing, actor);
     const patch: Partial<typeof schema.places.$inferInsert> = {};
     if (input.name != null) patch.name = input.name;
     if (input.category != null) patch.category = input.category;
@@ -627,7 +639,7 @@ export class TripService {
   async removePlace(placeId: string, actor: Actor = "human") {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
-    this.assertNotLockedForAgent(existing, actor);
+    await this.assertNotScheduledForAgent(existing, actor);
     const tripId = existing.tripId;
     // 删的是已选定酒店 → 候选行随 place 级联删除，所有天的锚点都要重算
     const linkedHotels = await this.db

@@ -41,8 +41,9 @@ export type Actor = (typeof ACTORS)[number];
 
 /**
  * 地点状态机：candidate（候选池，agent 解析攻略/推荐的默认值）
- * → locked（用户在界面上锁定 = 确认要去）。
- * 纪律：agent 只建候选；locked 的地点 agent 不可改/删（需用户在界面解锁）；
+ * → locked（用户在界面上「加入行程」= 确认要去）。
+ * 纪律：agent 只建候选；locked 地点的信息字段 agent 可随时补全/修改（update_place），
+ * 仅「已排进行程（有 entry 引用）的地点」agent 不可直接删除（须先移出行程）；
  * 只有 locked 的地点才应排入某天行程。
  */
 export const PLACE_STATUSES = ["candidate", "locked"] as const;
@@ -209,7 +210,7 @@ export const PlaceDtoSchema = z.object({
   openingHours: z.string().nullable(),
   /** 预订状态流转，见 BOOKING_STATUSES */
   bookingStatus: z.enum(BOOKING_STATUSES),
-  /** 候选（candidate）或已锁定（locked），见 PLACE_STATUSES */
+  /** 候选（candidate）或已加入行程（locked），见 PLACE_STATUSES */
   status: z.enum(PLACE_STATUSES),
   createdBy: z.enum(ACTORS),
   createdAt: z.string(),

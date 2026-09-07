@@ -165,7 +165,7 @@ const SuggestDayOrderInput = z.object({ dayIndex: z.number().int().min(1) });
 // 多酒店：checkInDay/checkOutDay 可选（1-based 闭开区间），缺省由服务端建议未被覆盖的天段
 const SelectHotelInput = SelectHotelInputSchema;
 
-// agent 不可经 add/update_place 直接指定 status：建点一律 candidate，锁定走 lock_place（或用户界面操作）
+// agent 不可经 add/update_place 直接指定 status：建点一律 candidate，加入行程走 lock_place（或用户界面操作）
 const McpCreatePlaceSchema = CreatePlaceInputSchema.omit({ status: true });
 
 const UpdatePlaceWithIdSchema = UpdatePlaceInputSchema.omit({ status: true }).extend({ placeId: z.string() });
@@ -268,7 +268,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
           ` trip.startDate 为出发日期（YYYY-MM-DD，null=未设置，用户说「X 月 X 日出发」时用 set_start_date 写回）。` +
           ` entries[].entryType：place=地点节点，transit=大交通节点（航班/高铁/城际移动，带 departTime/arriveTime 与 fromName/toName 或 fromPlaceId/toPlaceId 起讫点；transitMode：flight|train|drive|bus，drive=自驾走真实公路路线）。` +
           ` places[].cityName 为归属途经地/城市名（多城市分组依据）。` +
-          ` places[].status：candidate=候选池（待用户确认），locked=用户已锁定（agent 不可改/删，只排 locked 的地点进每日行程）。` +
+          ` places[].status：candidate=候选池（待用户确认），locked=用户已加入行程（确认要去；agent 可照常补全/修改信息字段，只排 locked 的地点进每日行程）。` +
           ` places[].openingHours 为营业时间（排天硬约束），visitDurationMin 为预计游览/用餐分钟数（排天参考），bookingStatus 为预订状态（none|pending|booked）；website 官网、bookingUrl 预订链接、phone 电话、address 地址会展示在地点信息卡上。` +
           (overseas
             ? ` 本行程是海外目的地（${bundle.trip.destinationCity}，${bundle.trip.geoProvider} provider）：search_poi 时用英文或当地语言名称（如 "Sydney Opera House"）效果最好。`
@@ -327,7 +327,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_place",
     {
       description:
-        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）、durationMin（建议游玩时长）和 openingHours（营业时间自由文本，如「09:00-17:00 周一闭馆」——排天硬约束，务必尽力填写）。visitDurationMin：预计游览/用餐分钟数，规划每日行程时的重要输入，景点和餐厅尽量填写。金额单位为行程币种。bookingStatus（none|pending|booked）可填但以用户在界面上的标记为准。**详情字段尽量收集**：website（官网）、bookingUrl（可直接下单/预约的预订链接）、phone（电话）、address（结构化地址）——这些会直接展示在地点信息卡上，酒店和需预约餐厅尤其重要。多城市行程：把 search_poi 返回的 cityName 原样带到 cityName 字段（归属途经地分组依据；不传则服务端按最近途经地自动填充）。**疑似重复**：名称与已有地点相近（含括号分店后缀、互为前缀）且坐标距离 ≤200m 时，本工具不创建新地点，返回 possible_duplicate 错误和已有 place——先判断是否同一家：同一家用 update_place 补全已有地点；确认是不同地点才带 allowDuplicate=true 重试。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上锁定（status=locked）后才用 add_place_to_day 排天。**",
+        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）、durationMin（建议游玩时长）和 openingHours（营业时间自由文本，如「09:00-17:00 周一闭馆」——排天硬约束，务必尽力填写）。visitDurationMin：预计游览/用餐分钟数，规划每日行程时的重要输入，景点和餐厅尽量填写。金额单位为行程币种。bookingStatus（none|pending|booked）可填但以用户在界面上的标记为准。**详情字段尽量收集**：website（官网）、bookingUrl（可直接下单/预约的预订链接）、phone（电话）、address（结构化地址）——这些会直接展示在地点信息卡上，酒店和需预约餐厅尤其重要。多城市行程：把 search_poi 返回的 cityName 原样带到 cityName 字段（归属途经地分组依据；不传则服务端按最近途经地自动填充）。**疑似重复**：名称与已有地点相近（含括号分店后缀、互为前缀）且坐标距离 ≤200m 时，本工具不创建新地点，返回 possible_duplicate 错误和已有 place——先判断是否同一家：同一家用 update_place 补全已有地点；确认是不同地点才带 allowDuplicate=true 重试。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上加入行程（status=locked）后才用 add_place_to_day 排天。**",
       inputSchema: McpCreatePlaceSchema.shape,
     },
     async (input) => {
@@ -345,14 +345,14 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "update_place",
     {
       description:
-        "更新地点信息（备注、游玩时长、visitDurationMin 预计游览/用餐分钟数、价格、openingHours 营业时间、bookingStatus 预订状态、website 官网、bookingUrl 预订链接、phone 电话、address 地址等）。**补全官网/预订链接/电话是本工具最常见的用途之一**：候选或已锁定地点缺 website/bookingUrl/phone 时，用自己的 web 搜索核实真实 URL 后写回（URL 必须来自搜索结果，禁止猜测拼接域名；不要把 URL 写进 bookingInfo 充数，bookingInfo 只写预约建议/提前天数）。只需要传要改的字段。bookingStatus 可由你更新（如你已核实可订/已订），但以用户在界面上的标记为准。注意：status=locked（用户已锁定）的地点不可修改——请用户在界面上解锁。",
+        "更新地点信息（备注、游玩时长、visitDurationMin 预计游览/用餐分钟数、价格、openingHours 营业时间、bookingStatus 预订状态、website 官网、bookingUrl 预订链接、phone 电话、address 地址等）。**补全官网/预订链接/电话是本工具最常见的用途之一**：候选或已加入行程（locked）的地点缺 website/bookingUrl/phone 时，用自己的 web 搜索核实真实 URL 后写回（URL 必须来自搜索结果，禁止猜测拼接域名；不要把 URL 写进 bookingInfo 充数，bookingInfo 只写预约建议/提前天数）。只需要传要改的字段。bookingStatus 可由你更新（如你已核实可订/已订），但以用户在界面上的标记为准。locked（已加入行程）地点的信息字段也可由你随时修改补全——唯一限制是已排进每日行程的地点不可直接删除（见 remove_place）。",
       inputSchema: UpdatePlaceWithIdSchema.shape,
     },
     async ({ placeId, ...patch }) => {
       ctx.markMcpObserved();
       try {
         await assertPlaceInSessionTrip(ctx, placeId);
-        const place = await tripService.updatePlace(placeId, patch, "agent");
+        const place = await tripService.updatePlace(placeId, patch);
         return json({ ok: true, place });
       } catch (err) {
         return toolError(err);
@@ -364,7 +364,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "remove_place",
     {
       description:
-        "从地点库删除地点（会连带从各天行程中移除）。注意：status=locked（用户已锁定）的地点不可删除——请用户在界面上解锁。",
+        "从地点库删除地点（会连带从各天行程中移除）。注意：**已排进每日行程（有日程条目引用）的地点不可直接删除**——先用 remove_entry 移出引用它的全部日程条目（或请用户在界面上「移出行程」），再删除；未排期的地点（含 locked 已加入行程的）可直接删除。",
       inputSchema: RemovePlaceInput.shape,
     },
     async ({ placeId }) => {
@@ -383,7 +383,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "lock_place",
     {
       description:
-        "把候选地点标记为 locked（已确认要去）。一般只有用户明确要求「就定这家/这个一定要去」时才由 agent 调用；通常锁定动作由用户在界面上完成。",
+        "把候选地点加入行程（status=locked，已确认要去）。一般只有用户明确要求「就定这家/这个一定要去」时才由 agent 调用；通常加入动作由用户在界面上完成。",
       inputSchema: PlaceStatusInput.shape,
     },
     async ({ placeId }) => {
@@ -402,7 +402,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "unlock_place",
     {
       description:
-        "把已锁定的地点退回候选池（status=candidate）。用户说「先不定了/再想想」时调用。",
+        "把已加入行程（locked）的地点退回候选池（status=candidate）。用户说「先不定了/再想想」时调用。",
       inputSchema: PlaceStatusInput.shape,
     },
     async ({ placeId }) => {
@@ -421,7 +421,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_place_to_day",
     {
       description:
-        "把地点安排到某一天（dayIndex 从 1 开始）。不传 position 则加到当天末尾；startTime 传该地点的开始时间（HH:MM）。**只应排 status=locked 的地点**（先 get_trip_context 确认）；候选请先提醒用户去界面锁定。排天时按酒店→景点的实际交通写 startTime，保证时间轴连贯。",
+        "把地点安排到某一天（dayIndex 从 1 开始）。不传 position 则加到当天末尾；startTime 传该地点的开始时间（HH:MM）。**只应排 status=locked（已加入行程）的地点**（先 get_trip_context 确认）；候选请先提醒用户去界面加入行程。同一地点可重复排入同一天（如换酒店日傍晚回旧酒店「取行李」，把旧酒店再排一次）。排天时按酒店→景点的实际交通写 startTime，保证时间轴连贯。",
       inputSchema: AddPlaceToDayInput.shape,
     },
     async ({ placeId, dayIndex, position, startTime }) => {
@@ -714,7 +714,7 @@ function toolError(err: unknown) {
               guidance:
                 "该地点疑似与行程中已有地点重复，本次未创建新地点。先判断是否同一家：" +
                 "同一家请用 update_place 在 existingPlace.id 上补全你掌握的信息（不要再 add_place；" +
-                "existingPlace.status=locked 表示用户已锁定，不可修改，改为提醒用户该地点已在行程中）；" +
+                "existingPlace.status=locked 表示用户已加入行程，信息字段仍可补全）；" +
                 "确认是不同地点（如同名不同分店、相邻的不同商家）才带 allowDuplicate=true 重试 add_place。",
             },
             null,
