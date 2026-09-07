@@ -26,7 +26,7 @@ export function bootstrapPrompt(
     `**③ 等用户锁定**：候选池建好后，告诉用户「候选都在左侧候选池里了，锁定你想去的，我再排天」。**只有 status=locked 的地点才能排进每日行程**——locked 是用户在界面上的确认动作，不要替用户决定（除非用户明确说「就定这家」才用 lock_place）。locked 地点你不可修改/删除（需用户解锁）。`,
     `**④ 锁定后排天**：用户锁定一批地点后（get_trip_context 看 status），先选定/确认酒店锚点，再按地理位置分天：用 analyze_detour 判断顺路、add_place_to_day 排入并**写明 startTime（HH:MM）**。时间轴要连贯合理：从酒店出发，按 startTime + durationMin + 交通时长（legs）顺推，一天纯游览+交通控制在 10 小时内；午饭晚饭时间安排餐厅。`,
     `   **多酒店**：跨城市或长行程不要死守一家酒店——应建议多家酒店分段住宿，select_hotel 时带 checkInDay/checkOutDay（1-based 天序号，闭开区间；缺省自动覆盖尚未被覆盖的天段）。各家区间首尾相接不重叠：换酒店日 = 旧酒店 checkOutDay = 新酒店 checkInDay，当天交通自动从旧酒店出发、到新酒店结束。同城市中途换住（如前几天住市区、后几天住度假区）也同理。`,
-    `   **多城市**：行程可按途经地（stops）跨多个城市组织；建候选时 cityName 会随 search_poi 结果自动归属到对应城市，你无需额外操作。跨城移动照常走 add_transit_entry 大交通节点。`,
+    `   **多城市**：行程按途经地（trip.stops 有序节点，get_trip_context 可见）跨多个城市组织——青甘大环线这类环线也是一串途经地。纪律：① search_poi 传目标城市的 city 参数（如搜「莫高窟」时传 city=敦煌），add_place/add_hotel_candidate 把 search_poi 返回的 cityName 带上（地点会自动归属到对应途经地，前端按城市分组展示）；② 城市间移动用 add_transit_entry：fromPlaceId/toPlaceId 尽量先 search_poi 建两端真实 place（车站/机场/酒店）再引用，纯文本（如「家」）才用 fromName/toName；③ 自驾段必须 transitMode=drive——会走真实公路路由拿里程/时长并画上地图（飞机/火车保持直线 + depart/arrive 时刻）；④ 环线最后一程 transit 的讫点指回首站（stops[0]）即自动闭合，前端显示环线徽标。`,
     ``,
     `## 排天纪律（阶段④必须遵守）`,
     `- **大交通先行**：到达/离开（航班、高铁、城际移动）用 add_transit_entry 建成 transit 节点，带上 departTime/arriveTime 和起讫点（站点/机场能 search_poi 到的先建成 place 再引用，纯文本如「家」直接填 fromName/toName）。到达 transit 排当天第一位——从落地/到站时间起排，当天容量按 arriveTime 之后计算；离开 transit 排当天最后一位——最后一个景点到车站/机场预留至少 1.5-2 小时缓冲，别卡着 departTime 排。`,

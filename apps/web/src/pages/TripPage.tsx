@@ -346,8 +346,12 @@ export function TripPage() {
           ‹
         </Link>
         <h1 className="glass-text text-sm font-semibold">{trip.title}</h1>
-        <span className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500">
-          {trip.destinationCity}
+        <span
+          className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500"
+          title={trip.stops.length > 1 ? `途经地（按游览顺序）：${trip.stops.map((s) => s.name).join(" → ")}` : undefined}
+        >
+          {/* 多城市（M39）：信息条直接展示途经地链；单城市仍是目的地名 */}
+          {trip.stops.length > 1 ? trip.stops.map((s) => s.name).join(" → ") : trip.destinationCity}
         </span>
         {trip.geoProvider === "osm" && (
           <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
@@ -603,13 +607,15 @@ export function TripPage() {
         </div>
       )}
 
-      {/* 左下：数据面板 dock（行程/候选池/添加），常驻一小条，点击展开 ===== */}
+      {/* 左下：数据面板 dock（行程/候选池/添加），常驻一小条，点击展开。
+          候选池默认加宽到 400px（M39 用户意见：让 4 个分类 tab 在默认宽度下自然放得下，
+          不侵占更多地图可视区；tab 行 nowrap + 横向滚动仍保留为窄屏兜底），其余面板维持 360px ===== */}
       {leftPanel != null && activeLeftMeta != null && (
         <div
           className={`glass-deep panel-in absolute bottom-[68px] left-4 z-10 flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
             dockMaximized
               ? "h-[min(80vh,900px)] w-[min(640px,calc(100vw-2rem))]"
-              : "h-[min(52vh,500px)] w-[360px]"
+              : `h-[min(52vh,500px)] ${leftPanel === "candidates" ? "w-[400px]" : "w-[360px]"}`
           }`}
         >
           <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, Fragment } from "react";
 import {
   BedDouble,
   CalendarCheck,
@@ -7,6 +7,7 @@ import {
   LayoutGrid,
   Lock,
   LockOpen,
+  MapPin,
   Package,
   Sparkles,
   Trash2,
@@ -46,7 +47,11 @@ import {
  * M25：面板顶部 segmented 切换（全部/酒店/景点/美食，各带数量徽标=该类别候选总数含已加入；
  * 「其他」类别只在「全部」视图出现）。默认「全部」= 原分组视图；切到类别 tab = 该类别单组列表
  * （已加入仍排前，组头小计/酒店提示等元素保留）。待预订汇总提醒、agent 推荐标记等跨类别元素
- * 不随 tab 隐藏。tab 状态仅存组件本地。
+ * 不随 tab 隐藏。tab 状态仅存组件本地。tab 行单行不换行（whitespace-nowrap + 收窄 padding）；
+ * 主方案是面板默认加宽（TripPage dock 候选池 400px，M39 用户意见），4 个 tab 默认宽度下自然
+ * 放得下；横向滚动（overflow-x-auto）仅作窄屏/放大态以外的兜底，绝不换行撑高（M39 修复）。
+ * M39 多城市：trip.stops > 1 时组内按 cityName 二级排序聚桶，城市切换处插「📍 途经地」子头；
+ * 长名称 truncate + title 提示完整内容。
  */
 
 interface CandidatesPanelProps {
@@ -104,9 +109,16 @@ export function CandidatesPanel({
       }
     }
   }
-  // 已加入（已排期）的排在各组候选之前
+  // 已加入（已排期）的排在各组候选之前；多城市行程（M39）组内再按归属途经地聚桶（同城相邻）
+  const multiCity = bundle.trip.stops.length > 1;
   for (const key of GROUP_ORDER) {
-    grouped[key].sort((a, b) => Number(scheduledPlaceIds.has(b.id)) - Number(scheduledPlaceIds.has(a.id)));
+    grouped[key].sort(
+      (a, b) =>
+        Number(scheduledPlaceIds.has(b.id)) - Number(scheduledPlaceIds.has(a.id)) ||
+        (multiCity
+          ? (a.cityName ?? "￿").localeCompare(b.cityName ?? "￿", "zh-CN")
+          : 0),
+    );
   }
   const hotelCandByPlaceId = new Map(bundle.hotelCandidates.map((h) => [h.placeId, h]));
   /** 多酒店（M10）：已选定住宿区间（含 legacy 单选定兜底），candidateId → stay */
@@ -227,23 +239,24 @@ export function CandidatesPanel({
 
   return (
     <div className="h-full overflow-y-auto p-3">
-      {/* M25：分类 segmented 切换（风格对齐 dock 文字标签）；跨类别元素（待预订提醒等）在下方常驻 */}
-      <div className="mb-3 flex items-center gap-1 rounded-full bg-slate-900/5 p-1">
+      {/* M25：分类 segmented 切换（风格对齐 dock 文字标签）；跨类别元素（待预订提醒等）在下方常驻。
+          面板宽度塞不下 4 个 tab 时：单行不换行 + 收窄 padding，超出走横向滚动兜底，绝不换行撑高 */}
+      <div className="mb-3 flex items-center gap-1 overflow-x-auto rounded-full bg-slate-900/5 p-1">
         {TAB_DEFS.map(({ key, label, Icon }) => (
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`flex flex-1 items-center justify-center gap-1 rounded-full px-2 py-1 text-xs font-medium transition-colors ${
+            className={`flex shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-full px-2 py-1 text-xs font-medium transition-colors ${
               tab === key
                 ? "bg-slate-900 text-white shadow-sm"
                 : "text-slate-500 hover:bg-slate-900/5 hover:text-slate-800"
             }`}
           >
-            <Icon className="size-3.5" />
+            <Icon className="size-3.5 shrink-0" />
             {label}
             <Badge
               variant="secondary"
-              className={tab === key ? "border-white/25 bg-white/15 text-white/85" : undefined}
+              className={`shrink-0 ${tab === key ? "border-white/25 bg-white/15 text-white/85" : ""}`}
             >
               {tabCount(key)}
             </Badge>
@@ -321,7 +334,7 @@ export function CandidatesPanel({
             )}
 
             <div className="space-y-2">
-              {places.map((place) => {
+              {places.map((place, placeIdx) => {
                 const locked = place.status === "locked";
                 const booking = bookingStatusOf(place);
                 const pendingLocked = locked && booking === "pending";
@@ -344,8 +357,16 @@ export function CandidatesPanel({
                   place.createdBy === "agent" || scheduled || (locked && !isHotel) || booking !== "none";
 
                 return (
+                  <Fragment key={place.id}>
+                    {/* 城市分桶子头（M39 多城市）：组内同城相邻（上面已按 cityName 二级排序），切换时插一行 */}
+                    {multiCity &&
+                      (placeIdx === 0 || places[placeIdx - 1].cityName !== place.cityName) && (
+                        <p className="flex items-center gap-1 pt-1 text-[11px] font-medium text-slate-400">
+                          <MapPin className="size-3 shrink-0" />
+                          {place.cityName ?? "未归属途经地"}
+                        </p>
+                      )}
                   <div
-                    key={place.id}
                     onClick={() => onSelectPlace(place.id)}
                     className={`cursor-pointer rounded-card border p-3 shadow-card transition-colors ${
                       selected
@@ -365,7 +386,9 @@ export function CandidatesPanel({
                       <div className="min-w-0 flex-1">
                         {/* 第一行：名称 + 价格右置（价格是最常被扫视的决策信息） */}
                         <div className="flex items-baseline gap-2">
-                          <p className="truncate text-sm font-medium text-slate-900">{place.name}</p>
+                          <p className="truncate text-sm font-medium text-slate-900" title={place.name}>
+                            {place.name}
+                          </p>
                           {price != null && (
                             <span className="ml-auto shrink-0 text-sm font-semibold text-orange-600">
                               {formatMoney(price, cur)}
@@ -373,9 +396,14 @@ export function CandidatesPanel({
                             </span>
                           )}
                         </div>
-                        {/* 第二行：地址 · 营业时间 · 预计游览时长 合并一行，truncate 兜底 */}
+                        {/* 第二行：地址 · 营业时间 · 预计游览时长 合并一行，truncate 兜底 + title 提示完整内容 */}
                         {(place.address || openingHours || formatVisitDuration(place.visitDurationMin)) && (
-                          <p className="truncate text-[11px] text-slate-400">
+                          <p
+                            className="truncate text-[11px] text-slate-400"
+                            title={[place.address, openingHours, formatVisitDuration(place.visitDurationMin)]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          >
                             {[place.address, openingHours, formatVisitDuration(place.visitDurationMin)]
                               .filter(Boolean)
                               .join(" · ")}
@@ -522,6 +550,7 @@ export function CandidatesPanel({
                       </div>
                     </div>
                   </div>
+                  </Fragment>
                 );
               })}
             </div>
