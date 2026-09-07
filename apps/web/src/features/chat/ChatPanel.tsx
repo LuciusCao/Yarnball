@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
 import type { AgentRegistryDto, ChatMessageDto, ChatSessionDto, TripDto } from "@yarnball/shared";
@@ -13,7 +13,7 @@ import {
 } from "../itinerary/transit";
 import { Button } from "../../components/ui/button";
 import { Textarea, Select } from "../../components/ui/input";
-import { useChatStore } from "../../stores/tripStore";
+import { useChatStore, useTripStore } from "../../stores/tripStore";
 
 /**
  * 对话面板：与用户 agent 的交流界面。
@@ -21,7 +21,11 @@ import { useChatStore } from "../../stores/tripStore";
  *   （服务端按 tool_call/plan/permission 事件把同 turn 输出切成多段，避免半截 markdown 抖动）
  * - tool_call 卡片：按 toolCallId 归并，可展开
  * - permission 待答卡：允许/拒绝 + allow-all
+ * - 长会话窗口化：只完整渲染最近 PAGE_SIZE 条，顶部「加载更早」向上翻页
  */
+
+/** 窗口化渲染的页大小：初始只渲染最近一页，点击「加载更早」向上扩一页 */
+const PAGE_SIZE = 100;
 
 interface ChatPanelProps {
   trip: TripDto;
@@ -56,12 +60,18 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   const [planning, setPlanning] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  /** 窗口化：当前渲染的尾部条数（初始一页，「加载更早」每次向上扩一页） */
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  /** 「加载更早」点击后待恢复的滚动位置（距容器底部的像素差） */
+  const pendingScrollRestoreRef = useRef<number | null>(null);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.status !== "closed") ?? null,
     [sessions],
   );
-  const { messages, subscribe, reset, upsertMessage } = useChatStore();
+  const { messages, subscribe, reset } = useChatStore();
+  const activeSessionId = activeSession?.id ?? null;
 
   useEffect(() => {
     void libApi.listAgents().then(({ agents }) => {
@@ -81,11 +91,42 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
     // UI 选中态回写（agent 经 get_trip_context 实时读）
     void api.setUiContext(activeSession.id, { selectedPlaceId, tripId: trip.id });
     return unsubscribe;
-  }, [activeSession?.id, reset, subscribe, trip.id]);
+  }, [activeSessionId, reset, subscribe, trip.id]);
 
+  // 切会话时窗口收回一页（消息列表本身由 chat store 按 session 重置）
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length]);
+    setVisibleCount(PAGE_SIZE);
+  }, [activeSessionId]);
+
+  // 自动滚到底只发生在「尾部追加新消息」时：向上翻历史（visibleCount 变大）不抢滚动条；
+  // 流式 chunk 更新同一条消息（末条 id 不变）也不滚
+  const lastMessageId = messages.length > 0 ? messages[messages.length - 1].id : null;
+  const prevLastMessageIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastMessageId != null && lastMessageId !== prevLastMessageIdRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+    prevLastMessageIdRef.current = lastMessageId;
+  }, [lastMessageId]);
+
+  // 「加载更早」展开后保持视口停留在原来的消息上（按展开前后的滚动高度差回补 scrollTop）
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && pendingScrollRestoreRef.current != null) {
+      el.scrollTop = el.scrollHeight - pendingScrollRestoreRef.current;
+      pendingScrollRestoreRef.current = null;
+    }
+  }, [visibleCount]);
+
+  const loadEarlier = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) pendingScrollRestoreRef.current = el.scrollHeight - el.scrollTop;
+    setVisibleCount((c) => c + PAGE_SIZE);
+  }, []);
+
+  // 窗口化切片：只完整渲染最近 visibleCount 条
+  const hiddenCount = Math.max(0, messages.length - visibleCount);
+  const visibleMessages = hiddenCount > 0 ? messages.slice(hiddenCount) : messages;
 
   // permission_request 的结算表：permission_result（用户决策 / 超时自动拒绝）到达后，
   // 对应权限卡进入已答态（禁用按钮 + 展示结算文案）
@@ -99,13 +140,37 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
     return map;
   }, [messages]);
 
+  // 权限回答回调提为稳定引用：配合 MessageBubble 的 memo，流式 chunk 到达时不再全列表重渲染
+  const answerPermission = useCallback(
+    async (requestId: string, optionId: string | null) => {
+      if (!activeSessionId) return;
+      const res = await api.answerPermission(activeSessionId, requestId, optionId);
+      // server 对未知 requestId（已超时结算/会话重开）返回 { ok: false }——不是网络错误，单独抛指引
+      if (!res.ok) {
+        throw new Error("该权限请求已失效（可能已超时自动拒绝）。请重新发送消息，让 agent 重新发起。");
+      }
+    },
+    [activeSessionId],
+  );
+
   // 轮询 session 状态（running→idle 切换驱动 UI；服务端状态变化也会发 SSE session 事件，
-  // 但 chat store 目前只消费 message 事件，头部状态灯仍以轮询为准）
+  // 但 chat store 目前只消费 message 事件，头部状态灯仍以轮询为准）。
+  // 后台标签页暂停轮询（定时器空转），回到前台立即补拉一次
   useEffect(() => {
     if (!activeSession) return;
-    const timer = setInterval(() => onSessionsChanged(), 3000);
-    return () => clearInterval(timer);
-  }, [activeSession?.id, onSessionsChanged]);
+    const tick = () => {
+      if (document.visibilityState === "visible") onSessionsChanged();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") onSessionsChanged();
+    };
+    const timer = setInterval(tick, 3000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [activeSessionId, onSessionsChanged]);
 
   async function startSession() {
     if (!agentId) return;
@@ -147,15 +212,19 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   }
 
   /**
-   * 「规划每日行程」引导：拉当前 bundle，把已加入行程/候选地点摘要 + 区域聚类建议（M11）+
+   * 「规划每日行程」引导：把已加入行程/候选地点摘要 + 区域聚类建议（M11）+
    * 大交通锚点组装成预制指令，走现有发送链路发给 agent，提示按区域成片分天。
    * place.status 来自 shared 契约：locked=必排，candidate=按顺路取舍。
+   * bundle 直接读 SSE 维护的全量快照（tripStore），不再为组 prompt 重复拉一遍；
+   * 快照缺失或属于上一个行程（切换途中）时回退拉取。
    */
   async function planDays() {
     if (!activeSession) return;
     setPlanning(true);
     try {
-      const { bundle } = await api.getBundle(trip.id);
+      // store 快照可能还是上一个行程的（切换行程后 load 未完成），id 对不上时回退拉取
+      const snapshot = useTripStore.getState().bundle;
+      const bundle = snapshot && snapshot.trip.id === trip.id ? snapshot : (await api.getBundle(trip.id)).bundle;
       const locked = bundle.places.filter((p) => p.status === "locked");
       const candidates = bundle.places.filter((p) => p.status !== "locked");
       if (locked.length === 0 && candidates.length === 0) {
@@ -359,8 +428,8 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
         </div>
       )}
 
-      {/* 消息流 */}
-      <div className="flex-1 space-y-2 overflow-y-auto p-3">
+      {/* 消息流（窗口化：只渲染最近 visibleCount 条，顶部「加载更早」向上翻页） */}
+      <div ref={scrollRef} className="flex-1 space-y-2 overflow-y-auto p-3">
         {/* 已连接的空会话：引导第一条消息，chips 点击填入输入框 */}
         {messages.length === 0 && !running && (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
@@ -378,19 +447,25 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
             ))}
           </div>
         )}
-        {messages.map((m) => (
+        {hiddenCount > 0 && (
+          <button
+            onClick={loadEarlier}
+            className="mx-auto block rounded-full border border-slate-300/60 bg-white/60 px-3 py-1 text-[11px] text-slate-500 transition-colors hover:bg-white/90"
+          >
+            加载更早的消息（还有 {hiddenCount} 条）
+          </button>
+        )}
+        {visibleMessages.map((m) => (
           <MessageBubble
             key={m.id}
             message={m}
             streaming={m.id === streamingMessageId}
-            permissionOutcomes={permissionOutcomes}
-            onAnswerPermission={async (requestId, optionId) => {
-              const res = await api.answerPermission(activeSession.id, requestId, optionId);
-              // server 对未知 requestId（已超时结算/会话重开）返回 { ok: false }——不是网络错误，单独抛指引
-              if (!res.ok) {
-                throw new Error("该权限请求已失效（可能已超时自动拒绝）。请重新发送消息，让 agent 重新发起。");
-              }
-            }}
+            settledOutcome={
+              m.kind === "permission_request"
+                ? permissionOutcomes.get(String(m.content.requestId ?? "")) ?? null
+                : null
+            }
+            onAnswerPermission={answerPermission}
           />
         ))}
         <div ref={messagesEndRef} />
@@ -446,16 +521,17 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
 // ---------- 消息渲染 ----------
 
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
   streaming,
-  permissionOutcomes,
+  settledOutcome,
   onAnswerPermission,
 }: {
   message: ChatMessageDto;
   /** true = 该聚合段仍在流式追加（列表末尾且回合进行中），纯文本渲染避免半截 markdown 抖动 */
   streaming: boolean;
-  permissionOutcomes: Map<string, string>;
+  /** permission_request 的结算结果（无结算/非权限消息为 null）；传原始值而非整个 Map，避免击穿 memo */
+  settledOutcome: string | null;
   onAnswerPermission: (requestId: string, optionId: string | null) => Promise<void>;
 }) {
   switch (message.kind) {
@@ -514,7 +590,7 @@ function MessageBubble({
       return (
         <PermissionRequestCard
           message={message}
-          settledOutcome={permissionOutcomes.get(String(message.content.requestId ?? "")) ?? null}
+          settledOutcome={settledOutcome}
           onAnswer={onAnswerPermission}
         />
       );
@@ -540,7 +616,7 @@ function MessageBubble({
     default:
       return null;
   }
-}
+});
 
 function PermissionRequestCard({
   message,
