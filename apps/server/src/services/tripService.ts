@@ -369,6 +369,10 @@ export class TripService {
   /**
    * 更新行程字段（PATCH /api/trips/:tripId 与 MCP set_start_date）。
    * 当前仅 startDate（出发日期）：null = 清除，天标签退化为「Day N」。
+   * 已知行为（低成本方案，刻意不做联动校验）：startDate 与 endDate 互不联动——endDate 只能创建时传入，
+   * 本接口不改它；天数口径（getTripDayCount / getBudgetSummary）要求两者同时非空才按日期区间计，
+   * 因此清掉 startDate 留下 endDate、或只设 startDate 不设 endDate 时，天数自动回退到已建天数兜底，
+   * startDate 仅影响天标签展示，不会产生破坏性的天数变化。
    */
   async updateTrip(tripId: string, input: UpdateTripInput) {
     await this.getTrip(tripId);

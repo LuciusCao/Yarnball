@@ -3,6 +3,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
+  CalendarDateSchema,
   CreateHotelCandidateInputSchema,
   CreatePlaceInputSchema,
   LngLatSchema,
@@ -179,9 +180,9 @@ const SetBudgetInput = z.object({
   currency: z.string().regex(/^[A-Z]{3}$/).optional(),
 });
 
-/** 出发日期：YYYY-MM-DD；null = 清除（天标签退化为 Day N） */
+/** 出发日期：YYYY-MM-DD 真实日历日期（拒绝不存在的日期，见 shared CalendarDateSchema）；null = 清除（天标签退化为 Day N） */
 const SetStartDateInput = z.object({
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+  startDate: CalendarDateSchema.nullable(),
 });
 
 // ---------- 注册 ----------
