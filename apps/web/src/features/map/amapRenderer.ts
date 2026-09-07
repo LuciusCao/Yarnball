@@ -1,6 +1,7 @@
 import AMapLoader from "@amap/amap-jsapi-loader";
 import type { LngLat } from "@yarnball/shared";
 import {
+  categoryIconEmoji,
   circleSignature,
   lineSignature,
   markerSignature,
@@ -112,7 +113,7 @@ export class AMapRenderer implements MapRenderer {
       label: {
         content: `<div style="white-space:nowrap;font-size:12px;font-weight:600;padding:3px 10px;border-radius:9999px;background:linear-gradient(180deg,${marker.color}f2,${marker.color}d9);color:#fff;box-shadow:0 2px 8px rgba(15,23,42,.3),inset 0 1px 0 rgba(255,255,255,.45)${
           selected ? ";outline:3px solid rgba(37,99,235,.45)" : ""
-        }">${escapeHtml(marker.label)}</div>`,
+        }">${categoryIconEmoji(marker.category)}${escapeHtml(marker.label)}</div>`,
         direction: "top",
         offset: [0, -6],
       },

@@ -2,6 +2,7 @@ import maplibregl from "maplibre-gl";
 import type { GeoJSONSource, Map as MlMap, Marker as MlMarker } from "maplibre-gl";
 import type { LngLat } from "@yarnball/shared";
 import {
+  categoryIconEmoji,
   circleSignature,
   lineSignature,
   markerSignature,
@@ -253,7 +254,7 @@ export class MapLibreRenderer implements MapRenderer {
     el.innerHTML = `
       <div style="white-space:nowrap;font-size:12px;font-weight:600;padding:3px 10px;border-radius:9999px;background:linear-gradient(180deg,${spec.color}f2,${spec.color}d9);color:#fff;box-shadow:0 2px 8px rgba(15,23,42,.3),inset 0 1px 0 rgba(255,255,255,.45)${
         selected ? ";outline:3px solid rgba(37,99,235,.45)" : ""
-      }">${escapeHtml(spec.label)}</div>
+      }">${categoryIconEmoji(spec.category)}${escapeHtml(spec.label)}</div>
       <div style="width:10px;height:10px;border-radius:9999px;background:${spec.color};margin:-3px auto 0;box-shadow:0 1px 4px rgba(15,23,42,.4),inset 0 1px 0 rgba(255,255,255,.4)"></div>`;
     el.onclick = () => this.onSelectPlace(spec.placeId);
     return new maplibregl.Marker({ element: el, anchor: "bottom" })

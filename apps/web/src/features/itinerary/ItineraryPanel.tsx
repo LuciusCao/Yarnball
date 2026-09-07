@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { formatDayLabel, formatDistance, formatDuration, type TripBundle, type TransportLegDto } from "@yarnball/shared";
+import { formatDayLabel, formatDistance, formatDuration, type PlaceCategory, type TripBundle, type TransportLegDto } from "@yarnball/shared";
 import { toast } from "sonner";
-import { BedDouble, Bus, Car, Clock, Footprints, MapPin, PlaneLanding, PlaneTakeoff, Repeat, TrainFront, Zap } from "lucide-react";
+import { BedDouble, Bus, Car, Clock, Footprints, Landmark, MapPin, Package, PlaneLanding, PlaneTakeoff, Repeat, TrainFront, UtensilsCrossed, Zap, type LucideIcon } from "lucide-react";
 import { api } from "../../api/client";
 import { api as libApi } from "../../lib/api";
 import { DAY_COLORS } from "../map/MapCanvas";
@@ -49,6 +49,9 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  *   注意（M20 话术统一）：酒店需「加入行程」（底层 select，带 checkInDay/checkOutDay 住宿区间）才参与路线锚定
  * - Day 筛选 tabs（M15，TripPage 传入 visibleDay/onVisibleDayChange 时启用）：
  *   面板顶部「全部/Day 1/Day 2…」，选中天过滤面板并同步地图聚焦
+ * - 地点节点带类别小图标（M60）：hotel=BedDouble / restaurant=UtensilsCrossed /
+ *   attraction+activity=Landmark / other=Package，与候选池 tab 选型一致；
+ *   序号圆仍是主信息，图标为辅（序号圆后、名称前的灰色小图标）
  * - 多城市（M39，trip.stops > 1）：顶部显示途经地链「西宁 → 青海湖 → …」，末段 transit
  *   讫点回到 stops[0] 时附 🔁 环线徽标（isLoopClosed，推导不落库）；天 section 按 stop
  *   连续分组，组头「📍 途经地 · Dn-Dm」（day→stop 推导见 stops.ts）；
@@ -56,6 +59,15 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  *   transit 的 ride leg：legs 中 fromEntryId==toEntryId==entry.id 的那条）
  * - readOnly（分享页）：隐藏一切编辑操作
  */
+
+/** 地点类别图标（M60）：与候选池 tab / GROUP_META 选型一致（CandidatesPanel.tsx） */
+const PLACE_CATEGORY_META: Record<PlaceCategory, { label: string; Icon: LucideIcon }> = {
+  hotel: { label: "酒店", Icon: BedDouble },
+  restaurant: { label: "美食", Icon: UtensilsCrossed },
+  attraction: { label: "景点", Icon: Landmark },
+  activity: { label: "景点", Icon: Landmark },
+  other: { label: "其他", Icon: Package },
+};
 
 interface ItineraryPanelProps {
   tripId: string;
@@ -412,6 +424,8 @@ export function ItineraryPanel({
                 const leg = legAfter.get(entry.id);
                 const toHotel = leg != null && leg.toPlaceId != null;
                 const selected = place != null && place.id === selectedPlaceId;
+                // 类别小图标（M60）：hotel=BedDouble / restaurant=UtensilsCrossed / attraction+activity=Landmark / other=Package
+                const categoryMeta = place ? PLACE_CATEGORY_META[place.category] : null;
                 const hours = place ? openingHoursOf(place) : null;
                 const hoursRange = hours ? parseOpeningHoursRange(hours) : null;
                 // 排期时段与营业时段完全无交叠 = 明显冲突（解析不出时段时不告警，仅展示）
@@ -506,6 +520,13 @@ export function ItineraryPanel({
                       >
                         {seqByEntryId.get(entry.id)}
                       </span>
+                      {/* 类别小图标（M60）：序号圆为主信息，图标为辅 */}
+                      {categoryMeta && (
+                        <categoryMeta.Icon
+                          className="size-3.5 shrink-0 text-slate-400"
+                          aria-label={categoryMeta.label}
+                        />
+                      )}
                       <span className="flex-1 truncate text-sm">
                         {place?.name ?? "（地点已删除）"}
                         {place?.durationMin ? (
