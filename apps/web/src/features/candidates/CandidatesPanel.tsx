@@ -47,8 +47,9 @@ import {
  * M25：面板顶部 segmented 切换（全部/酒店/景点/美食，各带数量徽标=该类别候选总数含已加入；
  * 「其他」类别只在「全部」视图出现）。默认「全部」= 原分组视图；切到类别 tab = 该类别单组列表
  * （已加入仍排前，组头小计/酒店提示等元素保留）。待预订汇总提醒、agent 推荐标记等跨类别元素
- * 不随 tab 隐藏。tab 状态仅存组件本地。tab 行单行不换行（whitespace-nowrap + 收窄 padding），
- * 面板宽度塞不下时横向滚动兜底（overflow-x-auto），绝不允许换行撑高（M39 修复）。
+ * 不随 tab 隐藏。tab 状态仅存组件本地。tab 行单行不换行（whitespace-nowrap + 收窄 padding）；
+ * 主方案是面板默认加宽（TripPage dock 候选池 400px，M39 用户意见），4 个 tab 默认宽度下自然
+ * 放得下；横向滚动（overflow-x-auto）仅作窄屏/放大态以外的兜底，绝不换行撑高（M39 修复）。
  * M39 多城市：trip.stops > 1 时组内按 cityName 二级排序聚桶，城市切换处插「📍 途经地」子头；
  * 长名称 truncate + title 提示完整内容。
  */
