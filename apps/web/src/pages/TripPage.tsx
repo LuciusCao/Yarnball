@@ -50,13 +50,27 @@ import { BudgetStrip } from "../features/budget/BudgetStrip";
  * 行程页 —— macOS Tahoe（Liquid Glass）布局：地图全屏打底，一切 UI 都是玻璃浮层。
  */
 
-type LeftPanel = "itinerary" | "candidates" | "search";
+type ToolPanel = "itinerary" | "candidates" | "search";
 
-const LEFT_PANEL_META: Record<LeftPanel, { label: string; Icon: LucideIcon }> = {
+const TOOL_PANEL_META: Record<ToolPanel, { label: string; Icon: LucideIcon }> = {
   itinerary: { label: "行程", Icon: CalendarDays },
   candidates: { label: "候选池", Icon: Star },
   search: { label: "添加地点", Icon: Search },
 };
+
+/** 工具面板展开状态持久化（M61）：记住用户收起的偏好；无记录时默认展开「行程」tab */
+const TOOL_PANEL_STORAGE_KEY = "yarnball:trip-tool-panel";
+
+function readStoredToolPanel(): ToolPanel | null {
+  try {
+    const raw = localStorage.getItem(TOOL_PANEL_STORAGE_KEY);
+    if (raw === "none") return null;
+    if (raw != null && raw in TOOL_PANEL_META) return raw as ToolPanel;
+  } catch {
+    // localStorage 不可用（隐私模式等）时退回默认
+  }
+  return "itinerary";
+}
 
 /** 设置抽屉由 M2（features/settings）挂载；合并前用全局事件解耦对接 */
 const OPEN_SETTINGS_EVENT = "yarnball:open-settings";
@@ -75,7 +89,8 @@ export function TripPage() {
   const { bundle, error, load, subscribe } = useTripStore();
   const [amapJsKey, setAmapJsKey] = useState("");
   const [amapJsSecret, setAmapJsSecret] = useState("");
-  const [leftPanel, setLeftPanel] = useState<LeftPanel | null>(null);
+  /** 顶部中央工具面板（M61）：当前展开的 tab；null = 收起。初始值读 localStorage（默认展开行程 tab） */
+  const [toolPanel, setToolPanel] = useState<ToolPanel | null>(readStoredToolPanel);
   const [chatSessions, setChatSessions] = useState<ChatSessionDto[]>([]);
   const [visibleDay, setVisibleDay] = useState<number | null>(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
@@ -85,8 +100,8 @@ export function TripPage() {
   const [budgetSummary, setBudgetSummary] = useState<BudgetSummary | null>(null);
   /** 面板形态：expanded（完整）/ hidden（收起到右上角的呼出钮） */
   const [panelMode, setPanelMode] = useState<"expanded" | "hidden">("expanded");
-  /** 左下 dock 面板放大态：跨面板切换保持（M15） */
-  const [dockMaximized, setDockMaximized] = useState(false);
+  /** 工具浮层放大态：跨面板切换保持（M15） */
+  const [panelMaximized, setPanelMaximized] = useState(false);
 
   useEffect(() => {
     if (!tripId) return;
@@ -198,9 +213,15 @@ export function TripPage() {
     setSelectedLegId(null);
     setVisibleDay(dayIndex);
   }, []);
-  const switchLeftPanel = useCallback((panel: LeftPanel | null) => {
+  const switchToolPanel = useCallback((panel: ToolPanel | null) => {
     setSelectedLegId(null);
-    setLeftPanel(panel);
+    setToolPanel(panel);
+    // M61：展开/收起偏好写 localStorage，下次打开记住收起状态
+    try {
+      localStorage.setItem(TOOL_PANEL_STORAGE_KEY, panel ?? "none");
+    } catch {
+      // 持久化失败不影响交互
+    }
   }, []);
 
   // 段被服务端删掉（entry 移除/重算）时清掉悬空的段选中
@@ -349,8 +370,8 @@ export function TripPage() {
     selectedHotelCand != null
       ? hotelStays.find((s) => s.candidateId === selectedHotelCand.id) ?? null
       : null;
-  const leftPanels = Object.entries(LEFT_PANEL_META) as [LeftPanel, { label: string; Icon: LucideIcon }][];
-  const activeLeftMeta = leftPanel != null ? LEFT_PANEL_META[leftPanel] : null;
+  const toolPanels = Object.entries(TOOL_PANEL_META) as [ToolPanel, { label: string; Icon: LucideIcon }][];
+  const activeToolMeta = toolPanel != null ? TOOL_PANEL_META[toolPanel] : null;
 
   return (
     <div className="relative h-full overflow-hidden">
@@ -369,8 +390,15 @@ export function TripPage() {
         />
       </div>
 
-      {/* 左上：行程信息玻璃条 */}
-      <header className="glass panel-in pointer-events-auto absolute left-4 top-4 z-10 flex items-center gap-2.5 rounded-2xl px-4 py-2">
+      {/* 顶行（M61）：左上行程信息玻璃条 + 顶部中央工具分段切换条；分段条在信息条与右侧 agent
+          面板之间的空闲区居中（容器 pointer-events-none 让出地图交互，agent 面板收起时占满整行） */}
+      <div
+        className={`pointer-events-none absolute left-4 top-4 z-10 flex items-start gap-3 ${
+          panelMode === "hidden" ? "right-4" : "right-[404px]"
+        }`}
+      >
+      {/* shrink-0：信息条不被 flex 挤压（分段条区域 min-w-0 flex-1 先让）；标题 max-w+truncate 兜底长标题把分段条挤出可视区 */}
+      <header className="glass panel-in pointer-events-auto flex shrink-0 items-center gap-2.5 rounded-2xl px-4 py-2">
         <Link
           to="/"
           className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-700"
@@ -378,7 +406,9 @@ export function TripPage() {
         >
           ‹
         </Link>
-        <h1 className="glass-text text-sm font-semibold">{trip.title}</h1>
+        <h1 className="glass-text max-w-64 truncate text-sm font-semibold" title={trip.title}>
+          {trip.title}
+        </h1>
         <span
           className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500"
           title={trip.stops.length > 1 ? `途经地（按游览顺序）：${trip.stops.map((s) => s.name).join(" → ")}` : undefined}
@@ -422,9 +452,32 @@ export function TripPage() {
         </Link>
       </header>
 
-      {/* 左上（行程信息条下方）：选中地点信息卡（可操作：加入行程/移出行程/删除） ===== */}
+      {/* 工具面板分段切换条（行程/候选池/添加，M61 从原左下 dock 标签条迁来）：点击 tab 向下展开浮层，再点当前 tab 收起 */}
+      <div className="flex min-w-0 flex-1 justify-center">
+        <div className="glass panel-in pointer-events-auto flex items-center gap-1 rounded-full p-1.5">
+          {toolPanels.map(([key, meta]) => (
+            <button
+              key={key}
+              onClick={() => switchToolPanel(toolPanel === key ? null : key)}
+              title={toolPanel === key ? `收起${meta.label}面板` : `展开${meta.label}面板`}
+              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                toolPanel === key
+                  ? "bg-slate-900 text-white shadow-sm"
+                  : "text-slate-500 hover:bg-slate-900/5 hover:text-slate-800"
+              }`}
+            >
+              <meta.Icon className="size-3.5" />
+              {meta.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      </div>
+
+      {/* 左下：选中地点信息卡（M61 从左上信息条下方迁来；z-30 全页最高层级，可盖在顶部工具浮层之上）。可操作：加入行程/加入住宿/移出/删除。
+          窄屏（<md ≈ 可用宽度 750px 以下）工具浮层与卡片必然交叠，卡片降到 z-10 让位给浮层（浮层 z-20 盖住卡片，不再被卡片拦截点击）；收起浮层后卡片照常可用 */}
       {selectedPlace && (
-        <div className="glass panel-in rounded-card absolute left-4 top-[60px] z-10 max-w-xs p-3.5 shadow-card">
+        <div className="glass panel-in rounded-card absolute bottom-4 left-4 z-30 max-h-[calc(100vh-7rem)] max-w-xs overflow-y-auto p-3.5 shadow-card max-md:z-10">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold text-slate-900">
@@ -656,29 +709,35 @@ export function TripPage() {
         </div>
       )}
 
-      {/* 左下：数据面板 dock（行程/候选池/添加），常驻一小条，点击展开。
+      {/* 顶部中央：工具浮层（行程/候选池/添加，M61 从原左下 dock 迁来）。overlay 盖在地图上、不挤占布局，
+          与分段切换条在同一空闲区水平居中（信息条与 agent 面板之间）；点击分段条 tab 或浮层 ✕ 收起。
           三个标签默认宽度统一 400px（M44：切换标签不再有宽度跳动；
           400px 按候选池 4 个分类 tab 自然放得下选定），放大交互 640px 保持不变 ===== */}
-      {leftPanel != null && activeLeftMeta != null && (
+      {toolPanel != null && activeToolMeta != null && (
         <div
-          className={`glass-deep panel-in absolute bottom-[68px] left-4 z-10 flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
-            dockMaximized
+          className={`pointer-events-none absolute bottom-4 left-4 top-[68px] z-20 flex items-start justify-center ${
+            panelMode === "hidden" ? "right-4" : "right-[404px]"
+          }`}
+        >
+        <div
+          className={`glass-deep panel-in pointer-events-auto flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
+            panelMaximized
               ? "h-[min(80vh,900px)] w-[min(640px,calc(100vw-2rem))]"
               : "h-[min(52vh,500px)] w-[400px]"
           }`}
         >
           <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
-            <activeLeftMeta.Icon className="size-3.5 text-slate-500" />
-            <span className="glass-text ml-1 text-xs font-semibold">{activeLeftMeta.label}</span>
+            <activeToolMeta.Icon className="size-3.5 text-slate-500" />
+            <span className="glass-text ml-1 text-xs font-semibold">{activeToolMeta.label}</span>
             <button
-              onClick={() => setDockMaximized((v) => !v)}
-              title={dockMaximized ? "恢复面板大小" : "放大面板"}
+              onClick={() => setPanelMaximized((v) => !v)}
+              title={panelMaximized ? "恢复面板大小" : "放大面板"}
               className="ml-auto flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-600"
             >
-              {dockMaximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+              {panelMaximized ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
             </button>
             <button
-              onClick={() => switchLeftPanel(null)}
+              onClick={() => switchToolPanel(null)}
               title="收起面板"
               className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-600"
             >
@@ -693,7 +752,7 @@ export function TripPage() {
               </div>
             )}
             <div className="min-h-0 flex-1">
-              {leftPanel === "itinerary" && (
+              {toolPanel === "itinerary" && (
                 <ItineraryPanel
                   tripId={trip.id}
                   bundle={bundle}
@@ -704,10 +763,10 @@ export function TripPage() {
                   onVisibleDayChange={changeVisibleDay}
                   selectedLegId={selectedLegId}
                   onSelectLeg={setSelectedLegId}
-                  onOpenCandidates={() => switchLeftPanel("candidates")}
+                  onOpenCandidates={() => switchToolPanel("candidates")}
                 />
               )}
-              {leftPanel === "candidates" && (
+              {toolPanel === "candidates" && (
                 <CandidatesPanel
                   tripId={trip.id}
                   bundle={bundle}
@@ -717,30 +776,14 @@ export function TripPage() {
                   onDataChanged={() => void load(trip.id)}
                 />
               )}
-              {leftPanel === "search" && (
+              {toolPanel === "search" && (
                 <SearchAddPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
               )}
             </div>
           </div>
         </div>
+        </div>
       )}
-      <div className="glass panel-in absolute bottom-4 left-4 z-10 flex items-center gap-1 rounded-full p-1.5">
-        {leftPanels.map(([key, meta]) => (
-          <button
-            key={key}
-            onClick={() => switchLeftPanel(leftPanel === key ? null : key)}
-            title={leftPanel === key ? `收起${meta.label}面板` : `展开${meta.label}面板`}
-            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-              leftPanel === key
-                ? "bg-slate-900 text-white shadow-sm"
-                : "text-slate-500 hover:bg-slate-900/5 hover:text-slate-800"
-            }`}
-          >
-            <meta.Icon className="size-3.5" />
-            {meta.label}
-          </button>
-        ))}
-      </div>
 
       {/* 右侧主面板：纯 agent 对话 ===== */}
       {panelMode === "hidden" ? (

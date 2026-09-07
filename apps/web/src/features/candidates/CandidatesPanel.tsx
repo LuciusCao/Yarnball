@@ -40,14 +40,15 @@ import {
  * 区间互相冲突的选项禁用并提示（服务端同样校验，见 M9 契约）。
  * 预订状态（M11）：每项显示 无需预订/待预订/已预订 徽章，locked 地点可点选流转；
  * 待预订的已加入地点卡片高亮并在顶部汇总提醒。营业时间（openingHours）有值即展示。
- * M20：UI 话术统一为「加入行程」——酒店「加入行程」即选定住宿区间（select，含入离店天），
+ * M20：UI 话术统一为「加入行程」——非酒店 POI 的加入/移出走 locked 开关（「加入行程/移出行程」）；
+ * 酒店 select 动作话术（M61 对齐信息卡 M59 口径）为「加入住宿/移出住宿」（即选定住宿区间，含入离店天），
  * 底层 locked/select 语义不变；酒店的 locked 状态在 UI 上降级（不再单独展示加入状态与开关）。
  * 数据刷新：操作后走 SSE bundle 全量快照 + 主动 load 兜底，不做本地增量。
  * M25：面板顶部 segmented 切换（全部/酒店/景点/美食，各带数量徽标=该类别候选总数含已加入；
  * 「其他」类别只在「全部」视图出现）。默认「全部」= 原分组视图；切到类别 tab = 该类别单组列表
  * （已加入仍排前，组头小计/酒店提示等元素保留）。待预订汇总提醒、agent 推荐标记等跨类别元素
  * 不随 tab 隐藏。tab 状态仅存组件本地。tab 行单行不换行（whitespace-nowrap + 收窄 padding）；
- * 主方案是面板默认加宽（TripPage dock 候选池 400px，M39 用户意见），4 个 tab 默认宽度下自然
+ * 主方案是面板默认加宽（TripPage 工具浮层 400px，M39 用户意见），4 个 tab 默认宽度下自然
  * 放得下；横向滚动（overflow-x-auto）仅作窄屏/放大态以外的兜底，绝不换行撑高（M39 修复）。
  * M39 多城市：trip.stops > 1 时组内按 cityName 二级排序聚桶，城市切换处插「📍 途经地」子头；
  * 长名称 truncate + title 提示完整内容。
@@ -341,7 +342,7 @@ export function CandidatesPanel({
                 const hotelCand = hotelCandByPlaceId.get(place.id);
                 const stay = hotelCand ? stayByCandidateId.get(hotelCand.id) : undefined;
                 const isSelectedHotel = stay != null;
-                /** 酒店候选（M20）：locked 状态在 UI 上降级——主按钮「加入行程」即含住宿区间，不再单独展示 locked 徽章与加入/移出开关 */
+                /** 酒店候选（M20）：locked 状态在 UI 上降级——主按钮「加入住宿」（M61 话术，原「加入行程」）即含住宿区间，不再单独展示 locked 徽章与加入/移出开关 */
                 const isHotel = key === "hotel" && hotelCand != null;
                 const price =
                   key === "hotel"
@@ -484,8 +485,8 @@ export function CandidatesPanel({
                           <button
                             title={
                               isSelectedHotel
-                                ? "移出行程：取消该酒店的住宿区间，不再锚定每天首尾"
-                                : "加入行程：自动分配未覆盖的最长连续住宿段，可再调整入离店天"
+                                ? "移出住宿：取消该酒店的住宿区间，不再锚定每天首尾"
+                                : "加入住宿：自动分配未覆盖的最长连续住宿段，可再调整入离店天"
                             }
                             disabled={busy}
                             onClick={(e) => {
@@ -500,11 +501,11 @@ export function CandidatesPanel({
                                 : "border border-slate-200 text-slate-600 hover:bg-slate-50"
                             }`}
                           >
-                            {isSelectedHotel ? "✓ 已加入" : "加入行程"}
+                            {isSelectedHotel ? "✓ 已加入" : "加入住宿"}
                           </button>
                         )}
                         <div className="flex gap-1">
-                          {/* POI 的加入/移出开关（M20 话术）；酒店不走这里——主按钮「加入行程」已涵盖（已排期酒店除外：给移出出口） */}
+                          {/* POI 的加入/移出开关（M20 话术）；酒店不走这里——主按钮「加入住宿」已涵盖（已排期酒店除外：给移出出口） */}
                           {(!isHotel || scheduled) && (
                             <button
                               title={
