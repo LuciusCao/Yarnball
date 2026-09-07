@@ -4,6 +4,7 @@ import {
   CalendarDays,
   CalendarCheck,
   CalendarMinus,
+  CalendarPlus,
   BedDouble,
   Clock,
   Crosshair,
@@ -11,8 +12,6 @@ import {
   Globe,
   Hourglass,
   Link2,
-  Lock,
-  LockOpen,
   MapPin,
   Maximize2,
   Minimize2,
@@ -581,7 +580,7 @@ export function TripPage() {
           )}
           {/* 操作行（口径对齐候选池）：酒店主操作走 select/unselect（带默认住宿区间，不再只切 locked 造「暗 locked」态）；
               已排期地点给「移出行程」出口（unschedule 撤销日程）；未排期 POI 走 locked 开关。
-              Lock 图标语义与候选池一致：locked 态显示 Lock（点击移出），候选态显示 LockOpen（点击加入） */}
+              图标与候选池一致：locked 态显示 CalendarMinus（点击移出行程），候选态显示 CalendarPlus（点击加入行程） */}
           <div className="mt-2.5 flex items-center gap-1.5 border-t border-slate-900/8 pt-2.5">
             {selectedHotelCand && (
               <button
@@ -633,11 +632,11 @@ export function TripPage() {
                 >
                   {selectedPlace.status === "locked" ? (
                     <>
-                      <Lock className="size-3" /> 移出行程
+                      <CalendarMinus className="size-3" /> 移出行程
                     </>
                   ) : (
                     <>
-                      <LockOpen className="size-3" /> 加入行程
+                      <CalendarPlus className="size-3" /> 加入行程
                     </>
                   )}
                 </button>
