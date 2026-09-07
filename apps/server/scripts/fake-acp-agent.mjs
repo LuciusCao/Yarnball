@@ -18,6 +18,11 @@
  *                              （带 title）不发 tool_call 初始通知；② prompt 响应
  *                               resolve 之后才补发末尾 chunk —— 验证 MCP 提示不误报、
  *                               回合结束 advisory 恒排回合尾部
+ *   FAKE_SCRIPT=perm_note_flow  文本 → yarnball 工具权限请求（自动批准，落
+ *                               permission_result 注记）→ 文本：验证注记不劈句，
+ *                               前后文本聚合为同一条 agent_text
+ *   FAKE_SCRIPT=plain_text_flow 纯文本回复，无任何工具调用 —— 验证 MCP 提示的
+ *                               误报/该报两条路径（配合 DB 预置 has_mcp_call）
  *
  * 所有收到的线流量 sink 到 stderr（不打断 stdout 协议流）。
  */
@@ -291,6 +296,45 @@ async function handlePrompt(requestId, text) {
         content: { type: "text", text: `MCP 调用失败：${err.message}\n` },
       });
     }
+    respond(requestId, { stopReason: "end_turn" });
+    return;
+  }
+
+  if (script === "perm_note_flow") {
+    // 先吐半句 → 请求 yarnball 工具权限（服务端自动批准，落 permission_result 注记）
+    // → 再吐后半句。注记不得把前后文本劈成两段聚合。
+    update({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "我先拉" },
+    });
+    const permId = nextRequestId++;
+    await new Promise((resolve) => {
+      terminalSessions.set(`resp-${permId}`, resolve);
+      request(permId, "session/request_permission", {
+        sessionId,
+        toolCall: {
+          toolCallId: `yb-${permId}`,
+          title: "yarnball: get_trip_context",
+          kind: "other",
+          status: "pending",
+          rawInput: "{}",
+        },
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      });
+    });
+    update({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "一下行程，稍等。" },
+    });
+    respond(requestId, { stopReason: "end_turn" });
+    return;
+  }
+
+  if (script === "plain_text_flow") {
+    update({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "好的，随便聊聊。\n" },
+    });
     respond(requestId, { stopReason: "end_turn" });
     return;
   }

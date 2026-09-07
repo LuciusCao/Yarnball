@@ -20,11 +20,7 @@ const { db, pool } = createDb(env.databaseUrl);
 const bus = new EventBus();
 const tripService = new TripService(db, bus);
 
-/** MCP 观察回调集合：MCP 工具调用时通知对应 ACP session（冒烟提示用） */
-const mcpObservers = new Map<string, () => void>();
-const acpSessions = new AcpSessionManager(db, bus, (chatSessionId) => {
-  mcpObservers.get(chatSessionId)?.();
-});
+const acpSessions = new AcpSessionManager(db, bus);
 
 const app = new Hono();
 
@@ -33,9 +29,10 @@ app.use("/api/*", cors({ origin: env.webOrigin }));
 const api = createApi(db, bus, tripService, acpSessions);
 app.route("/api", api);
 
-// MCP 端点：无 CORS（agent 非 browser），无 /api 前缀
+// MCP 端点：无 CORS（agent 非 browser），无 /api 前缀。
+// 工具命中直接调 manager 的 noteMcpCall：路由内存句柄 + 持久化 has_mcp_call（冒烟提示的 ground truth）
 app.route("/mcp", createMcpApp(db, tripService, (chatSessionId) => {
-  mcpObservers.get(chatSessionId)?.();
+  acpSessions.noteMcpCall(chatSessionId);
 }));
 
 app.get("/healthz", (c) => c.json({ ok: true }));
