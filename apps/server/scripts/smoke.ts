@@ -461,6 +461,41 @@ async function main() {
     assert(lockedDupPlace?.id === lockedPlace.id, "dedup: agent re-add of locked place returns existing place");
     assert(lockedDupPlace?.openingHours == null, "dedup: agent does not backfill user-locked place");
 
+    // 括号后缀规范化：「Aria」 vs 「Aria（East Circular Quay）」同坐标 → 判重合并（剥全角括号后缀）
+    const aria1 = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "Aria", category: "restaurant", location: { lng: 95.358, lat: 37.852 } } },
+      16,
+    );
+    const ariaPlace = parsePlace(aria1);
+    assert(aria1.result?.isError !== true && ariaPlace?.id, "dedup: first Aria created");
+    const aria2 = await mcpCall(
+      "tools/call",
+      { name: "add_place", arguments: { name: "Aria（East Circular Quay）", category: "restaurant", location: { lng: 95.3582, lat: 37.852 } } },
+      17,
+    );
+    assert(
+      parsePlace(aria2)?.id === ariaPlace.id,
+      "dedup: parenthesized suffix stripped (「Aria（East Circular Quay）」 == 「Aria」)",
+    );
+    // 互为前缀（短名 ≥3 字符）+ ≤200m → 判重合并
+    const hfj1 = await mkPlace({ name: "河坊街", category: "attraction", location: { lng: 95.359, lat: 37.853 } });
+    const hfj2 = await mkPlace({ name: "河坊街小吃城", category: "restaurant", location: { lng: 95.3591, lat: 37.853 } });
+    assert(hfj2.id === hfj1.id, "dedup: prefix containment within 200m merges (河坊街 / 河坊街小吃城)");
+    // 前缀包含但距离 >200m → 语义可能不同（河坊街 vs 河坊街小吃城类），不合并
+    const hfjFar = await mkPlace({ name: "河坊街小吃城", category: "restaurant", location: { lng: 95.375, lat: 37.853 } });
+    assert(hfjFar.id !== hfj1.id, "dedup: prefix containment >200m apart does NOT merge");
+    // 短名 <3 字符的通用词不做前缀判重（防「酒店」⊂「酒店式公寓」类假合并），即使 ≤200m
+    const hotel1 = await mkPlace({ name: "酒店", category: "hotel", location: { lng: 95.361, lat: 37.8535 } });
+    const hotel2 = await mkPlace({ name: "酒店式公寓", category: "hotel", location: { lng: 95.3611, lat: 37.8535 } });
+    assert(hotel2.id !== hotel1.id, "dedup: prefix with short name <3 chars does NOT merge (酒店 / 酒店式公寓)");
+    // 反向校验：括号后缀变体重复 add 后 bundle 里仍只有一条 Aria（规范化没有误建/误删其他点）
+    {
+      const { bundle: nameBundle } = await api(`/trips/${mcTrip.id}`);
+      const ariaPlaces = nameBundle.places.filter((p: any) => p.name.startsWith("Aria"));
+      assert(ariaPlaces.length === 1, "dedup: exactly one Aria place after suffix-variant re-add");
+    }
+
     await api(`/trips/${mcTrip.id}`, { method: "DELETE" });
     console.log("  ✓ multi-city trip cleaned up");
 
