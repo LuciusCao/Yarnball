@@ -220,8 +220,10 @@ export class SessionHandle {
   private aggregateMessageIds = new Map<string, string>();
   /** kind → 当前段号：tool_call/plan/permission 等事件介入后封闭当前段，后续 chunk 开新段 */
   private aggregateSegments = new Map<string, number>();
-  /** 当前开放聚合段的 key；任何非聚合消息落库都会封闭它（置 null） */
+  /** 当前开放聚合段的 key；真实事件落库会封闭它（置 null 并记入 aggregateClosed） */
   private openAggregateKey: string | null = null;
+  /** 被真实事件封闭的聚合段 key：迟到 chunk 不得并回这些段。turn 开始时清空 */
+  private aggregateClosed = new Set<string>();
 
   private parkedPermissions: ParkedPermission[] = [];
   private permissionSeq = 0;
@@ -473,6 +475,7 @@ export class SessionHandle {
     this.aggregateSlots.clear();
     this.aggregateMessageIds.clear();
     this.aggregateSegments.clear();
+    this.aggregateClosed.clear();
     this.openAggregateKey = null;
 
     await this.appendMessage({ turnId, kind: "user_text", content: { text: userText } });
@@ -498,19 +501,27 @@ export class SessionHandle {
       ]);
       // 等 trailing chunks 落库，保证 advisory 的 seq 排在回合所有消息之后
       await this.drainUpdates();
-      const advisory = await this.appendMessage({
-        turnId,
-        kind: "advisory",
-        content: { text: `—— 回合结束（${response.stopReason}）——` },
-      });
+      // 回合终端消息不封闭聚合段：prompt resolve 后才到达的 trailing chunk
+      // 要并回本回合最后一个同 kind 聚合段（原地更新），而不是开孤儿新段
+      const advisory = await this.appendMessage(
+        {
+          turnId,
+          kind: "advisory",
+          content: { text: `—— 回合结束（${response.stopReason}）——` },
+        },
+        { closesAggregate: false },
+      );
       this.lastTurnTerminal = { turnId, dto: advisory };
     } catch (err) {
       await this.drainUpdates();
-      const failure = await this.appendMessage({
-        turnId,
-        kind: "error",
-        content: { text: `回合失败：${(err as Error).message}` },
-      });
+      const failure = await this.appendMessage(
+        {
+          turnId,
+          kind: "error",
+          content: { text: `回合失败：${(err as Error).message}` },
+        },
+        { closesAggregate: false },
+      );
       this.lastTurnTerminal = { turnId, dto: failure };
       throw err;
     } finally {
@@ -520,7 +531,8 @@ export class SessionHandle {
       // 回合内的 /mcp 真实命中经 manager.noteMcpCall 路由进来置位
       if (!this.mcpToolCallSeen && !this.mcpHintSent) {
         this.mcpHintSent = true;
-        await this.appendMessage({ ...mcpHintMessage() });
+        // 服务端注记，不算 agent 事件：不封闭聚合段，迟到 chunk 仍能并回回合末段
+        await this.appendMessage({ ...mcpHintMessage() }, { closesAggregate: false });
       }
     }
   }
@@ -528,8 +540,10 @@ export class SessionHandle {
   /**
    * 最近收尾回合的终端消息（end_turn advisory / 回合失败 error）。
    * kimi 会把末尾 chunk 在 prompt() resolve 之后才推过来——drainUpdates 只能等「已到本地
-   * 未消费完」的更新，等不到尚未上线的通知。这类迟到消息落库时（见 appendMessage）
-   * 把终端消息重赋 seq 排到回合最后，保证回合结束标记恒为回合内最后一条。
+   * 未消费完」的更新，等不到尚未上线的通知。迟到的文本 chunk 会并回该回合最后一个
+   * 同 kind 聚合段（appendAggregated，原地更新不产生新消息）；迟到的真实事件/新段
+   * 落库时（见 appendMessage）把终端消息重赋 seq 排到回合最后，
+   * 保证回合结束标记恒为回合内最后一条。
    */
   private lastTurnTerminal: { turnId: string; dto: ChatMessageDto } | null = null;
 
@@ -666,18 +680,26 @@ export class SessionHandle {
    * 同 turn 同 kind 同段的 chunk 聚合成一条消息，原地更新（seq 不变，id 不变）。
    * 前端按 id upsert，实现平滑流式渲染。
    *
-   * 分段：tool_call / plan / permission 等事件（任何走 appendMessage 的非聚合消息）
-   * 会封闭当前聚合段，后续 chunk 开新段（segment+1）——实现
-   * 「agent 输出 → 工具调用 → agent 输出」的多块交错，而不是整个 turn 糊成一条。
+   * 分段：tool_call / plan / permission 等真实事件（任何走 appendMessage 且
+   * closesAggregate 的消息）会封闭当前聚合段（记入 aggregateClosed），后续 chunk
+   * 开新段（segment+1）——实现「agent 输出 → 工具调用 → agent 输出」的多块交错。
+   * 回合收尾后（终端 advisory/error 落库不封闭段），迟到的 trailing chunk 并回
+   * 该 kind 的最后一段原地更新——除非该段已被迟到的真实事件封闭（如晚到的
+   * tool_call 首通知），那种情况仍开新段。
    */
   private async appendAggregated(kind: "agent_text" | "agent_thought", text: string) {
     let segment = this.aggregateSegments.get(kind) ?? 0;
     let key = `${this.currentTurnId}:${kind}:${segment}`;
-    // 当前段已被其他事件封闭（或另一种 kind 的 chunk 插进来过）→ 开新段
-    if (this.openAggregateKey !== key && this.aggregateSlots.has(key)) {
-      segment += 1;
-      this.aggregateSegments.set(kind, segment);
-      key = `${this.currentTurnId}:${kind}:${segment}`;
+    if (this.aggregateSlots.has(key)) {
+      const turnEnded = this.lastTurnTerminal?.turnId === this.currentTurnId;
+      // 开新段的两个理由：① 段被真实事件封闭（多段交错语义不可退化）；
+      // ② 回合进行中另一种 kind 的 chunk 插过队。回合已收尾时 ② 不适用——
+      // trailing chunk 一律并回该 kind 的最后一段
+      if (this.aggregateClosed.has(key) || (!turnEnded && this.openAggregateKey !== key)) {
+        segment += 1;
+        this.aggregateSegments.set(kind, segment);
+        key = `${this.currentTurnId}:${kind}:${segment}`;
+      }
     }
 
     // 先打开本段再 await：权限三条并发路径在消费循环外调 appendMessage 封闭段，
@@ -945,11 +967,15 @@ export class SessionHandle {
     message: Omit<ChatMessageDto, "createdAt" | "id" | "sessionId" | "seq">,
     opts: { closesAggregate?: boolean } = {},
   ): Promise<ChatMessageDto> {
-    // 任何非聚合事件（tool_call/plan/permission_request/user_text/advisory…）介入即封闭当前聚合段，
-    // 后续 agent chunk 会开新段（appendAggregated 先打开新段再走这里，传 closesAggregate:false）；
-    // 纯注记类传 closesAggregate:false 豁免：tool_call_update 是 tool_call 的续报，
-    // permission_result 只是权限卡的结论注记，都不应把连贯文本劈成两段
-    if (opts.closesAggregate ?? true) this.openAggregateKey = null;
+    // 真实事件（tool_call/plan/permission_request/user_text…）介入即封闭当前聚合段
+    // （记入 aggregateClosed），后续 agent chunk 会开新段（appendAggregated 先打开新段
+    // 再走这里，传 closesAggregate:false）；豁免名单：tool_call_update 是 tool_call 的续报、
+    // permission_result 只是权限卡的结论注记、回合终端 advisory/error 与 MCP 提示注记——
+    // 都不应把连贯文本劈成两段，迟到 trailing chunk 还要并回该 kind 的末段
+    if (opts.closesAggregate ?? true) {
+      if (this.openAggregateKey) this.aggregateClosed.add(this.openAggregateKey);
+      this.openAggregateKey = null;
+    }
     const seq = ++this.seq;
     const id = crypto.randomUUID();
     await this.db.insert(schema.chatMessages).values({

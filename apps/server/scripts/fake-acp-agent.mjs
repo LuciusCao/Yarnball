@@ -16,7 +16,10 @@
  *   FAKE_SCRIPT=trailing_chunk_flow
  *                               复刻 kimi 的两个实测行为：① 只发 tool_call_update
  *                              （带 title）不发 tool_call 初始通知；② prompt 响应
- *                               resolve 之后才补发末尾 chunk —— 验证 MCP 提示不误报、
+ *                               resolve 之后才补发末尾 chunk（应并回主文本块原地更新，
+ *                               不开孤儿新段）+ 再晚一步补发迟到的 plan 事件
+ *                              （真实事件，回合结束 advisory 必须重排到它之后）——
+ *                               验证 MCP 提示不误报、trailing chunk 原地合并、
  *                               回合结束 advisory 恒排回合尾部
  *   FAKE_SCRIPT=perm_note_flow  文本 → yarnball 工具权限请求（自动批准，落
  *                               permission_result 注记）→ 文本：验证注记不劈句，
@@ -353,11 +356,19 @@ async function handlePrompt(requestId, text) {
     });
     respond(requestId, { stopReason: "end_turn" });
     // ② kimi 风格：响应 resolve 之后才推末尾 chunk。延迟要显著大于 server 端
-    // drainUpdates 的两个 setImmediate tick，保证它确定性地晚于「回合结束」advisory 到达
+    // drainUpdates 的两个 setImmediate tick，保证它确定性地晚于「回合结束」advisory 到达。
+    // 服务端应把它并回上面的主文本块（同一条消息 id 原地更新），不开孤儿新段
     await sleep(300);
     update({
       sessionUpdate: "agent_message_chunk",
       content: { type: "text", text: "（迟到的尾部输出）灵隐寺已加入候选。\n" },
+    });
+    // ③ 再晚一步推迟到的真实事件（plan）：它不并段，应作为新消息落库，
+    // 服务端 promoteTurnTerminal 把 advisory 重排到它之后，保持终端收尾
+    await sleep(200);
+    update({
+      sessionUpdate: "plan",
+      entries: [{ content: "补全候选详情", priority: "medium", status: "pending" }],
     });
     return;
   }
