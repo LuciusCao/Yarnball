@@ -1,21 +1,24 @@
-import type {
-  AddEntryInput,
-  AgentAvailability,
-  AgentRegistryDto,
-  ChatSessionDto,
-  CreateAgentInput,
-  EntryDto,
-  PlaceDto,
-  PlaceStatus,
-  SelectHotelInput,
-  SettingsDto,
-  SetLegModeInput,
-  SuggestDayClustersResult,
-  TransportMode,
-  UpdateAgentInput,
-  UpdateEntryInput,
-  UpdatePlaceInput,
-  UpdateSettingsInput,
+import {
+  POSSIBLE_DUPLICATE_CODE,
+  PossibleDuplicatePayloadSchema,
+  type AddEntryInput,
+  type AgentAvailability,
+  type AgentRegistryDto,
+  type ChatSessionDto,
+  type CreateAgentInput,
+  type CreatePlaceInput,
+  type EntryDto,
+  type PlaceDto,
+  type PlaceStatus,
+  type SelectHotelInput,
+  type SettingsDto,
+  type SetLegModeInput,
+  type SuggestDayClustersResult,
+  type TransportMode,
+  type UpdateAgentInput,
+  type UpdateEntryInput,
+  type UpdatePlaceInput,
+  type UpdateSettingsInput,
 } from "@yarnball/shared";
 
 /**
@@ -36,8 +39,47 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/**
+ * 疑似重复信号（POST /places 409）：模糊判重命中已有地点时不创建，
+ * 错误里带回已有 place，调用方弹确认框后用 allowDuplicate=true 重试强制创建。
+ */
+export class PossibleDuplicateError extends Error {
+  readonly existingPlace: PlaceDto;
+  constructor(existingPlace: PlaceDto, message: string) {
+    super(message);
+    this.name = "PossibleDuplicateError";
+    this.existingPlace = existingPlace;
+  }
+}
+
 export const api = {
   // ---------- 候选状态机 ----------
+
+  /**
+   * 创建地点候选（POST /api/trips/:tripId/places）。
+   * 命中模糊判重时抛 PossibleDuplicateError（409 + 已有 place DTO）；
+   * 确认是不同地点后传 allowDuplicate: true 重试强制创建。
+   */
+  createPlace: async (tripId: string, input: CreatePlaceInput) => {
+    const res = await fetch(`/api/trips/${tripId}/places`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (res.status === 409) {
+      const body: unknown = await res.json().catch(() => null);
+      const parsed = PossibleDuplicatePayloadSchema.safeParse(body);
+      if (parsed.success && parsed.data.code === POSSIBLE_DUPLICATE_CODE) {
+        throw new PossibleDuplicateError(parsed.data.existingPlace, parsed.data.error);
+      }
+      throw new Error((body as { error?: string } | null)?.error ?? "HTTP 409");
+    }
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? `HTTP ${res.status}`);
+    }
+    return (await res.json()) as { place: PlaceDto };
+  },
 
   /** 锁定/解锁地点（PATCH /api/places/:id/status） */
   setPlaceStatus: (placeId: string, status: PlaceStatus) =>
