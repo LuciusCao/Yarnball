@@ -28,10 +28,13 @@ export function toTripDto(row: TripRow): TripDto {
     row.cityCenterLng != null && row.cityCenterLat != null
       ? { lng: Number(row.cityCenterLng), lat: Number(row.cityCenterLat) }
       : null;
-  // stops 缺省（迁移前旧行）时由镜像字段兜底构造 stops[0]，保证 DTO 恒非空
+  // stops 缺省（迁移前旧行）或为空数组时由镜像字段兜底构造 stops[0]（与 stopsOfTrip 的
+  // length>0 守卫一致），保证 DTO 恒非空
+  const stored = row.stops as TripStop[] | null;
   const stops =
-    (row.stops as TripStop[] | null) ??
-    [{ name: row.destinationCity, adcode: row.cityAdcode, center: location }];
+    stored && stored.length > 0
+      ? stored
+      : [{ name: row.destinationCity, adcode: row.cityAdcode, center: location }];
   return {
     id: row.id,
     title: row.title,
