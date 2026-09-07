@@ -338,7 +338,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "update_place",
     {
       description:
-        "更新地点信息（备注、游玩时长、visitDurationMin 预计游览/用餐分钟数、价格、openingHours 营业时间、bookingStatus 预订状态、website 官网、bookingUrl 预订链接、phone 电话、address 地址等）。只需要传要改的字段。bookingStatus 可由你更新（如你已核实可订/已订），但以用户在界面上的标记为准。注意：status=locked（用户已锁定）的地点不可修改——请用户在界面上解锁。",
+        "更新地点信息（备注、游玩时长、visitDurationMin 预计游览/用餐分钟数、价格、openingHours 营业时间、bookingStatus 预订状态、website 官网、bookingUrl 预订链接、phone 电话、address 地址等）。**补全官网/预订链接/电话是本工具最常见的用途之一**：候选或已锁定地点缺 website/bookingUrl/phone 时，用自己的 web 搜索核实真实 URL 后写回（URL 必须来自搜索结果，禁止猜测拼接域名；不要把 URL 写进 bookingInfo 充数，bookingInfo 只写预约建议/提前天数）。只需要传要改的字段。bookingStatus 可由你更新（如你已核实可订/已订），但以用户在界面上的标记为准。注意：status=locked（用户已锁定）的地点不可修改——请用户在界面上解锁。",
       inputSchema: UpdatePlaceWithIdSchema.shape,
     },
     async ({ placeId, ...patch }) => {

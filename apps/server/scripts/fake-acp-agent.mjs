@@ -13,6 +13,11 @@
  *   FAKE_SCRIPT=mcp_call_flow   收到 prompt 后：真实连接 session/new 注入的 yarnball
  *                               MCP server（streamable HTTP），调 get_trip_context，
  *                               把结果作为 agent_message_chunk 回复 —— 验证 MCP 工具面
+ *   FAKE_SCRIPT=trailing_chunk_flow
+ *                               复刻 kimi 的两个实测行为：① 只发 tool_call_update
+ *                              （带 title）不发 tool_call 初始通知；② prompt 响应
+ *                               resolve 之后才补发末尾 chunk —— 验证 MCP 提示不误报、
+ *                               回合结束 advisory 恒排回合尾部
  *
  * 所有收到的线流量 sink 到 stderr（不打断 stdout 协议流）。
  */
@@ -287,6 +292,29 @@ async function handlePrompt(requestId, text) {
       });
     }
     respond(requestId, { stopReason: "end_turn" });
+    return;
+  }
+
+  if (script === "trailing_chunk_flow") {
+    // ① kimi 风格：不发 tool_call，只发带 title 的 tool_call_update
+    update({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "tc-late-1",
+      title: "yarnball: search_poi",
+      status: "completed",
+    });
+    update({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "正在处理你的攻略……\n" },
+    });
+    respond(requestId, { stopReason: "end_turn" });
+    // ② kimi 风格：响应 resolve 之后才推末尾 chunk。延迟要显著大于 server 端
+    // drainUpdates 的两个 setImmediate tick，保证它确定性地晚于「回合结束」advisory 到达
+    await sleep(300);
+    update({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "（迟到的尾部输出）灵隐寺已加入候选。\n" },
+    });
     return;
   }
 

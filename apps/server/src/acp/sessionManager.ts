@@ -47,11 +47,19 @@ export class AcpSessionManager {
   constructor(
     private db: Db,
     private bus: EventBus,
-    private markMcpObserved: (chatSessionId: string) => void,
+    markMcpObserved: (chatSessionId: string) => void,
   ) {
+    // /mcp 的真实工具命中是 Ground Truth，直接路由到对应句柄置位——
+    // 不依赖 agent 是否上报 tool_call 通知（kimi 只发 tool_call_update，见 SessionHandle）
+    this.markMcpObserved = (chatSessionId) => {
+      this.handles.get(chatSessionId)?.noteMcpObserved();
+      markMcpObserved(chatSessionId);
+    };
     // 启动 sweep：句柄只活在内存，server 重启后 DB 里残留的 running/starting 都是僵尸状态
     void this.sweepStaleStatuses();
   }
+
+  private markMcpObserved: (chatSessionId: string) => void;
 
   /**
    * server 重启后的状态校正：
@@ -481,18 +489,20 @@ export class SessionHandle {
       ]);
       // 等 trailing chunks 落库，保证 advisory 的 seq 排在回合所有消息之后
       await this.drainUpdates();
-      await this.appendMessage({
+      const advisory = await this.appendMessage({
         turnId,
         kind: "advisory",
         content: { text: `—— 回合结束（${response.stopReason}）——` },
       });
+      this.lastTurnTerminal = { turnId, dto: advisory };
     } catch (err) {
       await this.drainUpdates();
-      await this.appendMessage({
+      const failure = await this.appendMessage({
         turnId,
         kind: "error",
         content: { text: `回合失败：${(err as Error).message}` },
       });
+      this.lastTurnTerminal = { turnId, dto: failure };
       throw err;
     } finally {
       await this.setStatus("idle").catch(() => {});
@@ -504,6 +514,18 @@ export class SessionHandle {
     }
   }
   private currentTurnId: string | null = null;
+  /**
+   * 最近收尾回合的终端消息（end_turn advisory / 回合失败 error）。
+   * kimi 会把末尾 chunk 在 prompt() resolve 之后才推过来——drainUpdates 只能等「已到本地
+   * 未消费完」的更新，等不到尚未上线的通知。这类迟到消息落库时（见 appendMessage）
+   * 把终端消息重赋 seq 排到回合最后，保证回合结束标记恒为回合内最后一条。
+   */
+  private lastTurnTerminal: { turnId: string; dto: ChatMessageDto } | null = null;
+
+  /** /mcp 工具面真实命中（请求带本会话 token）时由 manager 路由过来——比 agent 通知更可靠的判据 */
+  noteMcpObserved() {
+    this.mcpToolCallSeen = true;
+  }
 
   cancelTurn(): void {
     // ACP 的 cancel 是 client→agent 通知；SDK 未封装到 ActiveSession，
@@ -610,6 +632,12 @@ export class SessionHandle {
           },
           { closesAggregate: false },
         );
+        // kimi 只发 tool_call_update 不发 tool_call 初始通知：带 title 时同样参与 MCP 判定，
+        // 否则 mcpToolCallSeen 永不置位，回合结束冒出「没有出现过毛线团工具调用」的误报提示
+        if (isYarnballToolCallTitle(update.title ?? undefined)) {
+          this.mcpToolCallSeen = true;
+          this.markMcpObserved(this.sessionRow.id);
+        }
         break;
       case "plan":
         await this.appendMessage({
@@ -693,6 +721,12 @@ export class SessionHandle {
       .select()
       .from(schema.chatSessions)
       .where(eq(schema.chatSessions.id, this.sessionRow.id));
+    // permission 请求自带 toolCall.title，是 yarnball 工具调用的旁证
+    //（agent 可能既不发 tool_call 也不在 tool_call_update 里带 title）
+    if (isYarnballToolCallTitle(ctx.params.toolCall.title ?? undefined)) {
+      this.mcpToolCallSeen = true;
+      this.markMcpObserved(this.sessionRow.id);
+    }
     const decision = decidePermission({
       params: ctx.params,
       allowAll: row?.allowAllPermissions ?? false,
@@ -913,7 +947,25 @@ export class SessionHandle {
       createdAt: new Date().toISOString(),
     };
     this.bus.publish(chatChannel(this.sessionRow.id), { type: "message", message: dto });
+    // 迟到消息（prompt resolve 后才到达的 chunk/事件）属于已收尾回合时，把该回合的
+    // 终端消息（advisory/error）重排到最后，避免「回合结束」之后孤悬一条 agent 输出
+    const terminal = this.lastTurnTerminal;
+    if (terminal && message.turnId === terminal.turnId && dto.id !== terminal.dto.id) {
+      await this.promoteTurnTerminal(terminal);
+    }
     return dto;
+  }
+
+  /** 重赋回合终端消息的 seq 到当前最大并补发 SSE，DB 与前端流式渲染都恢复「终端收尾」顺序 */
+  private async promoteTurnTerminal(terminal: { turnId: string; dto: ChatMessageDto }) {
+    const seq = ++this.seq;
+    await this.db
+      .update(schema.chatMessages)
+      .set({ seq })
+      .where(eq(schema.chatMessages.id, terminal.dto.id));
+    this.seqCache.set(terminal.dto.id, seq);
+    terminal.dto = { ...terminal.dto, seq };
+    this.bus.publish(chatChannel(this.sessionRow.id), { type: "message", message: terminal.dto });
   }
 
   private async listMessages(): Promise<ChatMessageDto[]> {

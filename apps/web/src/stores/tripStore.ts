@@ -73,11 +73,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   upsertMessage: (message) => {
     set((state) => {
       const idx = state.messages.findIndex((m) => m.id === message.id);
-      if (idx === -1) {
-        return { messages: [...state.messages, message] };
-      }
+      // upsert 后按 seq 稳定排序：服务端会把回合终端消息（advisory）重赋 seq 补发同 id 事件
+      //（迟到 chunk 重排，见 server promoteTurnTerminal），原位替换会让终端消息停在旧位置
       const next = [...state.messages];
-      next[idx] = message;
+      if (idx === -1) next.push(message);
+      else next[idx] = message;
+      next.sort((a, b) => a.seq - b.seq);
       return { messages: next };
     });
   },
@@ -86,12 +87,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ sessionId });
     // 初始加载历史
     void api.chatMessages(sessionId).then(({ messages }) => {
-      // SSE 可能已经先推了新消息：按 id 合并而不是直接替换
+      // SSE 可能已经先推了新消息：按 id 合并而不是直接替换，最终同样按 seq 排序
       set((state) => {
         const existing = new Map(state.messages.map((m) => [m.id, m]));
         const merged = messages.map((m) => existing.get(m.id) ?? m);
         const extras = state.messages.filter((m) => !messages.some((x) => x.id === m.id));
-        return { messages: [...merged, ...extras] };
+        const next = [...merged, ...extras];
+        next.sort((a, b) => a.seq - b.seq);
+        return { messages: next };
       });
     });
 
