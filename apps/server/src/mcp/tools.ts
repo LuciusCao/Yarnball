@@ -12,7 +12,7 @@ import {
 } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
-import { ServiceError, type TripService } from "../services/tripService.js";
+import { PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
 import { amap, getProvider } from "../services/geo.js";
 
 /**
@@ -320,7 +320,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_place",
     {
       description:
-        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）、durationMin（建议游玩时长）和 openingHours（营业时间自由文本，如「09:00-17:00 周一闭馆」——排天硬约束，务必尽力填写）。visitDurationMin：预计游览/用餐分钟数，规划每日行程时的重要输入，景点和餐厅尽量填写。金额单位为行程币种。bookingStatus（none|pending|booked）可填但以用户在界面上的标记为准。**详情字段尽量收集**：website（官网）、bookingUrl（可直接下单/预约的预订链接）、phone（电话）、address（结构化地址）——这些会直接展示在地点信息卡上，酒店和需预约餐厅尤其重要。多城市行程：把 search_poi 返回的 cityName 原样带到 cityName 字段（归属途经地分组依据；不传则服务端按最近途经地自动填充）。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上锁定（status=locked）后才用 add_place_to_day 排天。**",
+        "添加地点到行程的**候选池**（status 自动为 candidate，不进每日行程）。location 必须来自 search_poi 的返回。餐厅务必填 priceCny（人均）和 bookingInfo（预约方式：平台/电话/网站 + 建议提前天数）；景点填 priceCny（门票）、durationMin（建议游玩时长）和 openingHours（营业时间自由文本，如「09:00-17:00 周一闭馆」——排天硬约束，务必尽力填写）。visitDurationMin：预计游览/用餐分钟数，规划每日行程时的重要输入，景点和餐厅尽量填写。金额单位为行程币种。bookingStatus（none|pending|booked）可填但以用户在界面上的标记为准。**详情字段尽量收集**：website（官网）、bookingUrl（可直接下单/预约的预订链接）、phone（电话）、address（结构化地址）——这些会直接展示在地点信息卡上，酒店和需预约餐厅尤其重要。多城市行程：把 search_poi 返回的 cityName 原样带到 cityName 字段（归属途经地分组依据；不传则服务端按最近途经地自动填充）。**疑似重复**：名称与已有地点相近（含括号分店后缀、互为前缀）且坐标距离 ≤200m 时，本工具不创建新地点，返回 possible_duplicate 错误和已有 place——先判断是否同一家：同一家用 update_place 补全已有地点；确认是不同地点才带 allowDuplicate=true 重试。**阶段纪律：解析攻略或推荐地点时只建候选，等用户在界面上锁定（status=locked）后才用 add_place_to_day 排天。**",
       inputSchema: McpCreatePlaceSchema.shape,
     },
     async (input) => {
@@ -674,6 +674,31 @@ function json(value: unknown) {
 
 /** MCP 工具不抛异常：失败的调用返回结构化错误文本，避免炸掉 agent 会话 */
 function toolError(err: unknown) {
+  // 疑似重复信号：不创建新行，把已有 place + 处置指引结构化返回（agent 按指引走 update_place 或 allowDuplicate 重试）
+  if (err instanceof PossibleDuplicateError) {
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify(
+            {
+              error: "possible_duplicate",
+              message: err.message,
+              existingPlace: err.existingPlace,
+              guidance:
+                "该地点疑似与行程中已有地点重复，本次未创建新地点。先判断是否同一家：" +
+                "同一家请用 update_place 在 existingPlace.id 上补全你掌握的信息（不要再 add_place；" +
+                "existingPlace.status=locked 表示用户已锁定，不可修改，改为提醒用户该地点已在行程中）；" +
+                "确认是不同地点（如同名不同分店、相邻的不同商家）才带 allowDuplicate=true 重试 add_place。",
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  }
   const status = err instanceof ServiceError ? err.status : 500;
   const message = err instanceof Error ? err.message : String(err);
   return {

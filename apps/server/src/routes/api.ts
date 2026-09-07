@@ -10,6 +10,7 @@ import {
   CreateHotelCandidateInputSchema,
   CreatePlaceInputSchema,
   CreateTripInputSchema,
+  POSSIBLE_DUPLICATE_CODE,
   ReorderDayInputSchema,
   SelectHotelInputSchema,
   SetLegModeInputSchema,
@@ -27,7 +28,7 @@ import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { chatChannel, tripChannel, TRIPS_CHANNEL, type EventBus } from "../events.js";
 import type { AcpSessionManager } from "../acp/sessionManager.js";
-import { ServiceError, type TripService } from "../services/tripService.js";
+import { PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
 import { getProvider } from "../services/geo.js";
 import { amapConfigured, getSettings, updateSettings } from "../services/settings.js";
 import { toAgentDto, toChatSessionDto } from "../services/mappers.js";
@@ -96,6 +97,13 @@ export function createApi(
   // ---------- 错误包装 ----------
 
   api.onError((err, c) => {
+    // 疑似重复信号：409 + 已有 place DTO，前端据此弹确认框（确认后带 allowDuplicate=true 重试）
+    if (err instanceof PossibleDuplicateError) {
+      return c.json(
+        { error: err.message, code: POSSIBLE_DUPLICATE_CODE, existingPlace: err.existingPlace },
+        409,
+      );
+    }
     if (err instanceof ServiceError) return c.json({ error: err.message }, err.status as 400);
     // zod 入参校验失败 → 400（此前一律 500，调用方无法区分是参数错还是服务端故障）
     if (err instanceof z.ZodError) {
