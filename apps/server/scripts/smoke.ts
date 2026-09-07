@@ -49,6 +49,7 @@ async function messages(sessionId: string) {
     kind: string;
     content: any;
     seq: number;
+    turnId: string | null;
   }>;
 }
 
@@ -253,7 +254,84 @@ async function main() {
     );
     await api(`/chat-sessions/${mcpSession.id}`, { method: "DELETE" });
 
-    // 4.6 multi_city_flow：多城市服务端地基（stops 镜像 / cityName 填充 / transitMode=drive 真实路由段 / 多中心防编造）
+    // 4.6 trailing_chunk_flow：kimi 实测行为回归——
+    // ① 只发带 title 的 tool_call_update、不发 tool_call 初始通知（MCP 提示不得误报）；
+    // ② prompt 响应 resolve 后 300ms 才补发 trailing chunk（回合结束 advisory 必须重排到回合尾部）
+    console.log("-- trailing_chunk_flow --");
+    const trailAgentId = "fake-agent-smoke-trailing";
+    await client.query(
+      `INSERT INTO agent_registry (id, label, command, args, enabled)
+       VALUES ($1, $2, $3, $4::jsonb, true)
+       ON CONFLICT (id) DO UPDATE SET command = EXCLUDED.command, args = EXCLUDED.args`,
+      [
+        trailAgentId,
+        "Fake Agent (trailing)",
+        "/usr/bin/env",
+        JSON.stringify(["FAKE_SCRIPT=trailing_chunk_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
+      ],
+    );
+
+    const { session: trailSession } = await api(`/trips/${trip.id}/chat-sessions`, {
+      method: "POST",
+      body: JSON.stringify({ agentId: trailAgentId }),
+    });
+    await waitUntil(async () => {
+      const { sessions } = await api(`/trips/${trip.id}/chat-sessions`);
+      return sessions.find((s: any) => s.id === trailSession.id)?.status === "idle";
+    }, 15_000, "trailing session idle");
+
+    await api(`/chat-sessions/${trailSession.id}/prompt`, {
+      method: "POST",
+      body: JSON.stringify({ text: "灵隐寺攻略，帮我解析" }),
+    });
+
+    // 轮询到不变量成立而不是「看到 chunk 就断言」：chunk 落库与 advisory 重排之间有微小窗口
+    let trailMsgs: Awaited<ReturnType<typeof messages>> = [];
+    await waitUntil(
+      async () => {
+        trailMsgs = await messages(trailSession.id);
+        const trailing = trailMsgs.find(
+          (m) => m.kind === "agent_text" && String(m.content.text ?? "").includes("迟到的尾部输出"),
+        );
+        if (!trailing) return false;
+        const turnMsgs = trailMsgs.filter((m) => m.turnId === trailing.turnId);
+        const last = turnMsgs[turnMsgs.length - 1];
+        return last?.kind === "advisory" && String(last.content.text ?? "").includes("回合结束");
+      },
+      15_000,
+      "advisory re-ordered to turn tail after trailing chunk",
+    );
+    assert(true, "end_turn advisory is the last message of its turn despite trailing chunk");
+
+    const trailing = trailMsgs.find(
+      (m) => m.kind === "agent_text" && String(m.content.text ?? "").includes("迟到的尾部输出"),
+    )!;
+    const turnMsgs = trailMsgs.filter((m) => m.turnId === trailing.turnId);
+    // 迟到 chunk 不孤悬：与回合其他消息同 turnId，且 advisory 的 seq 排在其后
+    const advisory = turnMsgs.find((m) => m.kind === "advisory")!;
+    assert(
+      turnMsgs.some((m) => m.kind === "user_text") && advisory.seq > trailing.seq,
+      "trailing chunk shares the turn and sits before the re-sequenced advisory",
+    );
+    // 迟到 chunk 开了新段而不是并回 advisory 之前的旧段
+    const trailAgentTexts = turnMsgs.filter((m) => m.kind === "agent_text");
+    assert(
+      trailAgentTexts.length === 2,
+      `trailing chunk forms its own segment (got ${trailAgentTexts.length} agent_text)`,
+    );
+    // update-only tool_call（kimi 风格）带 title → 已判定为 MCP 调用，首回合不得冒误报提示
+    assert(
+      turnMsgs.some((m) => m.kind === "tool_call_update" && !turnMsgs.some((x) => x.kind === "tool_call")),
+      "session saw tool_call_update without initial tool_call (kimi style)",
+    );
+    assert(
+      !trailMsgs.some((m) => String(m.content.text ?? "").includes("还没有出现过毛线团工具调用")),
+      "no false MCP hint advisory (tool_call_update title counts as MCP usage)",
+    );
+
+    await api(`/chat-sessions/${trailSession.id}`, { method: "DELETE" });
+
+    // 4.7 multi_city_flow：多城市服务端地基（stops 镜像 / cityName 填充 / transitMode=drive 真实路由段 / 多中心防编造）
     console.log("-- multi_city_flow --");
     // 单城市向后兼容：stops 恒为 stops[0] 镜像（destinationCity）
     {
