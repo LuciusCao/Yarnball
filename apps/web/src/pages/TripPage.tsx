@@ -714,7 +714,9 @@ export function TripPage() {
       {/* 顶部：工具浮层（行程/候选池/添加，M61 从原左下 dock 迁来）。overlay 盖在地图上、不挤占布局，
           M62：左缘与左上信息条左缘（left-4）对齐，横向铺满自由区（left-4 → agent 面板左缘 right-[404px]，
           agent 面板收起时 right-4 自动跟随），不再水平居中；点击分段条 tab 或浮层 ✕ 收起。
-          宽度 w-full 随自由区自适应（切换标签无宽度跳动，M44 的诉求由铺满天然满足），放大交互只拉高度 ===== */}
+          宽度 w-full 随自由区自适应（切换标签无宽度跳动，M44 的诉求由铺满天然满足），放大交互只拉高度；
+          min-w 400px 兜底窄视口（agent 面板展开时自由区 = 视口 - 420px，<820px 视口下保持最小可用宽度），
+          min() 内层再与 max-w 的 100vw-2rem 对齐，极窄屏不溢出视口 ===== */}
       {toolPanel != null && activeToolMeta != null && (
         <div
           className={`pointer-events-none absolute bottom-4 left-4 top-[68px] z-20 flex items-start ${
@@ -722,7 +724,7 @@ export function TripPage() {
           }`}
         >
         <div
-          className={`glass-deep panel-in pointer-events-auto flex w-full max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
+          className={`glass-deep panel-in pointer-events-auto flex w-full min-w-[min(400px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
             panelMaximized
               ? "h-[min(80vh,900px)]"
               : "h-[min(52vh,500px)]"
