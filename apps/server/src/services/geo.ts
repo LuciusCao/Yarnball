@@ -1,4 +1,5 @@
 import type { LngLat, PoiCandidate, TransportMode } from "@yarnball/shared";
+import { ProxyAgent, type Dispatcher } from "undici";
 import { getAmapServerKey } from "./settings.js";
 
 /**
@@ -309,6 +310,71 @@ const OSRM_CAR = "https://routing.openstreetmap.de/routed-car";
 const OSRM_FOOT = "https://routing.openstreetmap.de/routed-foot";
 const OSM_UA = "Yarnball/0.1 (self-hosted travel planner)";
 
+// ---------- 海外上游代理 ----------
+// Node 的全局 fetch（undici）默认不读代理环境变量；海外上游（Photon / Nominatim / OSRM）
+// 在本地代理后直连会被重置（read ECONNRESET）。这里按生态惯例读取
+// https_proxy > all_proxy > http_proxy（大小写均认），并遵守 no_proxy；
+// 未设置时返回 undefined（默认 dispatcher，直连），行为零变化。
+// 国内高德（amapGet）绝不走这里，保持直连。
+
+function firstEnv(...names: string[]): string | undefined {
+  for (const name of names) {
+    const v = process.env[name];
+    if (v) return v;
+  }
+  return undefined;
+}
+
+const OVERSEAS_PROXY_URL = firstEnv(
+  "https_proxy", "HTTPS_PROXY",
+  "all_proxy", "ALL_PROXY",
+  "http_proxy", "HTTP_PROXY",
+);
+
+const NO_PROXY_RULES = (firstEnv("no_proxy", "NO_PROXY") ?? "")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+/** no_proxy 匹配：支持 *、域名后缀（含可选前导点与端口） */
+function bypassProxy(url: string | URL): boolean {
+  if (NO_PROXY_RULES.length === 0) return false;
+  let hostname: string;
+  try {
+    hostname = new URL(String(url)).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  for (const rule of NO_PROXY_RULES) {
+    if (rule === "*") return true;
+    const host = rule.replace(/:\d+$/, "").replace(/^\./, "");
+    if (!host) continue;
+    if (hostname === host || hostname.endsWith(`.${host}`)) return true;
+  }
+  return false;
+}
+
+let overseasProxyAgent: ProxyAgent | null = null;
+
+/** 目标 URL 应走的 dispatcher：命中代理规则时返回共享 ProxyAgent，否则 undefined（直连） */
+function overseasDispatcher(url: string | URL): Dispatcher | undefined {
+  if (!OVERSEAS_PROXY_URL || bypassProxy(url)) return undefined;
+  overseasProxyAgent ??= new ProxyAgent(OVERSEAS_PROXY_URL);
+  return overseasProxyAgent;
+}
+
+/** 海外上游统一入口：带识别性 UA、超时，并按需挂代理 dispatcher */
+function overseasFetch(url: string | URL, timeoutMs = 15_000): Promise<Response> {
+  // Node fetch 的 RequestInit 类型来自 undici-types，其 Dispatcher 与 undici 包自带的
+  // Dispatcher 声明不完全相容（运行时同一套实现），这里显式断言。
+  const init: RequestInit = {
+    headers: { "User-Agent": OSM_UA },
+    signal: AbortSignal.timeout(timeoutMs),
+    dispatcher: overseasDispatcher(url) as unknown as RequestInit["dispatcher"],
+  };
+  return fetch(url, init);
+}
+
 interface PhotonFeature {
   geometry: { coordinates: [number, number] };
   properties: {
@@ -329,10 +395,7 @@ interface PhotonFeature {
 async function photonGet(params: Record<string, string>): Promise<PhotonFeature[]> {
   const url = new URL(PHOTON_BASE);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  const res = await fetch(url, {
-    headers: { "User-Agent": OSM_UA },
-    signal: AbortSignal.timeout(15_000),
-  });
+  const res = await overseasFetch(url);
   if (!res.ok) throw new Error(`photon http ${res.status}`);
   const body = (await res.json()) as { features: PhotonFeature[] };
   return body.features ?? [];
@@ -346,10 +409,7 @@ interface OsrmRoute {
 
 async function osrmRouteRequest(base: string, path: string, from: LngLat, to: LngLat): Promise<OsrmRoute> {
   const url = `${base}/route/v1/${path}/${loc(from)};${loc(to)}?overview=full&geometries=geojson`;
-  const res = await fetch(url, {
-    headers: { "User-Agent": OSM_UA },
-    signal: AbortSignal.timeout(15_000),
-  });
+  const res = await overseasFetch(url);
   if (!res.ok) throw new Error(`osrm http ${res.status}`);
   const body = (await res.json()) as { code: string; routes?: OsrmRoute[] };
   if (body.code !== "Ok" || !body.routes?.[0]) throw new Error(`osrm ${body.code}`);
@@ -417,10 +477,7 @@ export const osm: GeoProvider = {
       url.searchParams.set("dedupe", "1");
       url.searchParams.set("addressdetails", "1"); // 没有它 jsonv2 不返回 address 对象
       url.searchParams.set("accept-language", "zh,en");
-      const res = await fetch(url, {
-        headers: { "User-Agent": OSM_UA },
-        signal: AbortSignal.timeout(15_000),
-      });
+      const res = await overseasFetch(url);
       if (res.ok) {
         const body = (await res.json()) as Array<{
           name?: string;
@@ -445,7 +502,8 @@ export const osm: GeoProvider = {
         if (out.length > 0) return out;
       }
     } catch (err) {
-      console.warn("[geo] nominatim city search failed:", (err as Error).message);
+      // 打出 cause（如 read ECONNRESET），便于诊断代理/网络问题
+      console.warn("[geo] nominatim city search failed:", (err as Error).message, { cause: (err as Error).cause });
     }
 
     // --- Photon 后备 ---
@@ -496,10 +554,7 @@ export const osm: GeoProvider = {
   async drivingMatrix(points) {
     if (points.length < 2 || points.length > 10) return null;
     const url = `${OSRM_CAR}/table/v1/driving/${points.map(loc).join(";")}?annotations=duration`;
-    const res = await fetch(url, {
-      headers: { "User-Agent": OSM_UA },
-      signal: AbortSignal.timeout(20_000),
-    });
+    const res = await overseasFetch(url, 20_000);
     if (!res.ok) throw new Error(`osrm table http ${res.status}`);
     const body = (await res.json()) as { code: string; durations?: number[][] };
     if (body.code !== "Ok" || !body.durations) throw new Error(`osrm table ${body.code}`);
