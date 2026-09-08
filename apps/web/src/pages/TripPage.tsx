@@ -89,7 +89,7 @@ export function TripPage() {
   const { bundle, error, load, subscribe } = useTripStore();
   const [amapJsKey, setAmapJsKey] = useState("");
   const [amapJsSecret, setAmapJsSecret] = useState("");
-  /** 顶部中央工具面板（M61）：当前展开的 tab；null = 收起。初始值读 localStorage（默认展开行程 tab） */
+  /** 顶部工具面板（M61；M62 改为右对齐分段条 + 铺满自由区的左对齐浮层）：当前展开的 tab；null = 收起。初始值读 localStorage（默认展开行程 tab） */
   const [toolPanel, setToolPanel] = useState<ToolPanel | null>(readStoredToolPanel);
   const [chatSessions, setChatSessions] = useState<ChatSessionDto[]>([]);
   const [visibleDay, setVisibleDay] = useState<number | null>(null);
@@ -390,8 +390,9 @@ export function TripPage() {
         />
       </div>
 
-      {/* 顶行（M61）：左上行程信息玻璃条 + 顶部中央工具分段切换条；分段条在信息条与右侧 agent
-          面板之间的空闲区居中（容器 pointer-events-none 让出地图交互，agent 面板收起时占满整行） */}
+      {/* 顶行（M61）：左上行程信息玻璃条 + 顶部工具分段切换条；分段条在信息条与右侧 agent
+          面板之间的空闲区右对齐（M62：右缘与自由区右边界对齐，容器 pointer-events-none 让出地图交互，
+          agent 面板收起时占满整行） */}
       <div
         className={`pointer-events-none absolute left-4 top-4 z-10 flex items-start gap-3 ${
           panelMode === "hidden" ? "right-4" : "right-[404px]"
@@ -452,8 +453,9 @@ export function TripPage() {
         </Link>
       </header>
 
-      {/* 工具面板分段切换条（行程/候选池/添加，M61 从原左下 dock 标签条迁来）：点击 tab 向下展开浮层，再点当前 tab 收起 */}
-      <div className="flex min-w-0 flex-1 justify-center">
+      {/* 工具面板分段切换条（行程/候选池/添加，M61 从原左下 dock 标签条迁来）：点击 tab 向下展开浮层，再点当前 tab 收起。
+          M62：条在自由区内右对齐（justify-end），右缘与 agent 面板左缘（right-[404px]）对齐；min-w-0 flex-1 保留窄屏让位 */}
+      <div className="flex min-w-0 flex-1 justify-end">
         <div className="glass panel-in pointer-events-auto flex items-center gap-1 rounded-full p-1.5">
           {toolPanels.map(([key, meta]) => (
             <button
@@ -709,21 +711,23 @@ export function TripPage() {
         </div>
       )}
 
-      {/* 顶部中央：工具浮层（行程/候选池/添加，M61 从原左下 dock 迁来）。overlay 盖在地图上、不挤占布局，
-          与分段切换条在同一空闲区水平居中（信息条与 agent 面板之间）；点击分段条 tab 或浮层 ✕ 收起。
-          三个标签默认宽度统一 400px（M44：切换标签不再有宽度跳动；
-          400px 按候选池 4 个分类 tab 自然放得下选定），放大交互 640px 保持不变 ===== */}
+      {/* 顶部：工具浮层（行程/候选池/添加，M61 从原左下 dock 迁来）。overlay 盖在地图上、不挤占布局，
+          M62：左缘与左上信息条左缘（left-4）对齐，横向铺满自由区（left-4 → agent 面板左缘 right-[404px]，
+          agent 面板收起时 right-4 自动跟随），不再水平居中；点击分段条 tab 或浮层 ✕ 收起。
+          宽度 w-full 随自由区自适应（切换标签无宽度跳动，M44 的诉求由铺满天然满足），放大交互只拉高度；
+          min-w 400px 兜底窄视口（agent 面板展开时自由区 = 视口 - 420px，<820px 视口下保持最小可用宽度），
+          min() 内层再与 max-w 的 100vw-2rem 对齐，极窄屏不溢出视口 ===== */}
       {toolPanel != null && activeToolMeta != null && (
         <div
-          className={`pointer-events-none absolute bottom-4 left-4 top-[68px] z-20 flex items-start justify-center ${
+          className={`pointer-events-none absolute bottom-4 left-4 top-[68px] z-20 flex items-start ${
             panelMode === "hidden" ? "right-4" : "right-[404px]"
           }`}
         >
         <div
-          className={`glass-deep panel-in pointer-events-auto flex max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
+          className={`glass-deep panel-in pointer-events-auto flex w-full min-w-[min(400px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
             panelMaximized
-              ? "h-[min(80vh,900px)] w-[min(640px,calc(100vw-2rem))]"
-              : "h-[min(52vh,500px)] w-[400px]"
+              ? "h-[min(80vh,900px)]"
+              : "h-[min(52vh,500px)]"
           }`}
         >
           <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
