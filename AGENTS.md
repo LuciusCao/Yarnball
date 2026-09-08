@@ -104,6 +104,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 
 - 见 `.env.example`；必填 `DATABASE_URL`，其余有默认值（`SERVER_PORT=18788`、`WEB_ORIGIN=http://localhost:15173`、`SERVER_BASE_URL` 默认 loopback）
 - 高德三个 key（`AMAP_JS_KEY` / `AMAP_SERVER_KEY` / `AMAP_JS_SECRET`）**仅国内行程需要**；海外行程零配置。未配 key 时国内路线降级为直线距离 × 1.3 估算、POI 搜索不可用，海外不受影响
+- 海外上游请求（Photon / Nominatim / OSRM，见 `geo.ts` 的 `overseasFetch`）支持标准代理环境变量：`https_proxy > all_proxy > http_proxy`（大小写均认），遵守 `no_proxy`；未设置时直连。国内高德请求永远直连，不走代理
 - `.env` 不入库；MCP token 只存 hash；agent 经 `session/new` 注入的 URL+header 直连 `/mcp`，不经浏览器
 - 前端渲染 agent 文本用 marked + sanitize-html，不要绕过 sanitize 直接 `dangerouslySetInnerHTML`
 
