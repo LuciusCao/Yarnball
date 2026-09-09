@@ -577,7 +577,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "set_leg_mode",
     {
       description:
-        "手动覆盖某条市内交通段（leg）的交通方式：walk 步行 / taxi 出租车 / transit 公交地铁 / drive 驾车；传 null 清除覆盖、恢复自动判定（<2km 步行、其余驾车）。覆盖存在 leg.modeOverride 上，之后重算交通段不会冲掉。什么时候用：用户说「这段想打车/想坐地铁/这段走路就行」，或自动判定与实际偏好不符时。legId 从 get_trip_context 的 legs[] 拿（端点是 fromEntryId/toEntryId 或 fromPlaceId/toPlaceId）。",
+        "手动覆盖某条市内交通段（leg）的交通方式：walk 步行 / taxi 出租车 / transit 公交地铁 / drive 驾车；传 null 清除覆盖、恢复自动判定（<2km 步行 / 2-6km 公交 / >6km 驾车）。覆盖存在 leg.modeOverride 上，之后重算交通段不会冲掉。什么时候用：用户说「这段想打车/想坐地铁/这段走路就行」，或自动判定与实际偏好不符时。legId 从 get_trip_context 的 legs[] 拿（端点是 fromEntryId/toEntryId 或 fromPlaceId/toPlaceId）。",
       inputSchema: SetLegModeInput.shape,
     },
     async ({ legId, mode }) => {
@@ -665,7 +665,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "suggest_day_order",
     {
       description:
-        "重排建议（只建议不落库）：分析某天 place 条目的最优游览顺序——已选定酒店时按「酒店→…→酒店」环路优化（换酒店日为「旧酒店→…→新酒店」定端路径），无酒店锚点时固定当前第一个条目为起点；transit 大交通节点时间固定、不参与重排。返回优化前后对比和预计节省时间；用户确认后用 reorder_day 应用。顺路原则校验工具：排完一天后调它看看还能省多少交通时间。",
+        "重排建议（只建议不落库）：分析某天 place 条目的最优游览顺序——已选定酒店时按「酒店→…→酒店」环路优化（换酒店日为「旧酒店→…→新酒店」定端路径），无酒店锚点时固定当前第一个条目为起点。**硬锚点**：transit 大交通节点与带 startTime 的 place entry（定时票/预约餐厅）保持原位、不参与重排（返回 pinnedCount 计数）；可移动地点 <2 个时 422（无需重排）。返回优化前后对比、预计节省时间、suggestedStartTimes（按新顺序从 09:00 顺推的重算时间轴，pinned=true 的项保留原时刻）与 matrixEstimated（true=时长矩阵走了直线估算降级）。**应用方式**：用户确认后先 reorder_day 落库新顺序，再按 suggestedStartTimes 里 pinned=false 的项逐个 update_entry 写回 startTime——否则时间轴与新顺序自相矛盾。",
       inputSchema: SuggestDayOrderInput.shape,
     },
     async ({ dayIndex }) => {
@@ -683,7 +683,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "suggest_day_clusters",
     {
       description:
-        "区域聚类建议（只建议不落库）：把还没排进任何一天的非酒店地点按地理位置聚成 1-4 片，并按各天负载建议「每天一片」。片数上限说明：k = min(4, ⌈未排期点数÷3⌉, 可用天数)——单日容量纪律就是每天 3-4 个主景点 + 1-2 餐，片数再细一天也装不下，4 片上限够用；点多于 4 天容量时靠多天负载均衡覆盖。候选多、准备排天时先调这个拿分区方案，再逐天 add_place_to_day（营业时间 openingHours 是硬约束），同一片内用 suggest_day_order 校验顺序。",
+        "区域聚类建议（只建议不落库）：把还没排进任何一天的非酒店地点聚类分片，建议「每天一片」。**多城市行程先按途经地分组**（places[].cityName，缺失时回退最近 stop 中心 ≤150km），组内再做 k-medoids——同一簇绝不跨城市，返回的 DayCluster 带 cityName。**每组片数按点数自适应**：k=clamp(⌈组内点数÷4⌉,1,4)，不再被已建天数截断（未建天也能多分片；多城市总簇数可 >4）。分天分配：同城天（当天已有该城市 entry）优先 → 负载最轻 → 天序号；每天最多一簇，簇多于天数时多余簇的 suggestedDayIndex=null（返回 note 有说明）；note 还会标注时长矩阵是否走了直线估算降级。候选多、准备排天时先调这个拿分区方案，再逐天 add_place_to_day（营业时间 openingHours 是硬约束，每天 3-4 个主景点 + 1-2 餐），同一片内用 suggest_day_order 校验顺序。",
       inputSchema: {},
     },
     async () => {
@@ -826,8 +826,8 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     async ({ endDate }) => {
       ctx.markMcpObserved();
       try {
-        // UpdateTripInput 的 endDate 支持由 M72 落地（tower 保证 M72 先合）；
-        // 宽类型变量传参兼容合入前的签名（当前 main 上 updateTrip 仅消费 startDate）
+        // UpdateTripInput.endDate 已由 M72 落地（contract-update 已广播，tower 保证 M72 先合）；
+        // 本分支基于 main 看不到 M72，宽类型变量传参兼容合入前的签名
         const patch: { startDate?: string | null; endDate?: string | null } = { endDate };
         const trip = await tripService.updateTrip(tripId, patch);
         return json({ ok: true, endDate: trip.endDate });
