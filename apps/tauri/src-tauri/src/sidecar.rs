@@ -76,7 +76,9 @@ pub fn launch(app: &tauri::AppHandle) -> Result<tauri::Url, String> {
     if let Ok(res_dir) = app.path().resource_dir() {
         sidecar = sidecar
             .env("NODE_PATH", res_dir.join("node_modules").to_string_lossy().to_string())
-            .env("YARNBALL_MIGRATIONS_DIR", res_dir.join("migrations").to_string_lossy().to_string());
+            .env("YARNBALL_MIGRATIONS_DIR", res_dir.join("migrations").to_string_lossy().to_string())
+            // web 构建产物（随包打进 resources/web-dist，server 生产态静态托管，M85 契约）
+            .env("YARNBALL_WEB_DIST_DIR", res_dir.join("web-dist").to_string_lossy().to_string());
     }
 
     let (mut rx, child) = sidecar

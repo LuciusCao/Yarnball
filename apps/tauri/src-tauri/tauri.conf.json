@@ -20,7 +20,8 @@
     "externalBin": ["binaries/yarnball-server"],
     "resources": {
       "resources/node_modules/better-sqlite3": "node_modules/better-sqlite3/",
-      "resources/migrations": "migrations/"
+      "resources/migrations": "migrations/",
+      "../../web/dist": "web-dist/"
     },
     "icon": [
       "icons/32x32.png",
