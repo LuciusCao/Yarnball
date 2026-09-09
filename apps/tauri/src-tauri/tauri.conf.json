@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "毛线团",
+  "version": "0.1.0",
+  "identifier": "com.yarnball.app",
+  "build": {
+    "devUrl": "http://localhost:15173",
+    "frontendDist": "../../web/dist",
+    "beforeBuildCommand": "pnpm --filter @yarnball/web build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg"],
+    "externalBin": ["binaries/yarnball-server"],
+    "resources": {
+      "resources/node_modules/better-sqlite3": "node_modules/better-sqlite3/",
+      "resources/migrations": "migrations/",
+      "../../web/dist": "web-dist/"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  }
+}

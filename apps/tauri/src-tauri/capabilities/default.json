@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "壳内 WebView 的默认能力（窗口由 Rust 侧创建，JS 仅需 core）",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
