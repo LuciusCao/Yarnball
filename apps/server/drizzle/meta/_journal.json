@@ -1,89 +1,12 @@
 {
   "version": "7",
-  "dialect": "postgresql",
+  "dialect": "sqlite",
   "entries": [
     {
       "idx": 0,
-      "version": "7",
-      "when": 1788355674894,
-      "tag": "0000_public_morgan_stark",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1788356787497,
-      "tag": "0001_curly_captain_britain",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1788358875331,
-      "tag": "0002_many_gressill",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1788362187809,
-      "tag": "0003_marvelous_wendigo",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1788578667904,
-      "tag": "0004_exotic_lionheart",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1788595053553,
-      "tag": "0005_spicy_enchantress",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1788598645368,
-      "tag": "0006_true_masque",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1788705749214,
-      "tag": "0007_married_scream",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "7",
-      "when": 1788707148453,
-      "tag": "0008_lean_mother_askani",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "7",
-      "when": 1788712505466,
-      "tag": "0009_material_newton_destine",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "7",
-      "when": 1788772405803,
-      "tag": "0010_brief_doctor_spectrum",
-      "breakpoints": true
-    },
-    {
-      "idx": 11,
-      "version": "7",
-      "when": 1788940718614,
-      "tag": "0011_robust_owl",
+      "version": "6",
+      "when": 1788942309720,
+      "tag": "0000_daffy_shen",
       "breakpoints": true
     }
   ]

@@ -1,4 +1,4 @@
-# 毛线团 Yarnball —— 常用命令封装（底层仍是 pnpm / docker compose）
+# 毛线团 Yarnball —— 常用命令封装（底层仍是 pnpm；数据库为内嵌 SQLite，无 Docker 依赖）
 # 用法：just --list 查看全部命令
 
 set shell := ["bash", "-cu"]
@@ -7,8 +7,9 @@ set shell := ["bash", "-cu"]
 default:
     @just --list
 
-# 启动全部：数据库 + server(:18788) + web(:15173)，后台运行，日志在 .logs/
-up: db-up
+# 启动全部：server(:18788) + web(:15173)，后台运行，日志在 .logs/
+# （SQLite 内嵌于 server 进程，无需先起数据库；首次运行请先 just migrate）
+up:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p .logs
@@ -25,7 +26,7 @@ up: db-up
     done
     echo "server → http://localhost:18788 / web → http://localhost:15173"
 
-# 停止 server + web（数据库不动；停库用 just db-down）
+# 停止 server + web
 down:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -53,7 +54,7 @@ down:
 # 重启 server + web
 restart: down up
 
-# 查看服务状态（pid / 端口）
+# 查看服务状态（pid / 端口 / DB 文件）
 status:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -65,10 +66,11 @@ status:
         echo "$svc: 未运行"
       fi
     done
-    if docker ps --format '{{"{{"}}.Names}}' 2>/dev/null | grep -q '^yarnball-db$'; then
-      echo "db: 运行中 (docker: yarnball-db)"
+    dbpath="${DATABASE_URL:-$HOME/.yarnball/yarnball.db}"
+    if [ -f "$dbpath" ]; then
+      echo "db: $dbpath ($(du -h "$dbpath" | cut -f1))"
     else
-      echo "db: 未运行"
+      echo "db: $dbpath 不存在（先跑 just migrate）"
     fi
 
 # 跟踪日志（just logs 全部，just logs server 只看 server）
@@ -81,15 +83,15 @@ logs svc="":
       tail -f .logs/server.log .logs/web.log
     fi
 
-# 启动数据库（Postgres 16 @ localhost:5433）
+# （已废弃）数据库已内嵌为 SQLite 文件，无需启动/停止；此命令仅为兼容保留
 db-up:
-    docker compose up -d db
+    @echo "db-up 已废弃：SQLite 内嵌于 server 进程，无需起库。初始化请用 just migrate"
 
-# 停止数据库（含容器；数据保留在 pgdata volume）
+# （已废弃）同 db-up
 db-down:
-    docker compose down
+    @echo "db-down 已废弃：SQLite 无独立进程，just down 即停全部"
 
-# 执行数据库迁移
+# 执行数据库迁移（SQLite，首次运行会创建 DB 文件）
 migrate:
     pnpm db:migrate
 
@@ -113,8 +115,8 @@ smoke:
 verify:
     pnpm verify
 
-# 首次初始化：装依赖 + 准备 .env + 起库 + 迁移
-setup: db-up
+# 首次初始化：装依赖 + 准备 .env + 迁移（SQLite，无需 Docker）
+setup:
     #!/usr/bin/env bash
     set -euo pipefail
     pnpm install

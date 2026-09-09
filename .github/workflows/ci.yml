@@ -6,27 +6,12 @@ on:
   pull_request:
 
 # 质量门：与本地 `pnpm verify` 同一条链路（build + smoke），红则阻断合并。
-# smoke 需要 server + DB 在线，由本 workflow 负责起（verify 脚本本身假设环境就绪）。
+# smoke 需要 server 在线，由本 workflow 负责起（verify 脚本本身假设环境就绪）。
+# 数据库为内嵌 SQLite（better-sqlite3），无需 postgres service。
 jobs:
   verify:
     runs-on: ubuntu-latest
-    services:
-      # 与 docker-compose.yml 对齐：postgres:16，账密/库名 yarnball，宿主机 5433
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: yarnball
-          POSTGRES_PASSWORD: yarnball
-          POSTGRES_DB: yarnball
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U yarnball"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 15
     env:
-      DATABASE_URL: postgres://yarnball:yarnball@localhost:5433/yarnball
       # CI 内用 18789，避免与本地 dev 默认的 18788 语义混淆
       SERVER_PORT: 18789
     steps:
