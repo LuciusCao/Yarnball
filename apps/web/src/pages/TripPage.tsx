@@ -133,6 +133,9 @@ export function TripPage() {
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   /** 按需显示的交通段（M47）：点击行程面板交通段行/大交通卡选中，地图只画该段；换天/选地点/切面板标签时清除 */
   const [selectedLegId, setSelectedLegId] = useState<string | null>(null);
+  /** 地点聚焦请求（M83）：仅行程面板地点行点击触发；nonce 递增保证重复点同一地点也重新 flyTo，
+      与 selectedPlaceId 解耦——候选池/搜索面板/地图 marker 的选中不移动相机 */
+  const [placeFocus, setPlaceFocus] = useState<{ placeId: string; nonce: number } | null>(null);
   const [hotelArea, setHotelArea] = useState<{ center: { lng: number; lat: number }; radiusM: number } | null>(null);
   const [budgetSummary, setBudgetSummary] = useState<BudgetSummary | null>(null);
   /** 面板形态：expanded（完整）/ hidden（收起到右上角的呼出钮） */
@@ -249,6 +252,10 @@ export function TripPage() {
   const changeVisibleDay = useCallback((dayIndex: number | null) => {
     setSelectedLegId(null);
     setVisibleDay(dayIndex);
+  }, []);
+  /** 行程面板地点行点击的地图聚焦（M83）：只记录聚焦意图，相机移动在 MapCanvas 消费 */
+  const focusPlace = useCallback((placeId: string) => {
+    setPlaceFocus((prev) => ({ placeId, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
   const switchToolPanel = useCallback((panel: ToolPanel | null) => {
     setSelectedLegId(null);
@@ -422,6 +429,7 @@ export function TripPage() {
           hotelArea={hotelArea}
           selectedPlaceId={selectedPlaceId}
           selectedLegId={selectedLegId}
+          placeFocus={placeFocus}
           onSelectPlace={selectPlace}
           onOpenSettings={openSettings}
         />
@@ -805,6 +813,7 @@ export function TripPage() {
                   onVisibleDayChange={changeVisibleDay}
                   selectedLegId={selectedLegId}
                   onSelectLeg={setSelectedLegId}
+                  onFocusPlace={focusPlace}
                   onOpenCandidates={() => switchToolPanel("candidates")}
                 />
               )}
