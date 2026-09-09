@@ -69,6 +69,9 @@ packages/shared/src/domain.ts   枚举 / DTO / 请求体 / SSE 事件 / 格式�
 just setup            # 首次初始化：install + .env + migrate（SQLite 文件库，无需起数据库）
 just up / just down   # 后台起/停 server + web；日志在 .logs/
 just status / just logs [svc]
+just tauri-dev        # Tauri 桌面壳 dev（前置 just up 已跑）
+just package          # Tauri 打 dmg，产物在 apps/tauri/src-tauri/target/release/bundle/dmg/
+just icon             # 从 apps/web/public/icon-1024.png 重生成图标种子
 
 # 首次启动
 pnpm install
