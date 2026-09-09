@@ -119,10 +119,10 @@ verify:
 tauri-dev:
     pnpm tauri:dev
 
-# Tauri 打 dmg（sidecar + web 产物），产物在 apps/tauri/src-tauri/target/release/bundle/dmg/
+# Tauri 打 dmg（sidecar + web 产物），完成后自动复制到仓库根 dist/
 package:
     pnpm tauri:package
-    @echo "dmg 产物：apps/tauri/src-tauri/target/release/bundle/dmg/"
+    @echo "dmg 产物：dist/（原始深路径：apps/tauri/src-tauri/target/release/bundle/dmg/）"
 
 # （之后还需 pnpm -C apps/tauri exec tauri icon icons/app-icon.png -o src-tauri/icons 产出全尺寸图标）
 # 从 apps/web/public/icon-1024.png 重生成图标种子 icons/app-icon.png

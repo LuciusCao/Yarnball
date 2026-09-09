@@ -1,6 +1,8 @@
 mod onboarding;
 mod sidecar;
 
+use std::thread;
+
 use tauri::{RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
@@ -33,22 +35,41 @@ pub fn run() {
                 // 开发模式：窗口加载 vite dev server（需先 `pnpm dev` 起 server + web，见 README）
                 WebviewUrl::App("index.html".into())
             } else {
-                // 生产模式：拉起 server sidecar，窗口加载本地 server 的地址
-                match sidecar::launch(&handle) {
-                    Ok(origin) => WebviewUrl::External(origin),
-                    Err(err) => {
-                        eprintln!("[tauri] sidecar 启动失败：{err}");
-                        app.dialog()
-                            .message(format!(
-                                "本地服务启动失败：{err}\n\n请查看终端/Console 日志（[server] 前缀），或到 GitHub 提 issue。"
-                            ))
-                            .title("毛线团")
-                            .blocking_show();
-                        // 仍打开窗口指向默认端口，便于用户看到服务端报错/已有实例
-                        let fallback = format!("http://127.0.0.1:{}", sidecar::DEFAULT_PORT);
-                        WebviewUrl::External(fallback.parse().expect("valid fallback url"))
+                // 生产模式：先加载本地 splash（奶油底 + icon，随包打在 frontendDist 里），
+                // sidecar 在后台线程拉起，健康检查通过后 navigate 到 server 页面。
+                // 这样启动期间用户看到的是品牌闪屏，而不是白屏/转圈或（旧 bug）被指向
+                // 占端口孤儿进程的 404。
+                let window = WebviewWindowBuilder::new(&handle, "main", WebviewUrl::App("splash.html".into()))
+                    .title("毛线团")
+                    .inner_size(1440.0, 900.0)
+                    .min_inner_size(960.0, 640.0)
+                    .build()?;
+
+                let thread_handle = handle.clone();
+                thread::spawn(move || {
+                    match sidecar::launch(&thread_handle) {
+                        Ok(origin) => {
+                            if let Err(e) = window.navigate(origin) {
+                                eprintln!("[tauri] 窗口跳转 server 地址失败：{e}");
+                            }
+                        }
+                        Err(err) => {
+                            eprintln!("[tauri] sidecar 启动失败：{err}");
+                            thread_handle
+                                .dialog()
+                                .message(format!(
+                                    "本地服务启动失败：{err}\n\n请查看终端/Console 日志（[server] 前缀），或到 GitHub 提 issue。"
+                                ))
+                                .title("毛线团")
+                                .blocking_show();
+                            // 启动失败时停在 splash：盲目 fallback 到 18788 可能指向
+                            // 占端口的陌生进程/旧版孤儿（无静态托管，404），反而误导
+                        }
                     }
-                }
+                });
+
+                onboarding::maybe_show(&handle);
+                return Ok(());
             };
 
             WebviewWindowBuilder::new(&handle, "main", url)

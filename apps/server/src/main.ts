@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import pkg from "../package.json" with { type: "json" };
 import { cors } from "hono/cors";
 import { eq } from "drizzle-orm";
 import { createDb } from "./db/client.js";
@@ -36,11 +37,17 @@ app.route("/mcp", createMcpApp(db, tripService, (chatSessionId) => {
   acpSessions.noteMcpCall(chatSessionId);
 }));
 
-app.get("/healthz", (c) => c.json({ ok: true }));
-
 // 生产态静态托管：apps/web/dist 存在时挂载（SPA 回退 index.html；/api、/mcp、/healthz 优先级不受影响）。
 // dev 模式（vite :15173）下通常无 dist，不挂载，行为不变。
+// 注意必须先于 /healthz 注册执行：healthz 响应里的 webStatic 依赖此处的探测结果。
 const webDistDir = mountWebStatic(app);
+
+// 健康检查 + 身份标识（M90）：Tauri 壳据此区分「同包 server」与「碰巧占用端口的陌生进程 /
+// 旧版孤儿 sidecar」——占用 18788 但响应里没有 app:"yarnball"，或 yarnball 但未托管 web 产物
+// （旧版打包残留的孤儿 sidecar，指过去就是 404），壳会换端口而不是复用。
+app.get("/healthz", (c) =>
+  c.json({ ok: true, app: "yarnball", version: pkg.version, webStatic: webDistDir !== null }),
+);
 
 // ---------- agent registry 种子 ----------
 

@@ -6,7 +6,7 @@
   "build": {
     "devUrl": "http://localhost:15173",
     "frontendDist": "../../web/dist",
-    "beforeBuildCommand": "pnpm --filter @yarnball/web build"
+    "beforeBuildCommand": "pnpm --filter @yarnball/web build && pnpm --filter @yarnball/tauri inject:splash"
   },
   "app": {
     "withGlobalTauri": false,
