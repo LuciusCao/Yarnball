@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { formatDayLabel, formatDistance, formatDuration, type PlaceCategory, type TripBundle, type TransportLegDto } from "@yarnball/shared";
 import { toast } from "sonner";
-import { BedDouble, Bus, Car, Clock, Footprints, Landmark, MapPin, Package, PlaneLanding, PlaneTakeoff, Repeat, TrainFront, UtensilsCrossed, Zap, type LucideIcon } from "lucide-react";
+import { BedDouble, Bus, Car, ChevronDown, Clock, Footprints, Landmark, MapPin, Package, PlaneLanding, PlaneTakeoff, Repeat, TrainFront, UtensilsCrossed, Zap, type LucideIcon } from "lucide-react";
 import { api } from "../../api/client";
 import { api as libApi } from "../../lib/api";
 import { DAY_COLORS } from "../map/MapCanvas";
@@ -17,6 +17,13 @@ import {
 } from "./transit";
 import { groupDaysByStop, isLoopClosed, isMultiCity } from "./stops";
 import {
+  isRailSegment,
+  lineSegmentText,
+  transitDetailOf,
+  transitSegmentCountText,
+  walkSegmentText,
+} from "./legDetail";
+import {
   conflictsWithOpeningHours,
   openingHoursOf,
   parseOpeningHoursRange,
@@ -31,7 +38,8 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  *   与起讫名，可直接编辑时间（PATCH /api/entries/:id）；推算时作为硬锚点（到达日从落地时间起算）
  * - 排期时段与营业时间（openingHours，能解析出时段时）完全无交叠给弱化警告；解析不了仅展示
  * - entry 之间显示交通段（模式图标 + 时长 + 距离），可手动切换 步行/驾车（M1 leg override 端点）；
- *   点击交通段行/大交通卡在地图上只显示该段路线（M47 按需显示，再点一次取消；分享页不可点）
+ *   点击交通段行/大交通卡在地图上只显示该段路线（M47 按需显示，再点一次取消；分享页不可点）；
+ *   公交段带 M77 公交详情时主行附「· N 段」概要，可展开看步行接驳/线路分段明细（M78）
  * - 每天头部显示当晚住宿（多酒店，M10：取覆盖该天的已选定酒店）；
  *   换酒店日（M50）不再合并成一行，而是时间轴拆两条：天首「离店 · 酒店A」（时刻=离店出发，
  *   能从酒店 openingHours/notes 解析出退房时刻时附「HH:MM 前退房」提示）、天尾「入住 · 酒店B」；
@@ -829,7 +837,9 @@ function TransitRow({
  *  返回酒店段（toHotel）的「返回 X 酒店」由 M17 的酒店端点节点承载，这里只保留交通信息且不提供覆盖切换。
  *  M58：大交通端点的市内转移段（transit→首站 / 末站→transit）不再单独渲染锚定行，
  *  端点名与出发/到达时刻以 prefix 折进本行行首（如「从 悉尼机场 出发 ~10:00 ·」）。
- *  M47：传入 onToggle 时整行可点击——点击后地图上只显示该段路线，再点一次取消；选中态用品牌色环提示 */
+ *  M47：传入 onToggle 时整行可点击——点击后地图上只显示该段路线，再点一次取消；选中态用品牌色环提示。
+ *  M78：公交段（mode=transit）带 M77 公交详情时，主行追加「· N 段」概要 + 展开把手，
+ *  展开后按序列出步行接驳/线路乘坐分段明细；无详情（osm 估算、旧数据）回退原有展示 */
 function LegRow({
   leg,
   toHotel,
@@ -854,62 +864,110 @@ function LegRow({
 }) {
   // modeOverride 非空 = 人工覆盖过（M1），自动重算不会冲掉；可点击徽标恢复自动
   const overridden = leg.modeOverride != null;
+  // M78：公交详情仅对 transit 段生效；无详情（osm 估算/旧数据）时 detail=null，整行维持原样
+  const detail = leg.mode === "transit" ? transitDetailOf(leg) : null;
+  const [detailExpanded, setDetailExpanded] = useState(false);
   return (
-    <div
-      className={`group/leg flex items-center gap-1 rounded py-0.5 pl-9 text-[11px] ${
-        selected
-          ? "bg-brand/10 text-brand ring-1 ring-brand/40"
-          : onToggle
-            ? "cursor-pointer text-slate-400 hover:bg-slate-900/6 hover:text-slate-600"
-            : "text-slate-400"
-      }`}
-      onClick={onToggle}
-      title={onToggle ? (selected ? "点击取消，地图恢复不显示交通段" : "点击在地图上只显示该段路线") : undefined}
-    >
-      <TransportIcon mode={leg.mode} />
-      {prefix != null && <span className="min-w-0 truncate">{prefix}</span>}
-      <span className="shrink-0">
-        {prefix != null ? "· " : ""}
-        {formatDuration(leg.durationS)}
-        {leg.distanceM != null ? ` · ${formatDistance(leg.distanceM)}` : ""}
-      </span>
-      {overridden &&
-        (readOnly || toHotel ? (
-          <span className="rounded bg-slate-900/8 px-1 text-[10px] text-slate-500">手动</span>
-        ) : (
+    <div>
+      <div
+        className={`group/leg flex items-center gap-1 rounded py-0.5 pl-9 text-[11px] ${
+          selected
+            ? "bg-brand/10 text-brand ring-1 ring-brand/40"
+            : onToggle
+              ? "cursor-pointer text-slate-400 hover:bg-slate-900/6 hover:text-slate-600"
+              : "text-slate-400"
+        }`}
+        onClick={onToggle}
+        title={onToggle ? (selected ? "点击取消，地图恢复不显示交通段" : "点击在地图上只显示该段路线") : undefined}
+      >
+        <TransportIcon mode={leg.mode} />
+        {prefix != null && <span className="min-w-0 truncate">{prefix}</span>}
+        <span className="shrink-0">
+          {prefix != null ? "· " : ""}
+          {formatDuration(leg.durationS)}
+          {leg.distanceM != null ? ` · ${formatDistance(leg.distanceM)}` : ""}
+          {detail != null ? ` ${transitSegmentCountText(detail.length)}` : ""}
+        </span>
+        {detail != null && (
           <button
-            title="恢复自动计算"
-            disabled={busy}
+            title={detailExpanded ? "收起公交分段明细" : "展开公交分段明细"}
+            aria-expanded={detailExpanded}
             onClick={(e) => {
               e.stopPropagation();
-              void onOverride(leg.id, null);
+              setDetailExpanded((v) => !v);
             }}
-            className="rounded bg-slate-900/8 px-1 text-[10px] text-slate-500 hover:bg-slate-900/15 disabled:opacity-40"
+            className="rounded p-0.5 text-slate-300 hover:bg-white/80 hover:text-slate-500"
           >
-            手动 ✕
+            <ChevronDown
+              className={`size-3 transition-transform ${detailExpanded ? "rotate-180" : ""}`}
+            />
           </button>
-        ))}
-      {!readOnly && !toHotel && (
-        <span className="ml-1 hidden items-center gap-0.5 group-hover/leg:flex">
-          {(["walk", "drive"] as const).map((mode) => (
+        )}
+        {overridden &&
+          (readOnly || toHotel ? (
+            <span className="rounded bg-slate-900/8 px-1 text-[10px] text-slate-500">手动</span>
+          ) : (
             <button
-              key={mode}
-              title={mode === "walk" ? "改为步行" : "改为驾车"}
-              disabled={busy || leg.mode === mode}
+              title="恢复自动计算"
+              disabled={busy}
               onClick={(e) => {
                 e.stopPropagation();
-                void onOverride(leg.id, mode);
+                void onOverride(leg.id, null);
               }}
-              className={`rounded p-0.5 disabled:opacity-30 ${
-                leg.mode === mode
-                  ? "bg-slate-900/10 text-slate-600"
-                  : "text-slate-300 hover:bg-white/80 hover:text-slate-500"
-              }`}
+              className="rounded bg-slate-900/8 px-1 text-[10px] text-slate-500 hover:bg-slate-900/15 disabled:opacity-40"
             >
-              {mode === "walk" ? <Footprints className="size-3" /> : <Car className="size-3" />}
+              手动 ✕
             </button>
           ))}
-        </span>
+        {!readOnly && !toHotel && (
+          <span className="ml-1 hidden items-center gap-0.5 group-hover/leg:flex">
+            {(["walk", "drive"] as const).map((mode) => (
+              <button
+                key={mode}
+                title={mode === "walk" ? "改为步行" : "改为驾车"}
+                disabled={busy || leg.mode === mode}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onOverride(leg.id, mode);
+                }}
+                className={`rounded p-0.5 disabled:opacity-30 ${
+                  leg.mode === mode
+                    ? "bg-slate-900/10 text-slate-600"
+                    : "text-slate-300 hover:bg-white/80 hover:text-slate-500"
+                }`}
+              >
+                {mode === "walk" ? <Footprints className="size-3" /> : <Car className="size-3" />}
+              </button>
+            ))}
+          </span>
+        )}
+      </div>
+      {detail != null && detailExpanded && (
+        <ol className="ml-9 space-y-0.5 border-l border-slate-900/10 py-1 pl-3 text-[11px] text-slate-400">
+          {detail.map((seg, i) => (
+            <li key={i} className="flex items-center gap-1.5">
+              {seg.kind === "walk" ? (
+                <>
+                  <Footprints className="size-3 shrink-0 text-slate-300" />
+                  <span className="min-w-0 truncate">
+                    {walkSegmentText(seg, detail[i - 1] ?? null, detail[i + 1] ?? null)}
+                  </span>
+                </>
+              ) : (
+                <>
+                  {isRailSegment(seg) ? (
+                    <TrainFront className="size-3 shrink-0 text-slate-300" />
+                  ) : (
+                    <Bus className="size-3 shrink-0 text-slate-300" />
+                  )}
+                  <span className="min-w-0 truncate">
+                    <span className="text-slate-500">{lineSegmentText(seg)}</span>
+                  </span>
+                </>
+              )}
+            </li>
+          ))}
+        </ol>
       )}
     </div>
   );
