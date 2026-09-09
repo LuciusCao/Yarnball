@@ -13,7 +13,9 @@
     "build": "pnpm -r build",
     "test": "pnpm --filter @yarnball/server test",
     "smoke": "pnpm --filter @yarnball/server smoke",
-    "verify": "pnpm build && pnpm smoke"
+    "verify": "pnpm build && pnpm smoke",
+    "tauri:dev": "pnpm -C apps/tauri dev",
+    "tauri:package": "pnpm -C apps/tauri package"
   },
   "devDependencies": {
     "typescript": "^5.9.2"

@@ -79,6 +79,8 @@ pnpm dev                # 并行起 server (:18788) + web (:15173)
 # 单端 / 其他
 pnpm dev:server         # tsx watch src/main.ts
 pnpm dev:web            # vite
+pnpm tauri:dev          # 透传 apps/tauri（Tauri 桌面壳 dev，前置 pnpm dev 起 vite+server）
+pnpm tauri:package      # 透传 apps/tauri 打 dmg（sidecar + web 产物）
 pnpm build              # pnpm -r build（server: tsc --noEmit；web: tsc -b && vite build；shared: tsc --noEmit）
 pnpm test               # vitest run（server；目前无测试文件，测试主要靠 smoke）
 pnpm smoke              # fake-acp-agent 端到端冒烟：prompt 流 / permission 停泊 / MCP 真实调用
@@ -110,6 +112,8 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 ## 环境变量与安全
 
 - 见 `.env.example`；无必填项（`DATABASE_URL` 为 SQLite 文件路径，可选，默认 `~/.yarnball/yarnball.db`），其余有默认值（`SERVER_PORT=18788`、`WEB_ORIGIN=http://localhost:15173`、`SERVER_BASE_URL` 默认 loopback）
+- `SERVER_HOST` 默认 `127.0.0.1`：`/api` 无鉴权（`POST /api/agents` 可 spawn agent 子进程），绑 `0.0.0.0` 会暴露 LAN 构成同网段 RCE 链路；LAN 调试需显式设置。Tauri 桌面壳场景保持默认即可
+- 生产态 server 直接托管 web 静态产物：探测到 `apps/web/dist/index.html`（或 `YARNBALL_WEB_DIST_DIR` 指定目录，Tauri 打包后由壳注入）即挂载 serve-static + SPA 回退，`/api` `/mcp` `/healthz` 优先不受影响；dev（vite :15173）无 dist 时行为不变（`apps/server/src/services/staticWeb.ts`）
 - 高德三个 key（`AMAP_JS_KEY` / `AMAP_SERVER_KEY` / `AMAP_JS_SECRET`）**仅国内行程需要**；海外行程零配置。未配 key 时国内路线降级为直线距离 × 1.3 估算、POI 搜索不可用，海外不受影响
 - 海外上游请求（Photon / Nominatim / OSRM，见 `geo.ts` 的 `overseasFetch`）支持标准代理环境变量：`https_proxy > all_proxy > http_proxy`（大小写均认），遵守 `no_proxy`；未设置时直连。国内高德请求永远直连，不走代理
 - `.env` 不入库；MCP token 只存 hash；agent 经 `session/new` 注入的 URL+header 直连 `/mcp`，不经浏览器
