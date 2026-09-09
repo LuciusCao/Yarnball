@@ -9,6 +9,7 @@ import {
   LngLatSchema,
   SelectHotelInputSchema,
   TRANSIT_MODES,
+  TRANSPORT_MODES,
   UpdatePlaceInputSchema,
 } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
@@ -149,9 +150,12 @@ const SearchPoiInput = z.object({
   city: z.string().max(60).optional(),
 });
 
+// 端点二选一（placeId 或裸坐标）的校验在 handler 里做：refine 会包成 ZodEffects，registerTool 的 inputSchema 需要裸 shape
 const GetRouteInput = z.object({
-  from: LngLatSchema,
-  to: LngLatSchema,
+  from: LngLatSchema.nullable().optional(),
+  to: LngLatSchema.nullable().optional(),
+  fromPlaceId: z.string().optional(),
+  toPlaceId: z.string().optional(),
   mode: z.enum(["walk", "taxi", "transit", "drive"]).default("drive"),
 });
 
@@ -184,6 +188,21 @@ const SetBudgetInput = z.object({
 const SetStartDateInput = z.object({
   startDate: CalendarDateSchema.nullable(),
 });
+
+/** 结束日期：同 CalendarDateSchema；null = 清除。天数口径见 set_end_date 工具描述 */
+const SetEndDateInput = z.object({
+  endDate: CalendarDateSchema.nullable(),
+});
+
+/** 手动覆盖市内交通段方式；null = 清除覆盖恢复自动判定 */
+const SetLegModeInput = z.object({
+  legId: z.string(),
+  mode: z.enum(TRANSPORT_MODES).nullable(),
+});
+
+const UnselectHotelInput = z.object({ candidateId: z.string() });
+
+const UnschedulePlaceInput = z.object({ placeId: z.string() });
 
 // ---------- 注册 ----------
 
@@ -220,6 +239,26 @@ async function assertEntryInSessionTrip(ctx: ToolContext, entryId: string) {
   if (!row || row.tripId !== ctx.tripId) {
     throw new ServiceError(403, "无权操作该资源：不属于当前会话的行程");
   }
+}
+
+async function assertLegInSessionTrip(ctx: ToolContext, legId: string) {
+  const [row] = await ctx.db
+    .select({ tripId: schema.transportLegs.tripId })
+    .from(schema.transportLegs)
+    .where(eq(schema.transportLegs.id, legId));
+  if (!row || row.tripId !== ctx.tripId) {
+    throw new ServiceError(403, "无权操作该资源：不属于当前会话的行程");
+  }
+}
+
+/** 取行程内地点坐标（get_route 的 placeId 端点解析用） */
+async function placeCoord(ctx: ToolContext, placeId: string) {
+  await assertPlaceInSessionTrip(ctx, placeId);
+  const [row] = await ctx.db
+    .select({ lng: schema.places.lng, lat: schema.places.lat })
+    .from(schema.places)
+    .where(eq(schema.places.id, placeId));
+  return { lng: Number(row!.lng), lat: Number(row!.lat) };
 }
 
 /** 行程的 geo provider + 城市中心（搜索偏置用） */
@@ -270,6 +309,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
           ` places[].cityName 为归属途经地/城市名（多城市分组依据）。` +
           ` places[].status：candidate=候选池（待用户确认），locked=用户已加入行程（确认要去；agent 可照常补全/修改信息字段，只排 locked 的地点进每日行程）。` +
           ` places[].openingHours 为营业时间（排天硬约束），visitDurationMin 为预计游览/用餐分钟数（排天参考），bookingStatus 为预订状态（none|pending|booked）；website 官网、bookingUrl 预订链接、phone 电话、address 地址会展示在地点信息卡上。` +
+          ` legs[] 为每天的市内交通段：seq 为天内顺序；端点二选一（entryId 或 placeId，酒店往返段用 placeId）；mode 为自动判定的方式（walk|taxi|transit|drive），modeOverride 非空表示被人工/agent 用 set_leg_mode 手动覆盖（重算交通段不会冲掉覆盖）；distanceM/durationS 为真实路由结果，polyline 为路径坐标。` +
           (overseas
             ? ` 本行程是海外目的地（${bundle.trip.destinationCity}，${bundle.trip.geoProvider} provider）：search_poi 时用英文或当地语言名称（如 "Sydney Opera House"）效果最好。`
             : ""),
@@ -281,7 +321,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "search_poi",
     {
       description:
-        "按关键词搜索真实地点（POI），返回名称、地址、精确坐标（gcj02）、poiId、cityName（归属城市）。**创建任何地点前必须先调这个工具**，用返回的 location 作为坐标——绝不自行填写或编造经纬度。多城市行程（trip.stops 多个节点）：搜目标城市的地点时务必传 city 参数（如搜「莫高窟」传 city=敦煌），并把返回的 cityName 带到 add_place。",
+        "按关键词搜索真实地点（POI），返回名称、地址、精确坐标（坐标系与行程引擎一致：国内行程=高德 GCJ-02、海外行程=WGS-84，原样传给 add_place/get_route 即可，无需也不许转换）、poiId、cityName（归属城市）。**创建任何地点前必须先调这个工具**，用返回的 location 作为坐标——绝不自行填写或编造经纬度。多城市行程（trip.stops 多个节点）：搜目标城市的地点时务必传 city 参数（如搜「莫高窟」传 city=敦煌），并把返回的 cityName 带到 add_place。",
       inputSchema: SearchPoiInput.shape,
     },
     async ({ keyword, city }) => {
@@ -421,7 +461,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_place_to_day",
     {
       description:
-        "把地点安排到某一天（dayIndex 从 1 开始）。不传 position 则加到当天末尾；startTime 传该地点的开始时间（HH:MM）。**只应排 status=locked（已加入行程）的地点**（先 get_trip_context 确认）；候选请先提醒用户去界面加入行程。同一地点可重复排入同一天（如换酒店日傍晚回旧酒店「取行李」，把旧酒店再排一次）。排天时按酒店→景点的实际交通写 startTime，保证时间轴连贯。",
+        "把地点安排到某一天（dayIndex 从 1 开始）。不传 position 则加到当天末尾；startTime 传该地点的开始时间（HH:MM）。**只应排 status=locked（已加入行程）的地点**（先 get_trip_context 确认）；候选请先提醒用户去界面加入行程。同一地点可重复排入同一天（如换酒店日傍晚回旧酒店「取行李」，把旧酒店再排一次）。排天时按酒店→景点的实际交通写 startTime，保证时间轴连贯。**每日容量纪律：每天 3-4 个主景点 + 1-2 餐为宜，不要贪多**；**营业时间（openingHours）是硬约束**，与当日时间轴完全无交叠时前端会告警；**同天点位要顺路**——先按区域聚类分天（suggest_day_clusters），同一片内的顺序用 suggest_day_order 校验。",
       inputSchema: AddPlaceToDayInput.shape,
     },
     async ({ placeId, dayIndex, position, startTime }) => {
@@ -481,7 +521,8 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
   server.registerTool(
     "move_entry",
     {
-      description: "移动某天行程中的某个地点到指定天/位置。",
+      description:
+        "移动某条日程条目（place 或 transit entry）到指定天/位置：dayIndex 从 1 开始，position 为天内 0 起序号（超出当天长度自动收束到末尾）。移动会触发相关天的交通段重算。只调顺序不调天时用 reorder_day 更稳。",
       inputSchema: MoveEntryInput.shape,
     },
     async ({ entryId, dayIndex, position }) => {
@@ -499,7 +540,8 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
   server.registerTool(
     "remove_entry",
     {
-      description: "把地点从某天的行程中移除（地点仍保留在地点库）。",
+      description:
+        "把某条日程条目（按 entryId）从行程中移除：place entry 移除后地点仍保留在地点库（status 不变），transit entry 直接删除。一次只移一条；要按地点一次性移出其在所有天的全部日程（并退回候选态）用 unschedule_place。",
       inputSchema: RemoveEntryInput.shape,
     },
     async ({ entryId }) => {
@@ -532,16 +574,60 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
   );
 
   server.registerTool(
-    "get_route",
+    "set_leg_mode",
     {
-      description: "查两点间路线（步行/驾车/公交），返回距离、耗时和真实路径坐标。",
-      inputSchema: GetRouteInput.shape,
+      description:
+        "手动覆盖某条市内交通段（leg）的交通方式：walk 步行 / taxi 出租车 / transit 公交地铁 / drive 驾车；传 null 清除覆盖、恢复自动判定（<2km 步行、其余驾车）。覆盖存在 leg.modeOverride 上，之后重算交通段不会冲掉。什么时候用：用户说「这段想打车/想坐地铁/这段走路就行」，或自动判定与实际偏好不符时。legId 从 get_trip_context 的 legs[] 拿（端点是 fromEntryId/toEntryId 或 fromPlaceId/toPlaceId）。",
+      inputSchema: SetLegModeInput.shape,
     },
-    async ({ from, to, mode }) => {
+    async ({ legId, mode }) => {
       ctx.markMcpObserved();
       try {
+        await assertLegInSessionTrip(ctx, legId);
+        await tripService.setLegMode(legId, mode);
+        return json({ ok: true });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "unschedule_place",
+    {
+      description:
+        "把某地点从全部天的行程中移出（对应界面「移出行程」）：撤销它在所有天的全部日程条目，地点退回候选态（status=candidate，不删地点本身）。与 remove_entry 的区别：remove_entry 按 entryId 只移单条，本工具按 placeId 一次清干净。已排期的地点要先调本工具（或逐条 remove_entry）才能 remove_place。",
+      inputSchema: UnschedulePlaceInput.shape,
+    },
+    async ({ placeId }) => {
+      ctx.markMcpObserved();
+      try {
+        await assertPlaceInSessionTrip(ctx, placeId);
+        const result = await tripService.unschedulePlace(placeId);
+        return json({ ok: true, ...result });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_route",
+    {
+      description:
+        "查两点间路线，返回距离、耗时和真实路径坐标。mode：walk 步行 / drive 驾车 / taxi 出租车（按驾车路由估算，费用另计）/ transit 公交地铁（海外为估算）。端点二选一：**优先 fromPlaceId/toPlaceId**（行程内地点 id，从 get_trip_context 或 search_poi+add_place 拿）；或 from/to 裸坐标（坐标系必须与行程引擎一致：国内 GCJ-02、海外 WGS-84，直接复用 search_poi 返回的 location 不会错）。",
+      inputSchema: GetRouteInput.shape,
+    },
+    async ({ from, to, fromPlaceId, toPlaceId, mode }) => {
+      ctx.markMcpObserved();
+      try {
+        const fromCoord = fromPlaceId ? await placeCoord(ctx, fromPlaceId) : (from ?? null);
+        const toCoord = toPlaceId ? await placeCoord(ctx, toPlaceId) : (to ?? null);
+        if (!fromCoord || !toCoord) {
+          throw new ServiceError(422, "每个端点二选一：fromPlaceId/toPlaceId（行程内地点）或 from/to 裸坐标");
+        }
         const { trip, provider } = await tripGeoInfo(ctx);
-        const route = await provider.route(from, to, mode, trip?.destinationCity);
+        const route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity);
         return json({
           ok: true,
           route,
@@ -579,7 +665,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "suggest_day_order",
     {
       description:
-        "重排建议：分析某天的最优游览顺序（固定第一个点为起点），返回优化前后对比和预计节省时间。只建议不生效；确认后用 reorder_day 应用。",
+        "重排建议（只建议不落库）：分析某天 place 条目的最优游览顺序——已选定酒店时按「酒店→…→酒店」环路优化（换酒店日为「旧酒店→…→新酒店」定端路径），无酒店锚点时固定当前第一个条目为起点；transit 大交通节点时间固定、不参与重排。返回优化前后对比和预计节省时间；用户确认后用 reorder_day 应用。顺路原则校验工具：排完一天后调它看看还能省多少交通时间。",
       inputSchema: SuggestDayOrderInput.shape,
     },
     async ({ dayIndex }) => {
@@ -597,7 +683,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "suggest_day_clusters",
     {
       description:
-        "区域聚类建议（只建议不落库）：把还没排进任何一天的非酒店地点按地理位置聚成 1-4 片，并按各天负载建议「每天一片」。候选多、准备排天时先调这个拿分区方案，再逐天 add_place_to_day。",
+        "区域聚类建议（只建议不落库）：把还没排进任何一天的非酒店地点按地理位置聚成 1-4 片，并按各天负载建议「每天一片」。片数上限说明：k = min(4, ⌈未排期点数÷3⌉, 可用天数)——单日容量纪律就是每天 3-4 个主景点 + 1-2 餐，片数再细一天也装不下，4 片上限够用；点多于 4 天容量时靠多天负载均衡覆盖。候选多、准备排天时先调这个拿分区方案，再逐天 add_place_to_day（营业时间 openingHours 是硬约束），同一片内用 suggest_day_order 校验顺序。",
       inputSchema: {},
     },
     async () => {
@@ -648,6 +734,46 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
   );
 
   server.registerTool(
+    "unselect_hotel",
+    {
+      description:
+        "取消单个已选定酒店（多酒店行程只取消 candidateId 这一家，其余选定保留；取消后其覆盖的天段变为无酒店）。换酒店的正确姿势：先 add_hotel_candidate + select_hotel 选定新的覆盖同一段天（区间与旧的重叠会 422，所以实际顺序是先 unselect_hotel 旧的再 select_hotel 新的），或一步到位请用户在界面操作。要取消全部选定用 select_hotel（candidateId=null）。",
+      inputSchema: UnselectHotelInput.shape,
+    },
+    async ({ candidateId }) => {
+      ctx.markMcpObserved();
+      try {
+        await tripService.unselectHotel(tripId, candidateId);
+        return json({ ok: true });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "recommend_hotel_area",
+    {
+      description:
+        "推荐住宿区域：按行程内非酒店地点的地理分布给出建议居住圆心 + 半径（米）。顺路原则的住宿版——酒店离主要活动区越近，每天往返交通越省。选酒店/补酒店候选前调这个，把 search_poi 的酒店搜索往圆心附近收敛。行程内非酒店地点不足 3 个时返回 area=null：先多攒候选地点（search_poi + add_place）再调。",
+      inputSchema: {},
+    },
+    async () => {
+      ctx.markMcpObserved();
+      try {
+        const area = await tripService.recommendHotelArea(tripId);
+        return json({
+          ok: true,
+          area,
+          note: area ? undefined : "行程内非酒店地点不足 3 个，暂无推荐；先补充候选地点再调。",
+        });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
     "set_start_date",
     {
       description:
@@ -684,6 +810,27 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
           ok: true,
           summary: await tripService.getBudgetSummary(tripId),
         });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "set_end_date",
+    {
+      description:
+        "设置/修改行程的结束日期（YYYY-MM-DD，如 2025-09-28；传 null 清除）。用户说「玩到 9/28」「9/23 出发玩 5 天」（自己推算出结束日期）时顺手调用写回。天数口径：startDate 与 endDate 同时设置时按日期区间计算行程天数（驱动预算按晚数等统计）；只设其一或都不设时，天数回退到已建天数兜底。出发日期用 set_start_date。",
+      inputSchema: SetEndDateInput.shape,
+    },
+    async ({ endDate }) => {
+      ctx.markMcpObserved();
+      try {
+        // UpdateTripInput 的 endDate 支持由 M72 落地（tower 保证 M72 先合）；
+        // 宽类型变量传参兼容合入前的签名（当前 main 上 updateTrip 仅消费 startDate）
+        const patch: { startDate?: string | null; endDate?: string | null } = { endDate };
+        const trip = await tripService.updateTrip(tripId, patch);
+        return json({ ok: true, endDate: trip.endDate });
       } catch (err) {
         return toolError(err);
       }

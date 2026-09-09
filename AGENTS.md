@@ -33,10 +33,13 @@ Hono Server (apps/server, :18788)               │
 apps/server
   src/acp/        ACP 会话管理（sessionManager.ts ~750 行；permissions.ts 四层权限策略；
                   prompts.ts bootstrap prompt；terminal 协议支持）
-  src/mcp/        MCP 工具面：tools.ts（21 个工具 + scoped token 鉴权，含 lock_place/unlock_place、
+  src/mcp/        MCP 工具面：tools.ts（26 个工具 + scoped token 鉴权，含 lock_place/unlock_place、
                   add_transit_entry/update_entry（大交通 entry，transitMode=flight/train/drive/bus，
-                  drive 走真实路由）、suggest_day_clusters（区域聚类分天建议）与
-                  set_start_date（出发日期，对话中说「9/23 出发」时写回 trip.startDate））、
+                  drive 走真实路由）、suggest_day_clusters（区域聚类分天建议）、
+                  set_start_date/set_end_date（出发/结束日期，对话中说「9/23 出发」「玩到 9/28」时写回
+                  trip.startDate/endDate）、set_leg_mode（手动覆盖市内交通段方式，modeOverride）、
+                  recommend_hotel_area（按非酒店地点分布推荐住宿区域）、unselect_hotel（取消单个
+                  已选定酒店）、unschedule_place（按 placeId 撤销其全部日程并退回候选））、
                   app.ts（HTTP 端点）
   src/services/   tripService.ts（编排/顺路算法核心）、geo.ts（provider 抽象）、settings.ts（全局设置：
                   高德 key 的 DB 覆盖 + env 兜底，/api/settings 响应掩码 amapServerKey）、
