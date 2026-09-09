@@ -1,0 +1,25 @@
+[package]
+name = "yarnball"
+version = "0.1.0"
+description = "毛线团（Yarnball）桌面壳"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "yarnball_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["signal", "macros"] }
+ureq = "3"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "s"

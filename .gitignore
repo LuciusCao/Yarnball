@@ -8,3 +8,9 @@ dist/
 .tower/
 .zcode/
 .logs/
+
+# Tauri 壳（apps/tauri）：Rust 构建产物 / 生成的 schema / sidecar 二进制与随包资源（脚本产出，不入库）
+apps/tauri/src-tauri/target/
+apps/tauri/src-tauri/gen/
+apps/tauri/src-tauri/binaries/
+apps/tauri/src-tauri/resources/

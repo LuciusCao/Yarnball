@@ -1,0 +1,19 @@
+{
+  "name": "@yarnball/tauri",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "package": "pnpm build:sidecar && tauri build",
+    "build:sidecar": "node scripts/build-sidecar.mjs",
+    "gen:icon": "node scripts/gen-icon.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0",
+    "drizzle-orm": "^0.44.7",
+    "esbuild": "^0.25.0",
+    "postject": "^1.0.0-alpha.6"
+  }
+}
