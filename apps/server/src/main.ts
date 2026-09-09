@@ -16,7 +16,7 @@ import { createApi } from "./routes/api.js";
  * 毛线团（Yarnball）server —— 组装：DB / 事件总线 / TripService / MCP 工具面 / ACP 会话 / REST + SSE。
  */
 
-const { db, pool } = createDb(env.databaseUrl);
+const { db, sqlite } = createDb(env.databaseUrl);
 const bus = new EventBus();
 const tripService = new TripService(db, bus);
 
@@ -76,7 +76,7 @@ async function shutdown() {
   console.log("[yarnball] shutting down…");
   await acpSessions.stopAll();
   server.close();
-  await pool.end().catch(() => {});
+  sqlite.close();
   process.exit(0);
 }
 
