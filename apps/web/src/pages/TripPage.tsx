@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   CalendarDays,
@@ -6,6 +6,8 @@ import {
   CalendarMinus,
   CalendarPlus,
   BedDouble,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Crosshair,
   ExternalLink,
@@ -82,6 +84,41 @@ function urlHost(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** 信息卡描述文本（M82）：默认 line-clamp-3 截断；用 scrollHeight vs clientHeight 检测截断是否真实发生，
+    只在被截断时显示「展开/收起」按钮（短描述不出钮）；展开后完整文本随卡片既有 overflow-y-auto 滚动区可读，再点收起还原 */
+function InfoCardNotes({ notes }: { notes: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [clamped, setClamped] = useState(false);
+  const textRef = useRef<HTMLParagraphElement>(null);
+
+  useEffect(() => {
+    // 展开态下 skip 测量（展开后 scrollHeight == clientHeight，会把已测得的 clamped 冲掉导致按钮消失）
+    if (expanded) return;
+    const el = textRef.current;
+    if (el) setClamped(el.scrollHeight > el.clientHeight + 1);
+  }, [notes, expanded]);
+
+  return (
+    <div className="mt-1.5">
+      <p
+        ref={textRef}
+        className={`text-[11px] leading-relaxed text-slate-500 ${expanded ? "" : "line-clamp-3"}`}
+      >
+        {notes}
+      </p>
+      {clamped && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-0.5 flex items-center gap-0.5 text-[11px] font-medium text-blue-600 hover:underline"
+        >
+          {expanded ? "收起" : "展开"}
+          {expanded ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function TripPage() {
@@ -649,7 +686,8 @@ export function TripPage() {
             </div>
           )}
           {selectedPlace.notes && (
-            <p className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-slate-500">{selectedPlace.notes}</p>
+            // key 钉在 place id 上：换选中地点时展开/截断状态随之重置
+            <InfoCardNotes key={selectedPlace.id} notes={selectedPlace.notes} />
           )}
           {/* 操作行（口径对齐候选）：酒店的住宿维度加入/移出已拆到上方住宿块（M59：「加入住宿/移出住宿」）；
               已排期地点给「移出」出口（unschedule 撤销日程）——酒店信息卡上为与住宿按钮区分改名「移出日程」，非酒店仍叫「移出行程」；
