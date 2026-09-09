@@ -62,6 +62,11 @@ packages/shared/src/domain.ts   枚举 / DTO / 请求体 / SSE 事件 / 格式�
 ## 常用命令
 
 ```bash
+# just 封装（justfile，等价于下面的 pnpm/docker 命令；just --list 查看全部）
+just setup            # 首次初始化：install + .env + db + migrate
+just up / just down   # 后台起/停 server + web（db 由 up 拉起，db-down 才停）；日志在 .logs/
+just status / just logs [svc]
+
 # 首次启动
 pnpm install
 cp .env.example .env && cp .env.example apps/server/.env   # dotenv 从 server 目录读取
