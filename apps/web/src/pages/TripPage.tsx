@@ -713,18 +713,21 @@ export function TripPage() {
           变化，浮层 ml-auto 锚定的右缘保持恒定），
           两态布局在内部宽度/对齐上分流（M63 修正 M62 的误读——铺满只属于放大态）：
           两态都保持 ml-auto 右缘锚定（M66 修复：margin-left:auto 不可过渡，放大态丢失 ml-auto 会导致
-          margin 瞬变、面板先跳到左缘再播宽度动画），动画只发生在宽度/高度上：
+          margin 瞬变、面板先跳到左缘再播宽度动画）；
+          高度上两态一致（M76，取代 M62 的 52vh→80vh 拉高）：容器 items-stretch + 面板不设高度上限，
+          面板纵向铺满 top-[68px] → bottom-4 自由区、底边与 agent 面板底边对齐（短视口下面板自然变矮，
+          内部 min-h-0 滚动区兜底，无需 max-h），放大动画因此只发生在宽度上：
           - 普通态：固定 400px 宽、右对齐，作为下拉面板挂在分段条下方（右缘与分段条右缘/agent 面板左缘对齐）；
             shrink-0 保证自由区不足时 400px 不被挤压，max-w 100vw-2rem 兜底极窄视口不溢出
-          - 放大态（panelMaximized）：w-full 铺满自由区，右缘不动、左缘扩到与左上信息条左缘（left-4）对齐，
-            同时拉高度 52vh→80vh（M62 行为保留）；宽度随自由区自适应，切换标签无宽度跳动 ===== */}
+          - 放大态（panelMaximized）：w-full 铺满自由区，右缘不动、左缘扩到与左上信息条左缘（left-4）对齐；
+            宽度随自由区自适应，切换标签无宽度跳动 ===== */}
       {toolPanel != null && activeToolMeta != null && (
-        <div className="pointer-events-none absolute bottom-4 left-4 right-[404px] top-[68px] z-20 flex items-start">
+        <div className="pointer-events-none absolute bottom-4 left-4 right-[404px] top-[68px] z-20 flex items-stretch">
         <div
           className={`glass-deep panel-in pointer-events-auto ml-auto flex flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
             panelMaximized
-              ? "h-[min(80vh,900px)] w-full"
-              : "h-[min(52vh,500px)] w-[400px] shrink-0 max-w-[calc(100vw-2rem)]"
+              ? "w-full"
+              : "w-[400px] shrink-0 max-w-[calc(100vw-2rem)]"
           }`}
         >
           <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
