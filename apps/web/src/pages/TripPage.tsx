@@ -714,9 +714,11 @@ export function TripPage() {
       {/* 顶部：工具浮层（行程/候选池/添加，M61 从原左下 dock 迁来）。overlay 盖在地图上、不挤占布局，
           点击分段条 tab 或浮层 ✕ 收起。容器恒为 left-4 → 自由区右缘（right-[404px]，agent 面板收起时 right-4），
           两态布局在内部宽度/对齐上分流（M63 修正 M62 的误读——铺满只属于放大态）：
-          - 普通态：固定 400px 宽、ml-auto 右对齐，作为下拉面板挂在分段条下方（右缘与分段条右缘/agent 面板左缘对齐）；
+          两态都保持 ml-auto 右缘锚定（M66 修复：margin-left:auto 不可过渡，放大态丢失 ml-auto 会导致
+          margin 瞬变、面板先跳到左缘再播宽度动画），动画只发生在宽度/高度上：
+          - 普通态：固定 400px 宽、右对齐，作为下拉面板挂在分段条下方（右缘与分段条右缘/agent 面板左缘对齐）；
             shrink-0 保证自由区不足时 400px 不被挤压，max-w 100vw-2rem 兜底极窄视口不溢出
-          - 放大态（panelMaximized）：w-full 铺满自由区，左缘与左上信息条左缘（left-4）对齐，
+          - 放大态（panelMaximized）：w-full 铺满自由区，右缘不动、左缘扩到与左上信息条左缘（left-4）对齐，
             同时拉高度 52vh→80vh（M62 行为保留）；宽度随自由区自适应，切换标签无宽度跳动 ===== */}
       {toolPanel != null && activeToolMeta != null && (
         <div
@@ -725,10 +727,10 @@ export function TripPage() {
           }`}
         >
         <div
-          className={`glass-deep panel-in pointer-events-auto flex flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
+          className={`glass-deep panel-in pointer-events-auto ml-auto flex flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
             panelMaximized
               ? "h-[min(80vh,900px)] w-full"
-              : "ml-auto h-[min(52vh,500px)] w-[400px] shrink-0 max-w-[calc(100vw-2rem)]"
+              : "h-[min(52vh,500px)] w-[400px] shrink-0 max-w-[calc(100vw-2rem)]"
           }`}
         >
           <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
