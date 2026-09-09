@@ -886,7 +886,7 @@ function LegRow({
           {prefix != null ? "· " : ""}
           {formatDuration(leg.durationS)}
           {leg.distanceM != null ? ` · ${formatDistance(leg.distanceM)}` : ""}
-          {detail != null ? ` ${transitSegmentCountText(detail)}` : ""}
+          {detail != null ? ` ${transitSegmentCountText(detail.length)}` : ""}
         </span>
         {detail != null && (
           <button
@@ -944,12 +944,14 @@ function LegRow({
       </div>
       {detail != null && detailExpanded && (
         <ol className="ml-9 space-y-0.5 border-l border-slate-900/10 py-1 pl-3 text-[11px] text-slate-400">
-          {detail.segments.map((seg, i) => (
+          {detail.map((seg, i) => (
             <li key={i} className="flex items-center gap-1.5">
               {seg.kind === "walk" ? (
                 <>
                   <Footprints className="size-3 shrink-0 text-slate-300" />
-                  <span className="min-w-0 truncate">{walkSegmentText(seg)}</span>
+                  <span className="min-w-0 truncate">
+                    {walkSegmentText(seg, detail[i - 1] ?? null, detail[i + 1] ?? null)}
+                  </span>
                 </>
               ) : (
                 <>
