@@ -584,7 +584,8 @@ export const osm: GeoProvider = {
   },
 
   async drivingMatrix(points) {
-    if (points.length < 2) return null;
+    if (points.length === 0) return null;
+    if (points.length === 1) return [[0]]; // 单点方阵恒 0（与 amap 侧同构，避免单点块被当失败）
     return this.drivingMatrixRect(points, points);
   },
 };
@@ -617,15 +618,18 @@ export async function drivingMatrixBatched(
   const chunks: LngLat[][] = [];
   for (let i = 0; i < n; i += MATRIX_BATCH) chunks.push(points.slice(i, i + MATRIX_BATCH));
 
-  // 逐（源块 × 讫块）请求；对角块走方阵 drivingMatrix（两 provider 的现有入口），其余走矩形接口
+  // 逐（源块 × 讫块）请求；对角块走方阵 drivingMatrix（两 provider 的现有入口），其余走矩形接口。
+  // 单点对角块（n ≡ 1 (mod MATRIX_BATCH) 时的末块）短路为 [[0]]：自身到自身恒 0，且 osm.drivingMatrix
+  // 对 <2 点返回 null——不短路会让整块矩阵静默降级为直线估算
   const blocks: (number[][] | null)[][] = await Promise.all(
     chunks.map((src) =>
       Promise.all(
-        chunks.map((dst) =>
-          limit(() =>
+        chunks.map((dst) => {
+          if (src === dst && src.length === 1) return Promise.resolve([[0]]);
+          return limit(() =>
             src === dst ? provider.drivingMatrix(src) : provider.drivingMatrixRect(src, dst),
-          ),
-        ),
+          );
+        }),
       ),
     ),
   );
