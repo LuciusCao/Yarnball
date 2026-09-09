@@ -23,7 +23,7 @@ Hono Server (apps/server, :18788)               │
 
 - 前端 Vite dev server 在 `:15173`，`/api` 代理到服务端（见 `apps/web/vite.config.ts`）
 - **地理引擎双 provider**（`src/services/geo.ts`）：创建行程时按目的地定死 `amap`（国内，高德 API，GCJ-02 坐标）或 `osm`（海外，Photon 搜索 + FOSSGIS OSRM 路线/矩阵 + Nominatim，全部零 key，WGS84），全链路不混用坐标系
-- **顺路引擎**（`src/services/tripService.ts`）：provider 距离矩阵 + 最近邻 + 2-opt 重排；交通段自动计算（<2km 步行 / 其余驾车，真实路径 polyline）
+- **顺路引擎**（`src/services/tripService.ts`）：provider 距离矩阵 + 最近邻 + 2-opt 重排；交通段自动计算（<2km 步行 / 2-6km 公交 / >6km 驾车，真实路径 polyline）
 - **多城市模型**（M37 地基 + M39 界面层）：`trips.stops` 为有序途经地节点（stops[0] = 主目的地，`destinationCity`/`location` 是其兼容镜像）；`places.cityName` 为归属途经地（建点时自动填充）；`entries.transitMode`（flight/train/drive/bus）区分大交通方式，drive=自驾城际段走真实公路路由拿里程/时长。环线闭合不落库——末段 transit 讫点 == stops[0] 即闭合。前端：行程面板按 stop 分组 + 🚗 自驾卡、地图途经地标记层、候选池按城市分桶（`apps/web/src/features/itinerary/stops.ts` 是 day→stop / 环线闭合的推导单点）
 - **防编造校验**：agent 建点时坐标必须落在途经地附近——单城市行程退化为 stops[0] 单中心（国内 150km / 海外 300km），多城市行程为距任一 stop.center ≤200km（osm 保持 300km）；越界拒绝并引导先 `search_poi`
 
@@ -33,10 +33,13 @@ Hono Server (apps/server, :18788)               │
 apps/server
   src/acp/        ACP 会话管理（sessionManager.ts ~750 行；permissions.ts 四层权限策略；
                   prompts.ts bootstrap prompt；terminal 协议支持）
-  src/mcp/        MCP 工具面：tools.ts（21 个工具 + scoped token 鉴权，含 lock_place/unlock_place、
+  src/mcp/        MCP 工具面：tools.ts（26 个工具 + scoped token 鉴权，含 lock_place/unlock_place、
                   add_transit_entry/update_entry（大交通 entry，transitMode=flight/train/drive/bus，
-                  drive 走真实路由）、suggest_day_clusters（区域聚类分天建议）与
-                  set_start_date（出发日期，对话中说「9/23 出发」时写回 trip.startDate））、
+                  drive 走真实路由）、suggest_day_clusters（区域聚类分天建议）、
+                  set_start_date/set_end_date（出发/结束日期，对话中说「9/23 出发」「玩到 9/28」时写回
+                  trip.startDate/endDate）、set_leg_mode（手动覆盖市内交通段方式，modeOverride）、
+                  recommend_hotel_area（按非酒店地点分布推荐住宿区域）、unselect_hotel（取消单个
+                  已选定酒店）、unschedule_place（按 placeId 撤销其全部日程并退回候选））、
                   app.ts（HTTP 端点）
   src/services/   tripService.ts（编排/顺路算法核心）、geo.ts（provider 抽象）、settings.ts（全局设置：
                   高德 key 的 DB 覆盖 + env 兜底，/api/settings 响应掩码 amapServerKey）、
@@ -102,7 +105,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - **MCP 鉴权**：每个 chat session 一个 token（随机 32 字节，DB 存 sha256）；`/mcp` 每请求从 `Authorization: Bearer` + `x-yarnball-session-id` header 重解析并绑定到该会话的 trip —— agent 永远只能操作当前会话的行程（`src/mcp/tools.ts`）
 - **ACP 权限四层策略**（`src/acp/permissions.ts`）：Yarnball MCP 工具自动批准 → 只读 kind 自动批准 → 会话级 allow-all → 停靠到 UI 等用户 120s
 - **bootstrap prompt**（`src/acp/prompts.ts`）钉死「坐标必须来自 search_poi」纪律 + 海外英文搜索提示 + 多城市纪律（search_poi 传 city、add_place 带 cityName、城际移动走 add_transit_entry、自驾段 transitMode=drive）；恢复会话走 `session/new` + 压缩转录回放（ACP `session/load` 待 SDK 封装）
-- **大交通与预订状态**：`add_transit_entry` / `update_entry` 管理大交通 entry（🛬抵达 / 🛫离开 / 🚄城市间，departTime/arriveTime 是排程硬锚点）；地点带 `openingHours`（营业时间，排期完全无交叠时前端告警）与 `bookingStatus`（无需预订/待预订/已预订，UI 可点选流转）；`suggest_day_clusters`（对应 REST `GET /api/trips/:id/suggest-clusters`）按地理位置聚类给出分天建议
+- **大交通与预订状态**：`add_transit_entry` / `update_entry` 管理大交通 entry（🛬抵达 / 🛫离开 / 🚄城市间，departTime/arriveTime 是排程硬锚点）；地点带 `openingHours`（营业时间，排期完全无交叠时前端告警）与 `bookingStatus`（无需预订/待预订/已预订，UI 可点选流转）；`suggest_day_clusters`（对应 REST `GET /api/trips/:id/suggest-clusters`）多城市先按途经地分组、组内按地理位置聚类（k 按点数自适应 1-4，不被已建天数截断），同城天优先分配给出分天建议
 - 验证 agent 链路改动**不依赖真 agent**：用 `pnpm smoke`（fake-acp-agent.mjs 是可脚本化的假 ACP agent）
 
 ## 环境变量与安全
