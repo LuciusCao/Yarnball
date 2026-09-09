@@ -44,13 +44,13 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  *   M57：表达的是市内转移段，样式为轻量连接行而非航班卡；
  *   M58 去重：转移段 leg 存在时锚定行不再单独渲染，端点名与出发/到达时刻折进该段
  *   LegRow 的行内前缀，同一段路只表达一次；仅 leg 缺失（坐标不全等）时锚定行作兑底渲染）
- * - 无覆盖酒店的天（M17）：天头部显示「当晚未安排住宿」+「去候选池加入」引导
+ * - 无覆盖酒店的天（M17）：天头部显示「当晚未安排住宿」+「去候选加入」引导
  *   （onOpenCandidates 由 TripPage 传入；只读分享页只有文案没有按钮）。
  *   注意（M20 话术统一）：酒店需「加入行程」（底层 select，带 checkInDay/checkOutDay 住宿区间）才参与路线锚定
  * - Day 筛选 tabs（M15，TripPage 传入 visibleDay/onVisibleDayChange 时启用）：
  *   面板顶部「全部/Day 1/Day 2…」，选中天过滤面板并同步地图聚焦
  * - 地点节点带类别小图标（M60）：hotel=BedDouble / restaurant=UtensilsCrossed /
- *   attraction+activity=Landmark / other=Package，与候选池 tab 选型一致；
+ *   attraction+activity=Landmark / other=Package，与候选 tab 选型一致；
  *   序号圆仍是主信息，图标为辅（序号圆后、名称前的灰色小图标）
  * - 多城市（M39，trip.stops > 1）：顶部显示途经地链「西宁 → 青海湖 → …」，末段 transit
  *   讫点回到 stops[0] 时附 🔁 环线徽标（isLoopClosed，推导不落库）；天 section 按 stop
@@ -60,7 +60,7 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  * - readOnly（分享页）：隐藏一切编辑操作
  */
 
-/** 地点类别图标（M60）：与候选池 tab / GROUP_META 选型一致（CandidatesPanel.tsx） */
+/** 地点类别图标（M60）：与候选 tab / GROUP_META 选型一致（CandidatesPanel.tsx） */
 const PLACE_CATEGORY_META: Record<PlaceCategory, { label: string; Icon: LucideIcon }> = {
   hotel: { label: "酒店", Icon: BedDouble },
   restaurant: { label: "美食", Icon: UtensilsCrossed },
@@ -86,7 +86,7 @@ interface ItineraryPanelProps {
   /** 按需显示的交通段（M47）：当前选中的 legId；点击交通段行切换，地图只画该段 */
   selectedLegId?: string | null;
   onSelectLeg?: (legId: string | null) => void;
-  /** 打开候选池面板（M17：无覆盖酒店天的「去候选池加入」引导；TripPage 传入，分享页不传则只显示文案） */
+  /** 打开候选面板（M17：无覆盖酒店天的「去候选加入」引导；TripPage 传入，分享页不传则只显示文案） */
   onOpenCandidates?: () => void;
 }
 
@@ -263,7 +263,7 @@ export function ItineraryPanel({
       )}
       {sortedDays.length === 0 && (
         <div className="p-6 text-center text-sm text-slate-400">
-          还没有行程。让 agent 帮你排，或在「添加地点」里手动加地点。
+          还没有行程。让 agent 帮你排，或在「添加」里手动加地点。
         </div>
       )}
       {/* 多城市途经地链（M39）：「西宁 → 青海湖 → …」；末段 transit 讫点回到首站时附 🔁 环线徽标 */}
@@ -1036,15 +1036,15 @@ function TransitAnchorRow({
   );
 }
 
-/** 「去候选池加入」引导钮（M17；M20 话术统一）：酒店「加入行程」（带入住/离店天）后才参与首尾锚定 */
+/** 「去候选加入」引导钮（M17；M20 话术统一）：酒店「加入行程」（带入住/离店天）后才参与首尾锚定 */
 function SelectHotelGuide({ onClick }: { onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      title="酒店「加入行程」（带入住/离店天）后才会作为当天行程的首尾锚点；仅放进候选池还不够"
+      title="酒店「加入行程」（带入住/离店天）后才会作为当天行程的首尾锚点；仅放进候选还不够"
       className="shrink-0 whitespace-nowrap rounded bg-slate-900/8 px-1.5 py-0.5 text-slate-500 transition-colors hover:bg-slate-900/15 hover:text-slate-700"
     >
-      去候选池加入 →
+      去候选加入 →
     </button>
   );
 }

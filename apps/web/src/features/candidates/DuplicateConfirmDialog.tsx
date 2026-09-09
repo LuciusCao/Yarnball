@@ -35,7 +35,7 @@ export function DuplicateConfirmDialog({
         <DialogHeader>
           <DialogTitle>疑似重复地点</DialogTitle>
           <DialogDescription>
-            候选池里已有名称相近且位置很近（≤200m）的地点。确认「{pendingName}」是另一个地点再创建。
+            候选里已有名称相近且位置很近（≤200m）的地点。确认「{pendingName}」是另一个地点再创建。
           </DialogDescription>
         </DialogHeader>
         <div className="rounded-card border border-slate-900/10 bg-white/60 p-3 shadow-card">

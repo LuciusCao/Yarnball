@@ -7,7 +7,7 @@ import { getSelectedStays } from "../candidates/hotelStays";
  */
 
 /**
- * 类别图标（M60）：与候选池 tab 的 lucide 选型一一对应（hotel=BedDouble / restaurant=UtensilsCrossed
+ * 类别图标（M60）：与候选 tab 的 lucide 选型一一对应（hotel=BedDouble / restaurant=UtensilsCrossed
  * / attraction+activity=Landmark / other=Package，见 CandidatesPanel GROUP_META）。
  * 地图 marker 是引擎侧 HTML 字符串，用不了 lucide 组件，退化为 emoji；other 不加图标（保持钉面干净）。
  */

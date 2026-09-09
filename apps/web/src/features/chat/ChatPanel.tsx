@@ -228,7 +228,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
       const locked = bundle.places.filter((p) => p.status === "locked");
       const candidates = bundle.places.filter((p) => p.status !== "locked");
       if (locked.length === 0 && candidates.length === 0) {
-        toast.info("还没有地点。先让 agent 解析攻略，或在「添加地点」里手动加几个。");
+        toast.info("还没有地点。先让 agent 解析攻略，或在「添加」里手动加几个。");
         return;
       }
       const fmt = (list: typeof bundle.places) =>
@@ -434,7 +434,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
         {messages.length === 0 && !running && (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
             <p className="text-xs text-slate-500">
-              把你的攻略文本直接粘贴给我，我会解析成地点放进候选池。
+              把你的攻略文本直接粘贴给我，我会解析成地点放进候选。
             </p>
             {EXAMPLE_PROMPTS.map((text) => (
               <button

@@ -8,7 +8,7 @@ import { Button } from "../../components/ui/button";
 import { Input, Select } from "../../components/ui/input";
 import { DuplicateConfirmDialog } from "../candidates/DuplicateConfirmDialog";
 
-/** 搜索添加地点（人类直接编辑路径，与 agent 并行） */
+/** 搜索添加（人类直接编辑路径，与 agent 并行） */
 export function SearchAddPanel({
   tripId,
   bundle,

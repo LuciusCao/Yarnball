@@ -54,8 +54,8 @@ type ToolPanel = "itinerary" | "candidates" | "search";
 
 const TOOL_PANEL_META: Record<ToolPanel, { label: string; Icon: LucideIcon }> = {
   itinerary: { label: "行程", Icon: CalendarDays },
-  candidates: { label: "候选池", Icon: Star },
-  search: { label: "添加地点", Icon: Search },
+  candidates: { label: "候选", Icon: Star },
+  search: { label: "添加", Icon: Search },
 };
 
 /** 工具面板展开状态持久化（M61）：记住用户收起的偏好；无记录时默认展开「行程」tab */
@@ -286,7 +286,7 @@ export function TripPage() {
     }
   }
 
-  /** 加入酒店（信息卡主操作，口径对齐候选池 selectHotel）：默认占未覆盖的最长连续段；全程已覆盖则提示先调整已有酒店 */
+  /** 加入酒店（信息卡主操作，口径对齐候选 selectHotel）：默认占未覆盖的最长连续段；全程已覆盖则提示先调整已有酒店 */
   async function selectHotelStay(candidateId: string) {
     if (!tripId) return;
     if (days.length === 0) {
@@ -309,7 +309,7 @@ export function TripPage() {
     }
   }
 
-  /** 移出酒店（口径对齐候选池 unselectHotel）：取消住宿区间，不再锚定每天首尾 */
+  /** 移出酒店（口径对齐候选 unselectHotel）：取消住宿区间，不再锚定每天首尾 */
   async function unselectHotelStay(candidateId: string) {
     if (!tripId) return;
     setPlaceBusy(true);
@@ -323,7 +323,7 @@ export function TripPage() {
     }
   }
 
-  /** 移出行程（M20，对齐候选池出口）：已排期地点撤销全部日程 entry，退回候选态不删除 */
+  /** 移出行程（M20，对齐候选出口）：已排期地点撤销全部日程 entry，退回候选态不删除 */
   async function unschedulePlace(place: PlaceDto) {
     setPlaceBusy(true);
     try {
@@ -450,7 +450,7 @@ export function TripPage() {
         </Link>
       </header>
 
-      {/* 工具面板分段切换条（行程/候选池/添加，M61 从原左下 dock 标签条迁来）：点击 tab 向下展开浮层，再点当前 tab 收起。
+      {/* 工具面板分段切换条（行程/候选/添加，M61 从原左下 dock 标签条迁来）：点击 tab 向下展开浮层，再点当前 tab 收起。
           M62：条在自由区内右对齐（justify-end），右缘与 agent 面板左缘（right-[404px]）对齐；min-w-0 flex-1 保留窄屏让位 */}
       <div className="flex min-w-0 flex-1 justify-end">
         <div className="glass panel-in pointer-events-auto flex items-center gap-1 rounded-full p-1.5">
@@ -490,7 +490,7 @@ export function TripPage() {
               ✕
             </button>
           </div>
-          {/* 状态徽章：已排期（scheduled 蓝）> 已加入（locked 金）> 候选；酒店 locked 降级不展示 locked 徽章（!isHotel 守卫，口径对齐候选池），已选定住宿的酒店凭住宿块说明「已加入」；agent 建的地点带推荐标记 */}
+          {/* 状态徽章：已排期（scheduled 蓝）> 已加入（locked 金）> 候选；酒店 locked 降级不展示 locked 徽章（!isHotel 守卫，口径对齐候选），已选定住宿的酒店凭住宿块说明「已加入」；agent 建的地点带推荐标记 */}
           <div className="mt-1.5 flex flex-wrap gap-1">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
               <Badge variant="scheduled">已排期</Badge>
@@ -507,7 +507,7 @@ export function TripPage() {
                 agent 推荐
               </Badge>
             )}
-            {/* 预订状态徽章（M11）：所有 locked 地点可点选流转（含已排期，与候选池一致） */}
+            {/* 预订状态徽章（M11）：所有 locked 地点可点选流转（含已排期，与候选一致） */}
             {selectedPlace.status === "locked" ? (
               <button
                 title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
@@ -651,17 +651,17 @@ export function TripPage() {
           {selectedPlace.notes && (
             <p className="mt-1.5 line-clamp-3 text-[11px] leading-relaxed text-slate-500">{selectedPlace.notes}</p>
           )}
-          {/* 操作行（口径对齐候选池）：酒店的住宿维度加入/移出已拆到上方住宿块（M59：「加入住宿/移出住宿」）；
+          {/* 操作行（口径对齐候选）：酒店的住宿维度加入/移出已拆到上方住宿块（M59：「加入住宿/移出住宿」）；
               已排期地点给「移出」出口（unschedule 撤销日程）——酒店信息卡上为与住宿按钮区分改名「移出日程」，非酒店仍叫「移出行程」；
               未排期非酒店 POI 走 locked 开关。
-              图标与候选池一致：locked 态显示 CalendarMinus（点击移出），候选态显示 CalendarPlus（点击加入） */}
+              图标与候选一致：locked 态显示 CalendarMinus（点击移出），候选态显示 CalendarPlus（点击加入） */}
           <div className="mt-2.5 flex items-center gap-1.5 border-t border-slate-900/8 pt-2.5">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
               <button
                 title={
                   selectedHotelCand
-                    ? "移出日程（撤销排入的日程，退回候选池）"
-                    : "移出行程（撤销排入的日程，退回候选池）"
+                    ? "移出日程（撤销排入的日程，退回候选）"
+                    : "移出行程（撤销排入的日程，退回候选）"
                 }
                 disabled={placeBusy}
                 onClick={() => void unschedulePlace(selectedPlace)}
@@ -674,7 +674,7 @@ export function TripPage() {
                 <button
                   title={
                     selectedPlace.status === "locked"
-                      ? "移出行程（退回候选池，不再必排进日程）"
+                      ? "移出行程（退回候选，不再必排进日程）"
                       : "加入行程（确认要去，排日程时必排）"
                   }
                   disabled={placeBusy}
@@ -708,7 +708,7 @@ export function TripPage() {
         </div>
       )}
 
-      {/* 顶部：工具浮层（行程/候选池/添加，M61 从原左下 dock 迁来）。overlay 盖在地图上、不挤占布局，
+      {/* 顶部：工具浮层（行程/候选/添加，M61 从原左下 dock 迁来）。overlay 盖在地图上、不挤占布局，
           点击分段条 tab 或浮层 ✕ 收起。容器恒为 left-4 → right-[404px]（M67：右缘不随 agent 面板收起
           变化，浮层 ml-auto 锚定的右缘保持恒定），
           两态布局在内部宽度/对齐上分流（M63 修正 M62 的误读——铺满只属于放大态）：
