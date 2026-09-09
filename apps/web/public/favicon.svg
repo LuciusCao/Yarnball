@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="ball" cx="40%" cy="32%" r="78%">
+      <stop offset="0%" stop-color="#fde68a"/>
+      <stop offset="45%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </radialGradient>
+    <clipPath id="ballClip">
+      <circle cx="30" cy="29" r="21"/>
+    </clipPath>
+  </defs>
+
+  <!-- 球体 -->
+  <circle cx="30" cy="29" r="21" fill="url(#ball)"/>
+
+  <!-- 缠绕纹理：不同角度的缠绕弧，裁剪进球体 -->
+  <g clip-path="url(#ballClip)" fill="none" stroke="#d97706" stroke-width="2.4" stroke-linecap="round">
+    <!-- 横向缠绕 -->
+    <path d="M6 18 Q28 8 54 16"/>
+    <path d="M5 29 Q30 19 55 27"/>
+    <path d="M8 41 Q32 31 52 39"/>
+    <!-- 斜向缠绕（另一方向） -->
+    <path d="M12 6 Q34 22 22 54"/>
+    <path d="M28 4 Q46 24 38 54"/>
+    <path d="M44 8 Q54 30 36 52"/>
+    <!-- 反向交叉一笔，增加缠绕感 -->
+    <path d="M10 46 Q30 40 50 46" opacity="0.7"/>
+  </g>
+
+  <!-- 高光 -->
+  <ellipse cx="22" cy="18" rx="7" ry="4.5" fill="#fffbeb" opacity="0.55" transform="rotate(-18 22 18)"/>
+
+  <!-- 线头尾巴：从球体右下甩出，末端卷一卷 -->
+  <path d="M45 43 C54 49 58 44 57 51 C56 57 48 56 51 60 C53 63 58 61 59 58"
+        fill="none" stroke="#f59e0b" stroke-width="4" stroke-linecap="round"/>
+</svg>
