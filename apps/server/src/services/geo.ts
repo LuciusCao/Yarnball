@@ -1,4 +1,4 @@
-import type { LngLat, PoiCandidate, TransportMode } from "@yarnball/shared";
+import type { LngLat, PoiCandidate, TransitSegment, TransportMode } from "@yarnball/shared";
 import { ProxyAgent, type Dispatcher } from "undici";
 import { getAmapServerKey } from "./settings.js";
 
@@ -15,6 +15,11 @@ export interface RouteResult {
   distanceM: number | null;
   durationS: number | null;
   polyline: LngLat[] | null;
+  /**
+   * 公交分段详情（步行接驳 + 线路段）：仅 amap transit 真实公交路由成功时填充；
+   * walk/drive 路由、osm 估算、fallbackRoute 降级均不设置（调用方按 null 处理）。
+   */
+  transitDetail?: TransitSegment[] | null;
 }
 
 export interface ResolvedCity {
@@ -221,8 +226,8 @@ export const amap: GeoProvider = {
     return out;
   },
 
-  async route(from, to, mode) {
-    const cacheKey = `${mode}|${loc(from)}|${loc(to)}`;
+  async route(from, to, mode, city) {
+    const cacheKey = `${mode}|${loc(from)}|${loc(to)}|${city ?? ""}`;
     const cached = amapRouteCache.get(cacheKey);
     if (cached) return cached;
 
@@ -250,19 +255,66 @@ export const amap: GeoProvider = {
         polyline: path ? path.steps.flatMap((s) => parsePolyline(s.polyline)) : null,
       };
     } else {
-      // transit
+      // transit：公交换乘方案在 route.transits[]（方案列表，取首个最优方案），
+      // 每个方案 transit.segments[] 含 walking（步行接驳）与 bus.buslines[]（公交/地铁线路段）。
+      // city 是必填参数（起点城市），由调用方传入行程目的地城市。
       const body = await amapGet<{
         route: {
-          transit: {
+          transits?: Array<{
             distance: string;
             duration: string;
-            segments: Array<{ walking?: { steps: Array<{ polyline: string }> } }>;
-          };
+            segments?: Array<{
+              walking?: { distance?: string; duration?: string; steps?: Array<{ polyline: string }> };
+              bus?: {
+                buslines?: Array<{
+                  name?: string;
+                  type?: string;
+                  distance?: string;
+                  duration?: string;
+                  via_num?: string;
+                  departure_stop?: { name?: string };
+                  arrival_stop?: { name?: string };
+                }>;
+              };
+            }>;
+          }>;
         } | null;
-      }>("/direction/transit/integrated", { origin: loc(from), destination: loc(to), city: "", cityd: "" });
-      const transit = body.route?.transit;
+      }>("/direction/transit/integrated", { origin: loc(from), destination: loc(to), city: city ?? "", cityd: "" });
+      const transit = body.route?.transits?.[0];
       const polyline: LngLat[] = [];
+      const transitDetail: TransitSegment[] = [];
+      const numOrNull = (v: string | undefined) => {
+        const n = Number(v);
+        return v != null && v !== "" && Number.isFinite(n) ? n : null;
+      };
       for (const seg of transit?.segments ?? []) {
+        // 步行接驳段（起点→上车站 / 下车站→终点）：距离/时长为米/秒；0 距离的空段跳过
+        const walkDist = numOrNull(seg.walking?.distance);
+        if (seg.walking && (walkDist ?? 0) > 0) {
+          transitDetail.push({
+            kind: "walk",
+            distanceM: walkDist,
+            durationS: numOrNull(seg.walking.duration),
+            lineName: null,
+            lineType: null,
+            boardStop: null,
+            alightStop: null,
+            viaStops: null,
+          });
+        }
+        // 公交/地铁线路段：线路名、上下车站、途经站数、分段距离（米）/时长（秒）
+        for (const line of seg.bus?.buslines ?? []) {
+          transitDetail.push({
+            kind: "line",
+            distanceM: numOrNull(line.distance),
+            durationS: numOrNull(line.duration),
+            lineName: line.name ?? null,
+            lineType: line.type ?? null,
+            boardStop: line.departure_stop?.name ?? null,
+            alightStop: line.arrival_stop?.name ?? null,
+            viaStops: numOrNull(line.via_num),
+          });
+        }
         for (const step of seg.walking?.steps ?? []) {
           polyline.push(...parsePolyline(step.polyline));
         }
@@ -272,6 +324,7 @@ export const amap: GeoProvider = {
         distanceM: transit ? Number(transit.distance) : null,
         durationS: transit ? Number(transit.duration) : null,
         polyline: polyline.length > 0 ? polyline : null,
+        transitDetail: transitDetail.length > 0 ? transitDetail : null,
       };
     }
     amapRouteCache.set(cacheKey, result);

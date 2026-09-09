@@ -248,6 +248,36 @@ export const EntryDtoSchema = z.object({
 });
 export type EntryDto = z.infer<typeof EntryDtoSchema>;
 
+/**
+ * 公交分段详情（TransportLegDto.transitDetail 的元素）：
+ * 高德公交路由返回的完整分段 —— walk=步行接驳段（起点→上车站 / 下车站→终点），
+ * line=公交/地铁线路段（线路名、上下车站、途经站数、分段距离/时长）。
+ * 仅 mode=transit 且 amap 真实公交路由成功时填充；osm（海外无免费公交路由）与
+ * 估算降级场景整条 transitDetail 为 null，前端按「估算」口径展示。
+ */
+export const TRANSIT_SEGMENT_KINDS = ["walk", "line"] as const;
+export type TransitSegmentKind = (typeof TRANSIT_SEGMENT_KINDS)[number];
+
+export const TransitSegmentSchema = z.object({
+  kind: z.enum(TRANSIT_SEGMENT_KINDS),
+  /** 该分段里程（米） */
+  distanceM: z.number().nullable(),
+  /** 该分段时长（秒） */
+  durationS: z.number().nullable(),
+  /** 以下字段仅 kind=line 有意义（walk 段为 null） */
+  /** 线路名（高德原文，如「地铁2号线(内环)」「45路(南十里居--地铁望京西站)」） */
+  lineName: z.string().nullable(),
+  /** 线路类型（高德原文，如「地铁线路」「普通公交线路」） */
+  lineType: z.string().nullable(),
+  /** 上车站名 */
+  boardStop: z.string().nullable(),
+  /** 下车站名 */
+  alightStop: z.string().nullable(),
+  /** 途经站数（上车后至下车间经过的站数） */
+  viaStops: z.number().nullable(),
+});
+export type TransitSegment = z.infer<typeof TransitSegmentSchema>;
+
 export const TransportLegDtoSchema = z.object({
   id: z.string(),
   dayId: z.string(),
@@ -265,6 +295,11 @@ export const TransportLegDtoSchema = z.object({
   distanceM: z.number().nullable(),
   durationS: z.number().nullable(),
   polyline: z.array(LngLatSchema).nullable(),
+  /**
+   * 公交分段详情（见 TransitSegmentSchema）：仅 mode=transit 且 amap 真实公交路由成功时非空；
+   * osm 估算、路由降级、其余 mode 及旧数据均为 null —— null 即「无详情，按估算口径展示」。
+   */
+  transitDetail: z.array(TransitSegmentSchema).nullable(),
   computedAt: z.string(),
 });
 export type TransportLegDto = z.infer<typeof TransportLegDtoSchema>;

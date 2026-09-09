@@ -19,6 +19,7 @@ import type {
   PlaceDto,
   PlaceStatus,
   SuggestDayClustersResult,
+  TransitSegment,
   TransportMode,
   TripBundle,
   TripStop,
@@ -1199,6 +1200,7 @@ export class TripService {
         let distanceM: number | null;
         let durationS: number | null;
         let polyline: LngLat[] | null;
+        let transitDetail: TransitSegment[] | null = null;
         if (isTransitRide) {
           const entryRow = entryById.get(from.transitEntryId!);
           const fixedDurationS = transitDurationS(entryRow?.departTime ?? null, entryRow?.arriveTime ?? null);
@@ -1226,6 +1228,8 @@ export class TripService {
           distanceM = result.distanceM;
           durationS = result.durationS;
           polyline = result.polyline;
+          // 公交分段详情：仅 amap 真实公交路由返回（osm 估算/降级缺省为 undefined → 存 null）
+          transitDetail = result.transitDetail ?? null;
         }
         return {
           id: uuid(),
@@ -1241,6 +1245,7 @@ export class TripService {
           distanceM,
           durationS,
           polyline,
+          transitDetail,
           computedAt: new Date(),
         };
       }),

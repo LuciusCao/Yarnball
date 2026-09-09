@@ -1,0 +1,1 @@
+ALTER TABLE "transport_legs" ADD COLUMN "transit_detail" jsonb;

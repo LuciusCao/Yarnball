@@ -160,6 +160,8 @@ export const transportLegs = pgTable(
     distanceM: integer("distance_m"),
     durationS: integer("duration_s"),
     polyline: jsonb("polyline"), // LngLat[] | null
+    /** 公交分段详情（TransitSegment[] | null）：仅 amap transit 真实公交路由填充，osm/降级/旧数据为 null */
+    transitDetail: jsonb("transit_detail"),
     computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("legs_day_idx").on(t.dayId)],
