@@ -126,6 +126,8 @@ export function toLegDto(row: LegRow): TransportLegDto {
     distanceM: row.distanceM,
     durationS: row.durationS,
     polyline: (row.polyline as TransportLegDto["polyline"]) ?? null,
+    // 公交分段详情：仅 amap transit 真实路由填充；旧行/osm/降级为 null
+    transitDetail: (row.transitDetail as TransportLegDto["transitDetail"]) ?? null,
     computedAt: iso(row.computedAt),
   };
 }
