@@ -35,7 +35,12 @@ export interface GeoProvider {
   suggestCities(q: string): Promise<CitySuggestion[]>;
   /** 两点路线。osm 的 transit 返回估算值（免费公交路由不存在） */
   route(from: LngLat, to: LngLat, mode: TransportMode, city?: string): Promise<RouteResult>;
-  /** 驾车时长矩阵（顺路度/重排优化用），n<=10；不可用时返回 null 由调用方降级 */
+  /**
+   * 驾车时长矩阵（顺路度/重排优化用）：sources × destinations 的矩形时长表（秒）。
+   * 点数超上限时返回 null，由 drivingMatrixBatched 分批拼接或调用方降级直线估算。
+   */
+  drivingMatrixRect(sources: LngLat[], destinations: LngLat[]): Promise<number[][] | null>;
+  /** 驾车方阵（points × points）：n 较小时的便捷封装，n 大请走 drivingMatrixBatched */
   drivingMatrix(points: LngLat[]): Promise<number[][] | null>;
 }
 
@@ -67,22 +72,27 @@ export function getProvider(name: string): GeoProvider {
 
 const loc = (p: LngLat) => `${p.lng.toFixed(6)},${p.lat.toFixed(6)}`;
 
-/** 路线结果缓存：agent 反复调整行程时避免打爆上游配额。按 provider 隔离（坐标系不同）。 */
-class RouteCache {
-  private map = new Map<string, RouteResult>();
+/** 结果缓存（LRU 近似：超容量丢最旧键）：agent 反复调整行程时避免打爆上游配额。按 provider 隔离（坐标系不同）。 */
+class GeoCache<T> {
+  private map = new Map<string, T>();
+  constructor(private capacity = 2000) {}
   get(key: string) {
     return this.map.get(key);
   }
-  set(key: string, value: RouteResult) {
-    if (this.map.size >= 2000) {
+  set(key: string, value: T) {
+    if (this.map.size >= this.capacity) {
       const oldest = this.map.keys().next().value;
       if (oldest !== undefined) this.map.delete(oldest);
     }
     this.map.set(key, value);
   }
 }
-const amapRouteCache = new RouteCache();
-const osmRouteCache = new RouteCache();
+const amapRouteCache = new GeoCache<RouteResult>();
+const osmRouteCache = new GeoCache<RouteResult>();
+// 矩阵缓存：suggest_day_order / analyze_detour / suggest_day_clusters 会对同一批点反复求矩阵，
+// 免费 OSRM 服按速率限流，不缓存会反复实打上游（矩阵条目少，容量给小一点）
+const amapMatrixCache = new GeoCache<number[][]>(200);
+const osmMatrixCache = new GeoCache<number[][]>(200);
 
 /** 直线距离（米） */
 export function haversineM(a: LngLat, b: LngLat): number {
@@ -268,31 +278,34 @@ export const amap: GeoProvider = {
     return result;
   },
 
-  async drivingMatrix(points) {
-    if (points.length === 0 || points.length > 10) return null;
-    const body = await amapGet<{
-      rows: Array<{ elements: Array<{ distance: string; duration: string }> }>;
-    }>("/distance", {
-      origins: points.map(loc).join("|"),
-      destination: points.map(loc).join("|"),
-      type: "1",
-    });
-    const n = points.length;
-    const matrix: number[][] = [];
-    let i = 0;
-    for (const row of body.rows ?? []) {
-      const durationRow: number[] = [];
-      let j = 0;
-      for (const el of row.elements ?? []) {
-        if (el.distance === "0" && i !== j) durationRow.push(Number.NaN);
-        else durationRow.push(Number(el.duration));
-        j++;
+  async drivingMatrixRect(sources, destinations) {
+    if (sources.length === 0 || destinations.length === 0) return null;
+    // 高德 v3 /distance：origins 支持多点（≤100 个坐标对），destination 只支持单点
+    // → 按讫点逐个请求，origins 一次带全 sources；响应为 results: [{origin_id, dest_id, distance, duration}]
+    // （注意不是百度风格的 rows/elements——此前按 rows 解析恒为空，矩阵静默降级直线估算）
+    if (sources.length > 100) return null;
+    const byDest: number[][] = [];
+    for (const dest of destinations) {
+      const body = await amapGet<{
+        results: Array<{ origin_id: string; distance: string; duration: string }>;
+      }>("/distance", {
+        origins: sources.map(loc).join("|"),
+        destination: loc(dest),
+        type: "1",
+      });
+      const col: number[] = new Array(sources.length).fill(Number.NaN);
+      for (const r of body.results ?? []) {
+        const i = Number(r.origin_id) - 1; // origin_id 从 1 开始，对应当次请求的 origins 顺序
+        if (i >= 0 && i < sources.length) col[i] = Number(r.duration);
       }
-      while (durationRow.length < n) durationRow.push(Number.NaN);
-      matrix.push(durationRow);
-      i++;
+      byDest.push(col);
     }
-    return matrix;
+    // 转置成 sources × destinations
+    return sources.map((_, i) => destinations.map((_, j) => byDest[j][i]));
+  },
+
+  async drivingMatrix(points) {
+    return this.drivingMatrixRect(points, points);
   },
 };
 
@@ -551,13 +564,94 @@ export const osm: GeoProvider = {
     return result;
   },
 
-  async drivingMatrix(points) {
-    if (points.length < 2 || points.length > 10) return null;
-    const url = `${OSRM_CAR}/table/v1/driving/${points.map(loc).join(";")}?annotations=duration`;
+  async drivingMatrixRect(sources, destinations) {
+    if (sources.length === 0 || destinations.length === 0) return null;
+    // OSRM table 支持 sources/destinations 下标参数做矩形表：URL 里放 sources+destinations 全部坐标，
+    // 只算 sources × destinations 子块（分批拼接的基础，避免方阵点数翻倍）
+    const all = [...sources, ...destinations];
+    if (all.length > 100) return null; // demo 服表大小上限，分批由 drivingMatrixBatched 负责
+    const srcIdx = sources.map((_, i) => i).join(";");
+    const dstIdx = destinations.map((_, j) => sources.length + j).join(";");
+    const url =
+      `${OSRM_CAR}/table/v1/driving/${all.map(loc).join(";")}` +
+      `?annotations=duration&sources=${srcIdx}&destinations=${dstIdx}`;
     const res = await overseasFetch(url, 20_000);
     if (!res.ok) throw new Error(`osrm table http ${res.status}`);
-    const body = (await res.json()) as { code: string; durations?: number[][] };
+    const body = (await res.json()) as { code: string; durations?: (number | null)[][] };
     if (body.code !== "Ok" || !body.durations) throw new Error(`osrm table ${body.code}`);
-    return body.durations;
+    // 不可达对为 null，转 NaN 与调用方（routing.ts 的 isFinite 判洞）口径一致
+    return body.durations.map((row) => row.map((v) => (v == null ? Number.NaN : v)));
+  },
+
+  async drivingMatrix(points) {
+    if (points.length === 0) return null;
+    if (points.length === 1) return [[0]]; // 单点方阵恒 0（与 amap 侧同构，避免单点块被当失败）
+    return this.drivingMatrixRect(points, points);
   },
 };
+
+// ---------- 矩阵分批拼接 ----------
+
+/** 单次上游矩阵调用的最大点数（分批粒度）：与 OSRM demo 服稳定区间/原 n≤10 上限对齐 */
+const MATRIX_BATCH = 10;
+
+/**
+ * 驾车时长矩阵（任意点数）：n ≤ MATRIX_BATCH 时单次调用；更大时把点切成 ≤MATRIX_BATCH 的块，
+ * 按（源块 × 讫块）分批调 drivingMatrixRect 再拼回完整方阵——替代旧的「n>10 静默降级直线估算」。
+ * 结果按点集缓存（跟随 RouteCache 模式）：重排/聚类反复求同一批点时不重复打上游。
+ * 任一批失败 → 返回 null，由调用方整体降级直线估算并在结果里标注 estimated（不再静默）。
+ */
+export async function drivingMatrixBatched(
+  provider: GeoProvider,
+  points: LngLat[],
+  limit: <T>(task: () => Promise<T>) => Promise<T> = (task) => task(),
+): Promise<number[][] | null> {
+  const n = points.length;
+  if (n === 0) return [];
+  if (n === 1) return [[0]];
+  const cache = provider.name === "amap" ? amapMatrixCache : osmMatrixCache;
+  const cacheKey = points.map(loc).join(";");
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  // 切分块
+  const chunks: LngLat[][] = [];
+  for (let i = 0; i < n; i += MATRIX_BATCH) chunks.push(points.slice(i, i + MATRIX_BATCH));
+
+  // 逐（源块 × 讫块）请求；对角块走方阵 drivingMatrix（两 provider 的现有入口），其余走矩形接口。
+  // 单点对角块（n ≡ 1 (mod MATRIX_BATCH) 时的末块）短路为 [[0]]：自身到自身恒 0，且 osm.drivingMatrix
+  // 对 <2 点返回 null——不短路会让整块矩阵静默降级为直线估算
+  const blocks: (number[][] | null)[][] = await Promise.all(
+    chunks.map((src) =>
+      Promise.all(
+        chunks.map((dst) => {
+          if (src === dst && src.length === 1) return Promise.resolve([[0]]);
+          return limit(() =>
+            src === dst ? provider.drivingMatrix(src) : provider.drivingMatrixRect(src, dst),
+          );
+        }),
+      ),
+    ),
+  );
+  if (blocks.some((row) => row.some((b) => b == null))) return null;
+
+  // 拼接回 n×n
+  const matrix: number[][] = Array.from({ length: n }, () => new Array(n).fill(Number.NaN));
+  let rowBase = 0;
+  for (let bi = 0; bi < chunks.length; bi++) {
+    let colBase = 0;
+    for (let bj = 0; bj < chunks.length; bj++) {
+      const block = blocks[bi][bj]!;
+      for (let i = 0; i < chunks[bi].length; i++) {
+        for (let j = 0; j < chunks[bj].length; j++) {
+          matrix[rowBase + i][colBase + j] = block[i][j];
+        }
+      }
+      colBase += chunks[bj].length;
+    }
+    rowBase += chunks[bi].length;
+  }
+  for (let i = 0; i < n; i++) matrix[i][i] = 0; // 对角线恒 0（上游对自身对有时给 NaN）
+  cache.set(cacheKey, matrix);
+  return matrix;
+}

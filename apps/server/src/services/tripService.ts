@@ -37,7 +37,7 @@ import {
   toPlaceDto,
   toTripDto,
 } from "./mappers.js";
-import { amap, currencyForCountry, fallbackRoute, getProvider, haversineM, osm } from "./geo.js";
+import { amap, currencyForCountry, drivingMatrixBatched, fallbackRoute, getProvider, haversineM, osm } from "./geo.js";
 import { insertionIncrements, kMedoids, optimizeLoopOrder, optimizeOrder, optimizePathOrder, orderTotalDuration } from "./routing.js";
 import { amapConfigured } from "./settings.js";
 
@@ -121,6 +121,11 @@ const PLACE_CITY_ASSIGN_MAX_DIST_KM = 150;
 /** 建点幂等去重：规范化名称相同（或互为前缀）且坐标距离 ≤200m 视为同一地点（不插新行） */
 const PLACE_DEDUP_MAX_DIST_M = 200;
 
+/** 自动交通方式分档（直线距离，米）：< LEG_WALK_MAX_M 步行 */
+const LEG_WALK_MAX_M = 2000;
+/** 自动交通方式分档：LEG_WALK_MAX_M ~ LEG_TRANSIT_MAX_M 公交（amap 真实公交路由 / osm 估算口径），以上驾车 */
+const LEG_TRANSIT_MAX_M = 6000;
+
 /**
  * 名称规范化（去重比较用）：小写 + 去除全部空白（含全角空格）+ 统一全半角括号 +
  * 剥离末尾括号后缀（「外婆家（西湖店）」「Aria (West)」这类分店/方位标注与主名视为同一地点）。
@@ -145,6 +150,19 @@ const placeNameMatch = (a: string, b: string) => {
   const [short, long] = a.length <= b.length ? [a, b] : [b, a];
   return short.length >= 3 && long.startsWith(short);
 };
+
+/** "HH:MM" → 当天分钟数；非法输入为 null（与前端 timeline.ts 的 parseHHMM 口径一致） */
+function hhmmToMin(t: string | null | undefined): number | null {
+  if (!t) return null;
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(t);
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+
+/** 当天分钟数 → "HH:MM"（跨零点取模回 24h 内） */
+function minToHHMM(minutes: number): string {
+  const t = ((Math.round(minutes) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+}
 
 /** transit entry 大交通段时长：depart/arrive 时刻差（跨零点按次日到达计）；缺任一为 null */
 function transitDurationS(departTime: string | null, arriveTime: string | null): number | null {
@@ -367,20 +385,20 @@ export class TripService {
   }
 
   /**
-   * 更新行程字段（PATCH /api/trips/:tripId 与 MCP set_start_date）。
-   * 当前仅 startDate（出发日期）：null = 清除，天标签退化为「Day N」。
-   * 已知行为（低成本方案，刻意不做联动校验）：startDate 与 endDate 互不联动——endDate 只能创建时传入，
-   * 本接口不改它；天数口径（getTripDayCount / getBudgetSummary）要求两者同时非空才按日期区间计，
-   * 因此清掉 startDate 留下 endDate、或只设 startDate 不设 endDate 时，天数自动回退到已建天数兜底，
-   * startDate 仅影响天标签展示，不会产生破坏性的天数变化。
+   * 更新行程字段（PATCH /api/trips/:tripId 与 MCP set_start_date / set_end_date）。
+   * startDate（出发日期）/ endDate（结束日期）：null = 清除。天标签由 startDate 驱动（清除退化为「Day N」）。
+   * 已知行为（低成本方案，刻意不做联动校验）：startDate 与 endDate 互不联动——不强制 endDate ≥ startDate；
+   * 天数口径（getTripDayCount / getBudgetSummary / selectHotel 上界）要求两者同时非空且区间为正才按日期区间计，
+   * 只设一个或区间倒置时自动回退到已建天数兜底，不会产生破坏性的天数变化。
    */
   async updateTrip(tripId: string, input: UpdateTripInput) {
     await this.getTrip(tripId);
-    if (input.startDate !== undefined) {
-      await this.db
-        .update(schema.trips)
-        .set({ startDate: input.startDate ?? null, updatedAt: new Date() })
-        .where(eq(schema.trips.id, tripId));
+    const patch: Partial<typeof schema.trips.$inferInsert> = {};
+    if (input.startDate !== undefined) patch.startDate = input.startDate ?? null;
+    if (input.endDate !== undefined) patch.endDate = input.endDate ?? null;
+    if (Object.keys(patch).length > 0) {
+      patch.updatedAt = new Date();
+      await this.db.update(schema.trips).set(patch).where(eq(schema.trips.id, tripId));
       await this.publishBundle(tripId);
     }
     return toTripDto(await this.getTrip(tripId));
@@ -1199,7 +1217,10 @@ export class TripService {
             polyline = [a, b];
           }
         } else {
-          mode = override ?? (haversineM(a, b) < 2000 ? "walk" : "drive");
+          // 自动交通方式三档：<2km 步行；2-6km 公交（amap 走真实公交路由；osm 无免费公交路由，
+          // 保持估算口径但 mode 标 transit——市区中段标驾车会与游客实际不符）；>6km 驾车
+          const dist = haversineM(a, b);
+          mode = override ?? (dist < LEG_WALK_MAX_M ? "walk" : dist <= LEG_TRANSIT_MAX_M ? "transit" : "drive");
           const result = await this.routeWithRetry(routeLimit, geo, a, b, mode, trip?.destinationCity);
           mode = override ?? result.mode;
           distanceM = result.distanceM;
@@ -1257,27 +1278,39 @@ export class TripService {
 
   // ---------- 顺路分析（MCP / 前端共用） ----------
 
-  /** 构建时长矩阵：优先该行程 provider 的驾车矩阵，失败降级直线距离估算 */
-  private async buildDurationMatrix(provider: string, points: LngLat[]): Promise<number[][]> {
+  /**
+   * 构建时长矩阵：优先该行程 provider 的真实驾车矩阵（drivingMatrixBatched 分批拼接，任意点数），
+   * 经全局限流器收口；失败才整体降级「直线距离 × 1.3 ÷ 8.5m/s」估算。
+   * estimated 标记是否走了估算——旧的 n>10 静默降级已移除，降级必须显式暴露给调用方（结果里标注）。
+   */
+  private async buildDurationMatrix(
+    provider: string,
+    points: LngLat[],
+  ): Promise<{ matrix: number[][]; estimated: boolean }> {
     const n = points.length;
-    if (n === 0) return [];
+    if (n === 0) return { matrix: [], estimated: false };
+    const geo = getProvider(provider);
     let matrix: number[][] | null = null;
-    if (n <= 10) {
-      try {
-        matrix = await getProvider(provider).drivingMatrix(points);
-      } catch (err) {
-        console.warn(`[routing] drivingMatrix failed, fallback to haversine:`, (err as Error).message);
-      }
+    try {
+      matrix = await drivingMatrixBatched(geo, points, (task) => this.routeLimits[geo.name](task));
+    } catch (err) {
+      console.warn(`[routing] drivingMatrix failed, fallback to haversine:`, (err as Error).message);
     }
-    if (matrix && matrix.length === n) return matrix;
+    if (matrix && matrix.length === n) return { matrix, estimated: false };
     // 直线距离 × 1.3 道路系数 / 8.5 m/s 车速
-    return points.map((a) =>
-      points.map((b) => Math.round((haversineM(a, b) * 1.3) / 8.5)),
-    );
+    return {
+      matrix: points.map((a) => points.map((b) => Math.round((haversineM(a, b) * 1.3) / 8.5))),
+      estimated: true,
+    };
   }
 
-  /** 重排建议（不落库）：按天取酒店锚点——同酒店往返按环路优化，换酒店日按「旧酒店→…→新酒店」定端路径优化，无锚点保持首点为起点。
-   *  transit entry 时间固定不参与重排，保持原位；仅 place entry 参与优化。 */
+  /**
+   * 重排建议（不落库）：按天取酒店锚点——同酒店往返按环路优化，换酒店日按「旧酒店→…→新酒店」定端路径优化，无锚点保持首点为起点。
+   *  硬锚点不参与重排、保持原位：transit entry（大交通时刻固定）+ 带 startTime 的 place entry
+   * （定时票/预约餐厅等已确认时间，重排不得打乱）；仅「无 startTime 的 place entry」参与优化。
+   *  返回 suggestedStartTimes：按新顺序从 09:00 顺推的重算时间轴（硬锚点保留原时刻），
+   *  应用重排（reorder_day）后按它 update_entry 写回 startTime，时间轴才不自相矛盾。
+   */
   async suggestDayOrder(tripId: string, dayIndex: number) {
     const trip = await this.getTrip(tripId);
     const day = await this.ensureDay(tripId, dayIndex);
@@ -1286,11 +1319,26 @@ export class TripService {
       .from(schema.entries)
       .where(eq(schema.entries.dayId, day.id))
       .orderBy(asc(schema.entries.position));
-    const entries = allEntries.filter((e) => e.entryType !== "transit" && e.placeId != null);
-    if (entries.length < 3) {
-      throw new ServiceError(422, `day ${dayIndex} 只有 ${entries.length} 个地点（<3），无需重排`);
+    // 可移动 = place entry 且未定 startTime；transit 与定时点为硬锚点
+    const isMovable = (e: (typeof allEntries)[number]) =>
+      e.entryType !== "transit" && e.placeId != null && e.startTime == null;
+    const entries = allEntries.filter(isMovable);
+    const pinnedTimedCount = allEntries.filter(
+      (e) => e.entryType !== "transit" && e.placeId != null && e.startTime != null,
+    ).length;
+    if (entries.length < 2) {
+      throw new ServiceError(
+        422,
+        `day ${dayIndex} 只有 ${entries.length} 个可移动地点（<2），无需重排` +
+          `（带 startTime 的定时点与大交通为硬锚点，不参与重排）`,
+      );
     }
-    const placeIds = [...new Set(entries.map((e) => e.placeId!))];
+    // place 加载覆盖全部 place entry（含硬锚点）：时间轴顺推需要它们的名称/停留时长/坐标
+    const placeIds = [
+      ...new Set(
+        allEntries.map((e) => e.placeId).filter((x): x is string => x != null),
+      ),
+    ];
     const places = await this.db.select().from(schema.places).where(inArray(schema.places.id, placeIds));
     const placeById = new Map(places.map((p) => [p.id, p]));
     const entryCoords = entries.map((e) => {
@@ -1312,13 +1360,18 @@ export class TripService {
     const switchDay =
       anchors.startPlaceId != null && anchors.endPlaceId != null && anchors.startPlaceId !== anchors.endPlaceId;
 
-    let optimizedIdx: number[]; // entries 数组的下标顺序
+    let optimizedIdx: number[]; // entries（可移动）数组的下标顺序
     let before: number;
     let after: number;
+    // 优化用的坐标/矩阵与可移动 entry 的矩阵下标映射（时间轴顺推时取真实段时长用）
+    let matrix: number[][];
+    let matrixEstimated = false;
+    let matrixIdxOfEntry = new Map<string, number>(); // entryId → matrix 下标
+    let anchorStartMatrixIdx: number | null = null; // 酒店首锚点在矩阵里的下标
     if (hotelAnchored && startCoord && endCoord && switchDay) {
       // 定端路径：[旧酒店, ...entries, 新酒店]，下标 0 / n-1 固定
       const coords = [startCoord, ...entryCoords, endCoord];
-      const matrix = await this.buildDurationMatrix(trip.geoProvider, coords);
+      ({ matrix, estimated: matrixEstimated } = await this.buildDurationMatrix(trip.geoProvider, coords));
       const path = optimizePathOrder(matrix); // [0, ...perm, n-1]
       optimizedIdx = path.slice(1, -1).map((i) => i - 1);
       const pathCost = (order: number[]): number => {
@@ -1329,10 +1382,12 @@ export class TripService {
       };
       before = pathCost(entries.map((_, i) => i));
       after = pathCost(optimizedIdx);
+      matrixIdxOfEntry = new Map(entries.map((e, i) => [e.id, i + 1]));
+      anchorStartMatrixIdx = 0;
     } else if (hotelAnchored && startCoord) {
       // 环路：[酒店, ...entries, 酒店]，下标 0 = 酒店
       const coords = [startCoord, ...entryCoords];
-      const matrix = await this.buildDurationMatrix(trip.geoProvider, coords);
+      ({ matrix, estimated: matrixEstimated } = await this.buildDurationMatrix(trip.geoProvider, coords));
       const loop = optimizeLoopOrder(matrix); // [0, ...perm, 0]
       optimizedIdx = loop.slice(1, -1).map((i) => i - 1);
       const loopCost = (order: number[]): number => {
@@ -1343,20 +1398,100 @@ export class TripService {
       };
       before = loopCost(entries.map((_, i) => i));
       after = loopCost(optimizedIdx);
+      matrixIdxOfEntry = new Map(entries.map((e, i) => [e.id, i + 1]));
+      anchorStartMatrixIdx = 0;
     } else {
-      const matrix = await this.buildDurationMatrix(trip.geoProvider, entryCoords);
+      ({ matrix, estimated: matrixEstimated } = await this.buildDurationMatrix(trip.geoProvider, entryCoords));
       optimizedIdx = optimizeOrder(matrix);
       before = orderTotalDuration(entries.map((_, i) => i), matrix);
       after = orderTotalDuration(optimizedIdx, matrix);
+      matrixIdxOfEntry = new Map(entries.map((e, i) => [e.id, i]));
     }
     const describe = (idx: number[]) =>
       idx.map((i) => ({ entryId: entries[i].id, name: placeById.get(entries[i].placeId!)!.name }));
-    // transit entry 保持原位：优化后的 place 顺序填回非 transit 槽位，entryIds 含全部 entry（reorderDay 要求全量）
+    // 硬锚点（transit + 定时点）保持原位：优化后的顺序只填回可移动槽位，entryIds 含全部 entry（reorderDay 要求全量）
     const optimizedPlaceIds = optimizedIdx.map((i) => entries[i].id);
     let cursor = 0;
-    const mergedEntryIds = allEntries.map((e) =>
-      e.entryType !== "transit" && e.placeId != null ? optimizedPlaceIds[cursor++] : e.id,
-    );
+    const mergedEntryIds = allEntries.map((e) => (isMovable(e) ? optimizedPlaceIds[cursor++] : e.id));
+
+    // ---- 按新顺序顺推重算时间轴（与前端 timeline.ts 同口径：09:00 起，停留 + 交通时长累加）----
+    // 硬锚点保留原时刻；可移动 entry 得到建议 startTime，供应用重排后写回
+    const entryById = new Map(allEntries.map((e) => [e.id, e]));
+    const DAY_START_MIN = 9 * 60;
+    const stayMinOf = (e: (typeof allEntries)[number]) => {
+      const p = e.placeId ? placeById.get(e.placeId) : undefined;
+      return e.durationMin ?? p?.durationMin ?? p?.visitDurationMin ?? 90;
+    };
+    // 节点坐标：place entry 取 place 坐标；transit 取讫点（缺省起点）坐标——跨城大交通不做市内顺推依据
+    const coordOfEntry = (e: (typeof allEntries)[number]): LngLat | null => {
+      const pid = e.placeId ?? e.toPlaceId ?? e.fromPlaceId;
+      const p = pid ? placeById.get(pid) : undefined;
+      return p ? { lng: Number(p.lng), lat: Number(p.lat) } : null;
+    };
+    // 上一节点 → 当前节点的交通分钟：两端都在优化矩阵里取真实时长，否则直线估算（×1.3 ÷ 8.5m/s）
+    const travelMin = (
+      from: { matrixIdx: number | null; coord: LngLat | null },
+      to: { matrixIdx: number | null; coord: LngLat | null },
+    ) => {
+      if (from.matrixIdx != null && to.matrixIdx != null) {
+        const s = matrix[from.matrixIdx][to.matrixIdx];
+        if (Number.isFinite(s)) return s / 60;
+      }
+      if (from.coord && to.coord) return (haversineM(from.coord, to.coord) * 1.3) / 8.5 / 60;
+      return 0;
+    };
+    const suggestedStartTimes: Array<{
+      entryId: string;
+      name: string;
+      startTime: string | null;
+      /** true = 硬锚点（transit / 已定 startTime），保留原时刻不参与顺推改写 */
+      pinned: boolean;
+    }> = [];
+    let cur = DAY_START_MIN;
+    let prev: { matrixIdx: number | null; coord: LngLat | null } = {
+      matrixIdx: anchorStartMatrixIdx,
+      coord: startCoord,
+    };
+    for (const entryId of mergedEntryIds) {
+      const e = entryById.get(entryId)!;
+      const node = { matrixIdx: matrixIdxOfEntry.get(entryId) ?? null, coord: coordOfEntry(e) };
+      if (e.entryType === "transit") {
+        // 大交通：depart/arrive 是硬锚点，保留原时刻；到达时间推进顺推游标
+        const start = hhmmToMin(e.departTime ?? e.startTime);
+        const arrive = hhmmToMin(e.arriveTime);
+        let end = arrive ?? start ?? cur;
+        if (start != null && arrive != null && arrive < start) end += 1440;
+        cur = Math.max(cur, end);
+        suggestedStartTimes.push({
+          entryId,
+          name: `${e.fromName ?? "起点"} → ${e.toName ?? "讫点"}`,
+          startTime: e.departTime ?? e.startTime,
+          pinned: true,
+        });
+      } else if (e.startTime != null) {
+        // 定时点硬锚点：保留原时刻（即使与顺推游标冲突也不移动），游标推进到其结束
+        const start = hhmmToMin(e.startTime) ?? cur;
+        cur = Math.max(cur, start) + stayMinOf(e);
+        suggestedStartTimes.push({
+          entryId,
+          name: e.placeId ? (placeById.get(e.placeId)?.name ?? "") : "",
+          startTime: e.startTime,
+          pinned: true,
+        });
+      } else {
+        cur += travelMin(prev, node);
+        const start = cur;
+        cur = start + stayMinOf(e);
+        suggestedStartTimes.push({
+          entryId,
+          name: e.placeId ? (placeById.get(e.placeId)?.name ?? "") : "",
+          startTime: minToHHMM(start),
+          pinned: false,
+        });
+      }
+      prev = node;
+    }
+
     return {
       dayIndex,
       hotelAnchored,
@@ -1367,6 +1502,12 @@ export class TripService {
       savedS: Math.max(0, before - after),
       entryIds: mergedEntryIds,
       alreadyOptimal: before - after < 60,
+      /** 硬锚点（带 startTime 的定时点）数量：它们保持原位不参与重排 */
+      pinnedCount: pinnedTimedCount,
+      /** 按新顺序顺推的建议时间轴；应用 reorder_day 后按它写回 startTime（pinned 的不要动） */
+      suggestedStartTimes,
+      /** true = 时长矩阵走了直线估算降级（上游不可用），优化质量仅供参考 */
+      matrixEstimated,
     };
   }
 
@@ -1435,7 +1576,7 @@ export class TripService {
         : startOnlyAnchored
           ? [startCoord, ...entryCoords, targetCoord]
           : [...entryCoords, targetCoord];
-    const matrix = await this.buildDurationMatrix(trip.geoProvider, points);
+    const { matrix } = await this.buildDurationMatrix(trip.geoProvider, points);
     const targetIdx = points.length - 1;
     const hotelIdx = hotelAnchored ? 0 : undefined;
     // 换酒店日的尾锚点（新酒店）在 entries 之后；同酒店时尾锚点 = 首锚点
@@ -1475,7 +1616,10 @@ export class TripService {
 
   /**
    * 区域聚类建议（只建议不落库）：把未排期的非酒店地点（候选 + 锁定、未进任何一天行程、
-   * 也不作为 transit 起讫点）按驾车时长矩阵 k-medoids 聚成 1-4 片，建议「每天一片」——按各天当前负载把簇分配给天数（少的优先）。
+   * 也不作为 transit 起讫点）按城市归属分组后，组内按驾车时长矩阵 k-medoids 聚片，建议「每天一片」。
+   * 多城市防错配：同城才同簇（cityName 分组，缺失时按最近途经地 ≤150km 归属），跨城地点绝不进同一簇；
+   * 簇数按点数自适应（ceil(n/4)，每组 1-4 片），不再被已建天数截断——未建天（dayCount=1）时也能给出多分片建议；
+   * 天数分配优先匹配「当天已有该城市 entry」的天，再按负载最轻，簇多于天数时多余的 suggestedDayIndex=null。
    */
   async suggestDayClusters(tripId: string): Promise<SuggestDayClustersResult> {
     const trip = await this.getTrip(tripId);
@@ -1500,38 +1644,106 @@ export class TripService {
         note: `未排期地点只有 ${unscheduled.length} 个（<2），无需聚类`,
       };
     }
-    // 簇数：2-4 片，受天数与点数约束（每天一片，别把一天塞太满）
-    const k = Math.max(1, Math.min(4, Math.ceil(unscheduled.length / 3), dayCount));
-    const coords: LngLat[] = unscheduled.map((p) => ({ lng: Number(p.lng), lat: Number(p.lat) }));
-    const matrix = await this.buildDurationMatrix(trip.geoProvider, coords);
-    const assignment = kMedoids(matrix, k);
 
-    // 各天当前负载（entry 数）：簇按大小降序分给负载最轻的天
+    // ---- 按城市归属分组（同城才同簇）：cityName 优先；缺失时距最近途经地中心 ≤150km 归该 stop；否则「未归属」组 ----
+    const stops = this.stopsOfTrip(trip);
+    const cityOf = (p: (typeof unscheduled)[number]): string | null => {
+      if (p.cityName) return p.cityName.trim();
+      const coord = { lng: Number(p.lng), lat: Number(p.lat) };
+      let best: { name: string; distKm: number } | null = null;
+      for (const stop of stops) {
+        if (!stop.center) continue;
+        const distKm = haversineM(stop.center, coord) / 1000;
+        if (!best || distKm < best.distKm) best = { name: stop.name, distKm };
+      }
+      return best && best.distKm <= PLACE_CITY_ASSIGN_MAX_DIST_KM ? best.name : null;
+    };
+    const byCity = new Map<string | null, typeof unscheduled>();
+    for (const p of unscheduled) {
+      const key = cityOf(p);
+      const list = byCity.get(key) ?? [];
+      list.push(p);
+      byCity.set(key, list);
+    }
+    // 组顺序跟随 stops 游览顺序（未归属组排最后），输出的簇序与城市游览序一致
+    const stopOrder = new Map(stops.map((s, i) => [s.name, i]));
+    const cityGroups = [...byCity.entries()].sort(([a], [b]) => {
+      const ia = a != null ? (stopOrder.get(a) ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+      const ib = b != null ? (stopOrder.get(b) ?? Number.MAX_SAFE_INTEGER) : Number.MAX_SAFE_INTEGER;
+      return ia - ib;
+    });
+
+    // ---- 组内聚类：簇数按点数自适应 ceil(n/4)，上限 4（与工具描述对齐），不被 dayCount 截断 ----
+    let matrixEstimated = false;
+    const rawClusters: Array<{ cityName: string | null; members: typeof unscheduled }> = [];
+    for (const [cityName, members] of cityGroups) {
+      const k = Math.max(1, Math.min(4, Math.ceil(members.length / 4)));
+      if (members.length <= k || k === 1) {
+        // 单点组 / 单簇：不必跑 k-medoids
+        rawClusters.push({ cityName, members });
+        continue;
+      }
+      const coords: LngLat[] = members.map((p) => ({ lng: Number(p.lng), lat: Number(p.lat) }));
+      const { matrix, estimated } = await this.buildDurationMatrix(trip.geoProvider, coords);
+      matrixEstimated = matrixEstimated || estimated;
+      const assignment = kMedoids(matrix, k);
+      const groups = new Map<number, typeof unscheduled>();
+      assignment.forEach((c, i) => {
+        const list = groups.get(c) ?? [];
+        list.push(members[i]);
+        groups.set(c, list);
+      });
+      // 组内簇按大小降序（大簇优先分天）
+      for (const g of [...groups.values()].sort((a, b) => b.length - a.length)) {
+        rawClusters.push({ cityName, members: g });
+      }
+    }
+
+    // ---- 天数分配：优先「当天已有该城市 entry」的天，再按负载最轻；每天最多一片，溢出为 null ----
     const dayIndexById = new Map(dayRows.map((d) => [d.id, d.dayIndex]));
+    const placeCityById = new Map(places.map((p) => [p.id, p.cityName]));
     const loadByDay = new Map<number, number>();
+    const cityCountByDay = new Map<number, Map<string, number>>();
     for (const e of allEntries) {
       const di = dayIndexById.get(e.dayId);
-      if (di != null) loadByDay.set(di, (loadByDay.get(di) ?? 0) + 1);
+      if (di == null) continue;
+      loadByDay.set(di, (loadByDay.get(di) ?? 0) + 1);
+      const city = e.placeId ? placeCityById.get(e.placeId) : null;
+      if (city) {
+        const m = cityCountByDay.get(di) ?? new Map<string, number>();
+        m.set(city, (m.get(city) ?? 0) + 1);
+        cityCountByDay.set(di, m);
+      }
     }
-    const daysByLoad = Array.from({ length: dayCount }, (_, i) => i + 1).sort(
-      (a, b) => (loadByDay.get(a) ?? 0) - (loadByDay.get(b) ?? 0) || a - b,
-    );
-
-    const groups = new Map<number, number[]>();
-    assignment.forEach((c, i) => {
-      const list = groups.get(c) ?? [];
-      list.push(i);
-      groups.set(c, list);
-    });
-    const sortedGroups = [...groups.values()].sort((a, b) => b.length - a.length);
-    const clusters = sortedGroups.map((memberIdx, clusterIndex) => {
-      const members = memberIdx.map((i) => unscheduled[i]);
+    // 各天主导城市（当天 entry 关联地点的 cityName 众数）
+    const dominantCityByDay = new Map<number, string>();
+    for (const [di, m] of cityCountByDay) {
+      const top = [...m.entries()].sort((a, b) => b[1] - a[1])[0];
+      if (top) dominantCityByDay.set(di, top[0]);
+    }
+    const assignedDays = new Set<number>();
+    const pickDay = (cityName: string | null): number | null => {
+      const candidates = Array.from({ length: dayCount }, (_, i) => i + 1).filter(
+        (d) => !assignedDays.has(d),
+      );
+      if (candidates.length === 0) return null;
+      // 同城天优先（该天已有这个城市的安排），其余按负载升序、天序号升序
+      const matched = cityName != null ? candidates.filter((d) => dominantCityByDay.get(d) === cityName) : [];
+      const pool = matched.length > 0 ? matched : candidates;
+      pool.sort((a, b) => (loadByDay.get(a) ?? 0) - (loadByDay.get(b) ?? 0) || a - b);
+      return pool[0];
+    };
+    const clusters: DayCluster[] = rawClusters.map((g, clusterIndex) => {
+      const members = g.members;
       const centroid = {
         lng: members.reduce((s, p) => s + Number(p.lng), 0) / members.length,
         lat: members.reduce((s, p) => s + Number(p.lat), 0) / members.length,
       };
+      const day = pickDay(g.cityName);
+      if (day != null) assignedDays.add(day);
       return {
         clusterIndex,
+        cityName: g.cityName,
         places: members.map((p) => ({
           id: p.id,
           name: p.name,
@@ -1539,10 +1751,26 @@ export class TripService {
           location: { lng: Number(p.lng), lat: Number(p.lat) },
         })),
         centroid,
-        suggestedDayIndex: daysByLoad[clusterIndex] ?? null,
+        suggestedDayIndex: day,
       };
     });
-    return { clusters, unscheduledCount: unscheduled.length, dayCount };
+
+    const notes: string[] = [];
+    if (cityGroups.length > 1) {
+      notes.push(`已按途经地分组（${cityGroups.map(([c]) => c ?? "未归属").join("、")}），同一簇不会跨城市`);
+    }
+    if (clusters.some((c) => c.suggestedDayIndex == null)) {
+      notes.push("簇数多于行程天数，多余的簇未分配天（请先建天/设置日期范围，或手动合并分天）");
+    }
+    if (matrixEstimated) {
+      notes.push("时长矩阵走了直线估算降级（上游不可用），分片结果仅供参考");
+    }
+    return {
+      clusters,
+      unscheduledCount: unscheduled.length,
+      dayCount,
+      ...(notes.length > 0 ? { note: notes.join("；") } : {}),
+    };
   }
 
   // ---------- 酒店 ----------
@@ -1594,6 +1822,14 @@ export class TripService {
     if (!cand) throw new ServiceError(404, `hotel candidate ${candidateId} not found`);
 
     const dayCount = await this.getTripDayCount(trip);
+    // 天数边界是否已知：仅当 startDate+endDate 同时有效（日期区间天数）时才把 dayCount 当上界硬校验。
+    // 否则 dayCount 退回已建天数（未建天时 =1），若拿它卡 checkOutDay 会与「先定酒店锚点再排天」的
+    // 工作流自相矛盾（未建天选酒店被 422）——此时天数可后续增长（建天/设日期），上限不校验。
+    const dateRangeDays =
+      trip.startDate && trip.endDate
+        ? Math.round((new Date(trip.endDate).getTime() - new Date(trip.startDate).getTime()) / 86_400_000) + 1
+        : 0;
+    const hasDateRange = Number.isFinite(dateRangeDays) && dateRangeDays > 0;
     const others = await this.db
       .select()
       .from(schema.hotelCandidates)
@@ -1612,7 +1848,11 @@ export class TripService {
       throw new ServiceError(422, "checkInDay 与 checkOutDay 必须同时提供或同时省略（同缺时自动建议未被覆盖的天段）");
     }
     if (checkInDay == null || checkOutDay == null) {
-      // 缺省智能建议：尚未被其他已选定酒店覆盖的最长连续天段
+      // 缺省智能建议：尚未被其他已选定酒店覆盖的最长连续天段。
+      // horizon：有日期区间时 = dayCount；无日期区间（未建天可继续增长）时取 max(dayCount, 其他酒店最大 checkOutDay)，
+      // 保证搜索尾部恒有未覆盖天（覆盖天 < checkOutDay ≤ horizon），不会因为天数未建而把建议压成 [1,2) 一晚。
+      const maxOtherCheckOutDay = others.reduce((m, o) => Math.max(m, o.checkOutDay ?? 0), 0);
+      const horizon = hasDateRange ? dayCount : Math.max(dayCount, maxOtherCheckOutDay);
       const covered = new Set<number>();
       for (const o of others) {
         if (o.checkInDay == null || o.checkOutDay == null) continue;
@@ -1621,8 +1861,8 @@ export class TripService {
       let bestStart = 0;
       let bestLen = 0;
       let runStart = 0;
-      for (let d = 1; d <= dayCount + 1; d++) {
-        if (d <= dayCount && !covered.has(d)) {
+      for (let d = 1; d <= horizon + 1; d++) {
+        if (d <= horizon && !covered.has(d)) {
           if (runStart === 0) runStart = d;
           const len = d - runStart + 1;
           if (len > bestLen) {
@@ -1634,6 +1874,7 @@ export class TripService {
         }
       }
       if (bestLen === 0) {
+        // 仅 hasDateRange 时可达（无日期区间时 horizon 尾部恒未覆盖）
         throw new ServiceError(
           422,
           `行程 ${dayCount} 天均已被其他已选定酒店覆盖，请显式指定 checkInDay/checkOutDay（不得重叠）或先取消其他酒店的选定`,
@@ -1642,11 +1883,14 @@ export class TripService {
       checkInDay = bestStart;
       checkOutDay = bestStart + bestLen;
     }
-    // 入离店天必须在行程天数范围内（闭开区间，checkOutDay 可到 dayCount+1）
-    if (checkInDay < 1 || checkOutDay > dayCount + 1 || checkInDay >= checkOutDay) {
+    // 入离店天区间校验（闭开区间，checkOutDay 可到 dayCount+1）：
+    // 有日期区间时上限硬校验；无日期区间（未建天/未定天数）只要求区间本身非空——允许先选酒店锚点再排天
+    if (checkInDay < 1 || checkInDay >= checkOutDay || (hasDateRange && checkOutDay > dayCount + 1)) {
       throw new ServiceError(
         422,
-        `入离店天区间 [${checkInDay}, ${checkOutDay}) 超出行程天数范围（共 ${dayCount} 天）或区间为空`,
+        hasDateRange
+          ? `入离店天区间 [${checkInDay}, ${checkOutDay}) 超出行程天数范围（共 ${dayCount} 天）或区间为空`
+          : `入离店天区间 [${checkInDay}, ${checkOutDay}) 为空（checkInDay 必须 ≥1 且 < checkOutDay）`,
       );
     }
     // 同一行程已选定酒店的天数区间不得重叠
