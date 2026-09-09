@@ -1,1 +1,0 @@
-ALTER TABLE "trips" ADD COLUMN "geo_provider" text DEFAULT 'osm' NOT NULL;

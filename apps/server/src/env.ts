@@ -1,17 +1,10 @@
 import "dotenv/config";
-
-function required(name: string): string {
-  const v = process.env[name];
-  if (!v) {
-    console.error(`Missing required env ${name}. Copy .env.example to .env and fill it in.`);
-    process.exit(1);
-  }
-  return v;
-}
+import { resolveDbPath } from "./db/client.js";
 
 export const env = {
+  /** SQLite 数据库文件路径（DATABASE_URL 支持纯路径或 file: 前缀，默认 ~/.yarnball/yarnball.db） */
   get databaseUrl() {
-    return required("DATABASE_URL");
+    return resolveDbPath();
   },
   get serverPort() {
     return Number(process.env.SERVER_PORT ?? 18788);

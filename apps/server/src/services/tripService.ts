@@ -205,8 +205,8 @@ export class TripService {
     stops: unknown;
     destinationCity: string;
     cityAdcode: string | null;
-    cityCenterLng: string | null;
-    cityCenterLat: string | null;
+    cityCenterLng: number | null;
+    cityCenterLat: number | null;
   }): TripStop[] {
     const stops = trip.stops as TripStop[] | null;
     if (stops && stops.length > 0) return stops;
@@ -336,8 +336,8 @@ export class TripService {
         destinationCity: stopNames[0],
         cityAdcode: resolved.adcode,
         geoProvider: resolved.provider,
-        cityCenterLng: resolved.center ? String(resolved.center.lng) : null,
-        cityCenterLat: resolved.center ? String(resolved.center.lat) : null,
+        cityCenterLng: resolved.center ? resolved.center.lng : null,
+        cityCenterLat: resolved.center ? resolved.center.lat : null,
         stops: resolved.stops,
         currency: resolved.currency,
         startDate: input.startDate ?? null,
@@ -365,8 +365,8 @@ export class TripService {
       .set({
         geoProvider: resolved.provider,
         cityAdcode: resolved.provider === "amap" ? resolved.adcode : null,
-        cityCenterLng: resolved.center ? String(resolved.center.lng) : null,
-        cityCenterLat: resolved.center ? String(resolved.center.lat) : null,
+        cityCenterLng: resolved.center ? resolved.center.lng : null,
+        cityCenterLat: resolved.center ? resolved.center.lat : null,
         stops: resolved.stops,
         currency: resolved.currency,
         updatedAt: new Date(),
@@ -514,8 +514,8 @@ export class TripService {
         tripId,
         name: input.name,
         category: input.category,
-        lng: String(input.location.lng),
-        lat: String(input.location.lat),
+        lng: input.location.lng,
+        lat: input.location.lat,
         address: input.address ?? null,
         website: input.website ?? null,
         bookingUrl: input.bookingUrl ?? null,
@@ -630,8 +630,8 @@ export class TripService {
     if (input.name != null) patch.name = input.name;
     if (input.category != null) patch.category = input.category;
     if (input.location != null) {
-      patch.lng = String(input.location.lng);
-      patch.lat = String(input.location.lat);
+      patch.lng = input.location.lng;
+      patch.lat = input.location.lat;
     }
     if (input.address !== undefined) patch.address = input.address ?? null;
     if (input.website !== undefined) patch.website = input.website ?? null;
@@ -800,14 +800,14 @@ export class TripService {
     const pos =
       input.position == null ? entries.length : Math.max(0, Math.min(input.position, entries.length));
     const entryId = uuid();
-    await this.db.transaction(async (tx) => {
+    this.db.transaction((tx) => {
       // (dayId, position) 唯一索引逐行检查，+1 位移会与未更新的行相撞：
       // 先把受影响行挪到安全区（+10001），插入后归一化回 0..n（同 moveEntry 同天分支的模式）
-      await tx
-        .update(schema.entries)
+      tx.update(schema.entries)
         .set({ position: sql`${schema.entries.position} + 10001` })
-        .where(and(eq(schema.entries.dayId, day.id), sql`${schema.entries.position} >= ${pos}`));
-      await tx.insert(schema.entries).values({
+        .where(and(eq(schema.entries.dayId, day.id), sql`${schema.entries.position} >= ${pos}`))
+        .run();
+      tx.insert(schema.entries).values({
         id: entryId,
         tripId,
         dayId: day.id,
@@ -823,8 +823,8 @@ export class TripService {
         fromName: entryType === "transit" ? (input.fromName ?? null) : null,
         toName: entryType === "transit" ? (input.toName ?? null) : null,
         transitMode: entryType === "transit" ? (input.transitMode ?? null) : null,
-      });
-      await this.normalizePositionsTx(tx, day.id);
+      }).run();
+      this.normalizePositionsTx(tx, day.id);
     });
     await this.touchTrip(tripId);
     await this.recalcDayLegs(tripId, day.id);
@@ -915,14 +915,14 @@ export class TripService {
     if (!entry) throw new ServiceError(404, `entry ${entryId} not found`);
     const day = await this.ensureDay(entry.tripId, dayIndex);
     if (day.id === entry.dayId) {
-      await this.db.transaction(async (tx) => {
+      this.db.transaction((tx) => {
         // 先挪到安全位置避免唯一约束冲突
-        await tx
-          .update(schema.entries)
+        tx.update(schema.entries)
           .set({ position: sql`${schema.entries.position} + 10000` })
-          .where(eq(schema.entries.dayId, day.id));
-        await tx.update(schema.entries).set({ position }).where(eq(schema.entries.id, entryId));
-        await this.normalizePositionsTx(tx, day.id);
+          .where(eq(schema.entries.dayId, day.id))
+          .run();
+        tx.update(schema.entries).set({ position }).where(eq(schema.entries.id, entryId)).run();
+        this.normalizePositionsTx(tx, day.id);
       });
     } else {
       await this.db.delete(schema.entries).where(eq(schema.entries.id, entryId));
@@ -934,12 +934,12 @@ export class TripService {
         .orderBy(asc(schema.entries.position));
       const pos = Math.max(0, Math.min(position, entries.length));
       // 同样的唯一索引撞行问题：事务内先挪安全区再归一化
-      await this.db.transaction(async (tx) => {
-        await tx
-          .update(schema.entries)
+      this.db.transaction((tx) => {
+        tx.update(schema.entries)
           .set({ position: sql`${schema.entries.position} + 10001` })
-          .where(and(eq(schema.entries.dayId, day.id), sql`${schema.entries.position} >= ${pos}`));
-        await tx.insert(schema.entries).values({
+          .where(and(eq(schema.entries.dayId, day.id), sql`${schema.entries.position} >= ${pos}`))
+          .run();
+        tx.insert(schema.entries).values({
           id: entryId,
           tripId: entry.tripId,
           dayId: day.id,
@@ -956,8 +956,8 @@ export class TripService {
           fromName: entry.fromName,
           toName: entry.toName,
           transitMode: entry.transitMode,
-        });
-        await this.normalizePositionsTx(tx, day.id);
+        }).run();
+        this.normalizePositionsTx(tx, day.id);
       });
     }
     await this.touchTrip(entry.tripId);
@@ -980,13 +980,13 @@ export class TripService {
     if (entryIds.length !== entries.length) {
       throw new ServiceError(422, `entryIds 必须包含 day ${dayIndex} 的全部 ${entries.length} 个 entry`);
     }
-    await this.db.transaction(async (tx) => {
-      await tx
-        .update(schema.entries)
+    this.db.transaction((tx) => {
+      tx.update(schema.entries)
         .set({ position: sql`${schema.entries.position} + 10000` })
-        .where(eq(schema.entries.dayId, day.id));
+        .where(eq(schema.entries.dayId, day.id))
+        .run();
       for (let i = 0; i < entryIds.length; i++) {
-        await tx.update(schema.entries).set({ position: i }).where(eq(schema.entries.id, entryIds[i]));
+        tx.update(schema.entries).set({ position: i }).where(eq(schema.entries.id, entryIds[i])).run();
       }
     });
     await this.touchTrip(tripId);
@@ -994,18 +994,19 @@ export class TripService {
     await this.publishBundle(tripId);
   }
 
-  private async normalizePositions(dayId: string) {
-    await this.db.transaction((tx) => this.normalizePositionsTx(tx, dayId));
+  private normalizePositions(dayId: string) {
+    this.db.transaction((tx) => this.normalizePositionsTx(tx, dayId));
   }
 
-  private async normalizePositionsTx(tx: Tx, dayId: string) {
-    const rows = await tx
+  private normalizePositionsTx(tx: Tx, dayId: string) {
+    const rows = tx
       .select({ id: schema.entries.id })
       .from(schema.entries)
       .where(eq(schema.entries.dayId, dayId))
-      .orderBy(asc(schema.entries.position));
+      .orderBy(asc(schema.entries.position))
+      .all();
     for (let i = 0; i < rows.length; i++) {
-      await tx.update(schema.entries).set({ position: i }).where(eq(schema.entries.id, rows[i].id));
+      tx.update(schema.entries).set({ position: i }).where(eq(schema.entries.id, rows[i].id)).run();
     }
   }
 
@@ -1567,7 +1568,7 @@ export class TripService {
       const p = placeById.get(e.placeId!)!;
       return { lng: Number(p.lng), lat: Number(p.lat) };
     });
-    const coordOf = (p?: { lng: string; lat: string } | null) =>
+    const coordOf = (p?: { lng: number; lat: number } | null) =>
       p ? { lng: Number(p.lng), lat: Number(p.lat) } : null;
     const startCoord = coordOf(startHotel);
     const endCoord = coordOf(endHotel);

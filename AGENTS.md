@@ -5,7 +5,7 @@
 ## 技术栈
 
 - **Monorepo**：pnpm@10 workspace（`apps/*` + `packages/*`），TypeScript 5.9，ESM（`"type": "module"`）
-- **服务端** `apps/server`：Node 22+、Hono 4（`@hono/node-server`）、Drizzle ORM + PostgreSQL 16（Docker）、`@agentclientprotocol/sdk`（ACP client）、`@modelcontextprotocol/sdk`（MCP server，stateless streamable HTTP）、zod 4、tsx / vitest
+- **服务端** `apps/server`：Node 22+、Hono 4（`@hono/node-server`）、Drizzle ORM + SQLite（better-sqlite3 内嵌，无需 Docker）、`@agentclientprotocol/sdk`（ACP client）、`@modelcontextprotocol/sdk`（MCP server，stateless streamable HTTP）、zod 4、tsx / vitest
 - **前端** `apps/web`：React 19、Vite 7、Tailwind CSS 4（`@tailwindcss/vite`）、react-router 7、zustand、@tanstack/react-query、Radix UI、maplibre-gl（海外）+ 高德 JSAPI 2.0（国内）、marked + sanitize-html
 - **共享包** `packages/shared`：zod schema 单一定义点（REST / MCP / 前端三处共享），纯 TS 源码导出（`"main": "src/index.ts"`，无构建产物）
 
@@ -65,16 +65,15 @@ packages/shared/src/domain.ts   枚举 / DTO / 请求体 / SSE 事件 / 格式�
 ## 常用命令
 
 ```bash
-# just 封装（justfile，等价于下面的 pnpm/docker 命令；just --list 查看全部）
-just setup            # 首次初始化：install + .env + db + migrate
-just up / just down   # 后台起/停 server + web（db 由 up 拉起，db-down 才停）；日志在 .logs/
+# just 封装（justfile，等价于下面的 pnpm 命令；just --list 查看全部）
+just setup            # 首次初始化：install + .env + migrate（SQLite 文件库，无需起数据库）
+just up / just down   # 后台起/停 server + web；日志在 .logs/
 just status / just logs [svc]
 
 # 首次启动
 pnpm install
 cp .env.example .env && cp .env.example apps/server/.env   # dotenv 从 server 目录读取
-pnpm db:up              # docker compose up -d db（Postgres 16 @ localhost:5433）
-pnpm db:migrate
+pnpm db:migrate         # 初始化 SQLite（默认 ~/.yarnball/yarnball.db，DATABASE_URL 可改路径）
 pnpm dev                # 并行起 server (:18788) + web (:15173)
 
 # 单端 / 其他
@@ -85,8 +84,8 @@ pnpm test               # vitest run（server；目前无测试文件，测试�
 pnpm smoke              # fake-acp-agent 端到端冒烟：prompt 流 / permission 停泊 / MCP 真实调用
                         # 前置：pnpm dev 已运行、DB 已迁移
 pnpm verify             # 提交前质量门：build + smoke 串行，任一失败即红；前置同 smoke
-                        # （脚本本身假设 server + DB 环境就绪，不负责起服务；
-                        #  CI 里由 .github/workflows/ci.yml 起 postgres + server :18789 后跑同一条 verify）
+                        # （脚本本身假设 server 环境就绪，不负责起服务；
+                        #  CI 里由 .github/workflows/ci.yml 起 server :18789 后跑同一条 verify）
 pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit generate）
 ```
 
@@ -110,7 +109,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 
 ## 环境变量与安全
 
-- 见 `.env.example`；必填 `DATABASE_URL`，其余有默认值（`SERVER_PORT=18788`、`WEB_ORIGIN=http://localhost:15173`、`SERVER_BASE_URL` 默认 loopback）
+- 见 `.env.example`；无必填项（`DATABASE_URL` 为 SQLite 文件路径，可选，默认 `~/.yarnball/yarnball.db`），其余有默认值（`SERVER_PORT=18788`、`WEB_ORIGIN=http://localhost:15173`、`SERVER_BASE_URL` 默认 loopback）
 - 高德三个 key（`AMAP_JS_KEY` / `AMAP_SERVER_KEY` / `AMAP_JS_SECRET`）**仅国内行程需要**；海外行程零配置。未配 key 时国内路线降级为直线距离 × 1.3 估算、POI 搜索不可用，海外不受影响
 - 海外上游请求（Photon / Nominatim / OSRM，见 `geo.ts` 的 `overseasFetch`）支持标准代理环境变量：`https_proxy > all_proxy > http_proxy`（大小写均认），遵守 `no_proxy`；未设置时直连。国内高德请求永远直连，不走代理
 - `.env` 不入库；MCP token 只存 hash；agent 经 `session/new` 注入的 URL+header 直连 `/mcp`，不经浏览器

@@ -16,6 +16,8 @@
  */
 
 import "dotenv/config";
+import Database from "better-sqlite3";
+import { resolveDbPath } from "../src/db/client.js";
 
 const BASE = process.env.SMOKE_BASE ?? "http://127.0.0.1:18788";
 const FAKE_AGENT_COMMAND = process.execPath;
@@ -64,19 +66,20 @@ async function main() {
   // 1. 注册 fake agent
   const fakeAgentId = `fake-agent-smoke-${RUN_ID}`;
   // 直接走 DB 不行（脚本无 DB 依赖），借道：agent registry 种子没有 fake，
-  // 这里用 server 端预留的 debug 端点？没有 —— 用 DB URL 直连。
-  const { Client } = await import("pg");
-  const client = new Client({ connectionString: process.env.DATABASE_URL });
-  await client.connect();
-  await client.query(
-    `INSERT INTO agent_registry (id, label, command, args, enabled)
-     VALUES ($1, $2, $3, $4::jsonb, true)
-     ON CONFLICT (id) DO UPDATE SET command = EXCLUDED.command, args = EXCLUDED.args`,
-    [fakeAgentId, "Fake Agent (smoke)", FAKE_AGENT_COMMAND, JSON.stringify(FAKE_AGENT_ARGS)],
-  );
+  // 这里用 server 端预留的 debug 端点？没有 —— 用 DB 文件直连（better-sqlite3，与服务端同库）。
+  const sqlite = new Database(resolveDbPath());
+  const upsertAgent = (id: string, label: string, command: string, args: string[]) =>
+    sqlite
+      .prepare(
+        `INSERT INTO agent_registry (id, label, command, args, enabled)
+         VALUES (?, ?, ?, ?, 1)
+         ON CONFLICT (id) DO UPDATE SET command = excluded.command, args = excluded.args`,
+      )
+      .run(id, label, command, JSON.stringify(args));
+  upsertAgent(fakeAgentId, "Fake Agent (smoke)", FAKE_AGENT_COMMAND, FAKE_AGENT_ARGS);
   console.log("  ✓ fake agent registered");
   const smokeAgentIds = [fakeAgentId];
-  const dbClose = () => client.end();
+  const dbClose = () => sqlite.close();
 
   try {
     // 2. trip + session
@@ -142,17 +145,11 @@ async function main() {
     // fake agent 脚本由环境变量控制 —— 已在 spawn 前设置不了（server 侧 spawn）。
     // 所以再注册一个 permission 变体：command 带环境前缀。
     const permAgentId = `fake-agent-smoke-perm-${RUN_ID}`;
-    await client.query(
-      `INSERT INTO agent_registry (id, label, command, args, enabled)
-       VALUES ($1, $2, $3, $4::jsonb, true)
-       ON CONFLICT (id) DO UPDATE SET command = EXCLUDED.command, args = EXCLUDED.args`,
-      [
-        permAgentId,
-        "Fake Agent (permission)",
-        "/usr/bin/env",
-        JSON.stringify(["FAKE_SCRIPT=permission_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
-      ],
-    );
+    upsertAgent(permAgentId, "Fake Agent (permission)", "/usr/bin/env", [
+      "FAKE_SCRIPT=permission_flow",
+      FAKE_AGENT_COMMAND,
+      ...FAKE_AGENT_ARGS,
+    ]);
     smokeAgentIds.push(permAgentId);
 
     const { session: permSession } = await api(`/trips/${trip.id}/chat-sessions`, {
@@ -217,17 +214,11 @@ async function main() {
     // 4.5 mcp_call_flow：fake agent 真实调用 yarnball MCP server
     console.log("-- mcp_call_flow --");
     const mcpAgentId = `fake-agent-smoke-mcp-${RUN_ID}`;
-    await client.query(
-      `INSERT INTO agent_registry (id, label, command, args, enabled)
-       VALUES ($1, $2, $3, $4::jsonb, true)
-       ON CONFLICT (id) DO UPDATE SET command = EXCLUDED.command, args = EXCLUDED.args`,
-      [
-        mcpAgentId,
-        "Fake Agent (mcp)",
-        "/usr/bin/env",
-        JSON.stringify(["FAKE_SCRIPT=mcp_call_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
-      ],
-    );
+    upsertAgent(mcpAgentId, "Fake Agent (mcp)", "/usr/bin/env", [
+      "FAKE_SCRIPT=mcp_call_flow",
+      FAKE_AGENT_COMMAND,
+      ...FAKE_AGENT_ARGS,
+    ]);
     smokeAgentIds.push(mcpAgentId);
 
     const { session: mcpSession } = await api(`/trips/${trip.id}/chat-sessions`, {
@@ -266,11 +257,10 @@ async function main() {
     // /mcp 真实命中必须持久化 ground truth：has_mcp_call 落库（重启/换实例不丢）。
     // 落库发生在回合结束 advisory 之后的异步路径上，轮询而非瞬时检查（verify 偶发失败点）
     await waitUntil(async () => {
-      const { rows } = await client.query(
-        `SELECT has_mcp_call FROM chat_sessions WHERE id = $1`,
-        [mcpSession.id],
-      );
-      return rows[0]?.has_mcp_call === true;
+      const row = sqlite
+        .prepare(`SELECT has_mcp_call FROM chat_sessions WHERE id = ?`)
+        .get(mcpSession.id) as { has_mcp_call: number } | undefined;
+      return row?.has_mcp_call === 1;
     }, 10_000, "has_mcp_call persisted to chat_sessions");
     assert(true, "MCP hit persisted has_mcp_call=true to chat_sessions");
     await api(`/chat-sessions/${mcpSession.id}`, { method: "DELETE" });
@@ -279,27 +269,22 @@ async function main() {
     // 对照组（未置位）应在首回合收到提示
     console.log("-- mcp_hint_persistence_flow --");
     const plainAgentId = `fake-agent-smoke-plain-${RUN_ID}`;
-    await client.query(
-      `INSERT INTO agent_registry (id, label, command, args, enabled)
-       VALUES ($1, $2, $3, $4::jsonb, true)
-       ON CONFLICT (id) DO UPDATE SET command = EXCLUDED.command, args = EXCLUDED.args`,
-      [
-        plainAgentId,
-        "Fake Agent (plain text)",
-        "/usr/bin/env",
-        JSON.stringify(["FAKE_SCRIPT=plain_text_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
-      ],
-    );
+    upsertAgent(plainAgentId, "Fake Agent (plain text)", "/usr/bin/env", [
+      "FAKE_SCRIPT=plain_text_flow",
+      FAKE_AGENT_COMMAND,
+      ...FAKE_AGENT_ARGS,
+    ]);
     smokeAgentIds.push(plainAgentId);
     const hintOf = (ms: Awaited<ReturnType<typeof messages>>) =>
       ms.some((m) => String(m.content.text ?? "").includes("还没有出现过毛线团工具调用"));
     // 直接插 session 行（不经 startSession），模拟「重启后句柄重建」：prompt 懒恢复时新句柄从 DB 读 has_mcp_call
     const mkPlainSession = async (id: string, hasMcpCall: boolean) => {
-      await client.query(
-        `INSERT INTO chat_sessions (id, trip_id, agent_registry_id, agent_label, status, has_mcp_call)
-         VALUES ($1, $2, $3, $4, 'idle', $5) ON CONFLICT (id) DO UPDATE SET has_mcp_call = EXCLUDED.has_mcp_call`,
-        [id, trip.id, plainAgentId, "Fake Agent (plain text)", hasMcpCall],
-      );
+      sqlite
+        .prepare(
+          `INSERT INTO chat_sessions (id, trip_id, agent_registry_id, agent_label, status, has_mcp_call)
+           VALUES (?, ?, ?, ?, 'idle', ?) ON CONFLICT (id) DO UPDATE SET has_mcp_call = excluded.has_mcp_call`,
+        )
+        .run(id, trip.id, plainAgentId, "Fake Agent (plain text)", hasMcpCall ? 1 : 0);
       await api(`/chat-sessions/${id}/prompt`, {
         method: "POST",
         body: JSON.stringify({ text: "聊聊" }),
@@ -329,17 +314,11 @@ async function main() {
     // 4.5.2 perm_note_flow：permission_result 纯注记不封闭聚合段——「我先拉」+ 后半句聚成同一条 agent_text
     console.log("-- perm_note_flow --");
     const noteAgentId = `fake-agent-smoke-note-${RUN_ID}`;
-    await client.query(
-      `INSERT INTO agent_registry (id, label, command, args, enabled)
-       VALUES ($1, $2, $3, $4::jsonb, true)
-       ON CONFLICT (id) DO UPDATE SET command = EXCLUDED.command, args = EXCLUDED.args`,
-      [
-        noteAgentId,
-        "Fake Agent (perm note)",
-        "/usr/bin/env",
-        JSON.stringify(["FAKE_SCRIPT=perm_note_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
-      ],
-    );
+    upsertAgent(noteAgentId, "Fake Agent (perm note)", "/usr/bin/env", [
+      "FAKE_SCRIPT=perm_note_flow",
+      FAKE_AGENT_COMMAND,
+      ...FAKE_AGENT_ARGS,
+    ]);
     smokeAgentIds.push(noteAgentId);
     const { session: noteSession } = await api(`/trips/${trip.id}/chat-sessions`, {
       method: "POST",
@@ -385,17 +364,11 @@ async function main() {
     //    重排到它之后，保持「回合结束」恒为回合末条
     console.log("-- trailing_chunk_flow --");
     const trailAgentId = `fake-agent-smoke-trailing-${RUN_ID}`;
-    await client.query(
-      `INSERT INTO agent_registry (id, label, command, args, enabled)
-       VALUES ($1, $2, $3, $4::jsonb, true)
-       ON CONFLICT (id) DO UPDATE SET command = EXCLUDED.command, args = EXCLUDED.args`,
-      [
-        trailAgentId,
-        "Fake Agent (trailing)",
-        "/usr/bin/env",
-        JSON.stringify(["FAKE_SCRIPT=trailing_chunk_flow", FAKE_AGENT_COMMAND, ...FAKE_AGENT_ARGS]),
-      ],
-    );
+    upsertAgent(trailAgentId, "Fake Agent (trailing)", "/usr/bin/env", [
+      "FAKE_SCRIPT=trailing_chunk_flow",
+      FAKE_AGENT_COMMAND,
+      ...FAKE_AGENT_ARGS,
+    ]);
     smokeAgentIds.push(trailAgentId);
 
     const { session: trailSession } = await api(`/trips/${trip.id}/chat-sessions`, {
@@ -517,8 +490,7 @@ async function main() {
       { name: "茶卡", adcode: null, center: { lng: 99.0828, lat: 36.7902 } },
       { name: "大柴旦", adcode: null, center: { lng: 95.3572, lat: 37.8534 } },
     ];
-    await client.query(`UPDATE trips SET stops = $1::jsonb WHERE id = $2`, [JSON.stringify(mcStops), mcTrip.id]);
-
+    sqlite.prepare(`UPDATE trips SET stops = ? WHERE id = ?`).run(JSON.stringify(mcStops), mcTrip.id);
     // 建点（human REST）：cityName 按最近 stop ≤150km 自动填充
     const mkPlace = async (body: Record<string, unknown>) =>
       (await api(`/trips/${mcTrip.id}/places`, { method: "POST", body: JSON.stringify(body) })).place;
@@ -573,17 +545,19 @@ async function main() {
     // agent 侧多中心防编造：MCP 直连（token 落库），距任一 stop ≤200km 放行、全超 200km 拒绝
     const { createHash } = await import("node:crypto");
     const mcpSessionId = `smoke-mcp-multicity-${RUN_ID}`;
-    await client.query(
-      `INSERT INTO chat_sessions (id, trip_id, agent_registry_id, agent_label, status)
-       VALUES ($1, $2, $3, $4, 'idle') ON CONFLICT (id) DO NOTHING`,
-      [mcpSessionId, mcTrip.id, fakeAgentId, "Fake Agent (smoke)"],
-    );
+    sqlite
+      .prepare(
+        `INSERT INTO chat_sessions (id, trip_id, agent_registry_id, agent_label, status)
+         VALUES (?, ?, ?, ?, 'idle') ON CONFLICT (id) DO NOTHING`,
+      )
+      .run(mcpSessionId, mcTrip.id, fakeAgentId, "Fake Agent (smoke)");
     const mcpToken = `smoke-mcp-token-${RUN_ID}`;
-    await client.query(
-      `INSERT INTO agent_tokens (id, chat_session_id, token_hash)
-       VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
-      [`smoke-mcp-token-row-${RUN_ID}`, mcpSessionId, createHash("sha256").update(mcpToken).digest("hex")],
-    );
+    sqlite
+      .prepare(
+        `INSERT INTO agent_tokens (id, chat_session_id, token_hash)
+         VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING`,
+      )
+      .run(`smoke-mcp-token-row-${RUN_ID}`, mcpSessionId, createHash("sha256").update(mcpToken).digest("hex"));
     const mcpCall = async (method: string, params: unknown, id: number) => {
       const res = await fetch(`${BASE}/mcp`, {
         method: "POST",
@@ -891,10 +865,13 @@ async function main() {
     console.log("\n== ALL SMOKE TESTS PASSED ==");
   } finally {
     // 本次运行注册的 fake agent 出清：agent_registry 暴露在设置页，无论成败都不留残留
-    await client
-      .query(`DELETE FROM agent_registry WHERE id = ANY($1)`, [smokeAgentIds])
-      .catch((err) => console.warn("  ! agent_registry cleanup failed:", err));
-    await dbClose();
+    try {
+      const placeholders = smokeAgentIds.map(() => "?").join(", ");
+      sqlite.prepare(`DELETE FROM agent_registry WHERE id IN (${placeholders})`).run(...smokeAgentIds);
+    } catch (err) {
+      console.warn("  ! agent_registry cleanup failed:", err);
+    }
+    dbClose();
   }
 }
 

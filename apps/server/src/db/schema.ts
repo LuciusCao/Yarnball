@@ -1,36 +1,33 @@
 import {
-  boolean,
   index,
   integer,
-  jsonb,
-  numeric,
-  pgTable,
+  real,
+  sqliteTable,
   text,
-  timestamp,
   uniqueIndex,
-} from "drizzle-orm/pg-core";
+} from "drizzle-orm/sqlite-core";
 
 /**
  * 行 → DTO 映射统一在 services/mappers.ts；列名显式 snake_case。
  * 主键用应用侧生成的 UUID（crypto.randomUUID），便于 SSE/前端直接引用。
  */
 
-export const trips = pgTable("trips", {
+export const trips = sqliteTable("trips", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
   destinationCity: text("destination_city").notNull(),
   cityAdcode: text("city_adcode"),
   /** 地理 provider：amap（国内）| osm（海外） */
   geoProvider: text("geo_provider").notNull().default("osm"),
-  cityCenterLng: numeric("city_center_lng", { precision: 10, scale: 6 }),
-  cityCenterLat: numeric("city_center_lat", { precision: 10, scale: 6 }),
+  cityCenterLng: real("city_center_lng"),
+  cityCenterLat: real("city_center_lat"),
   /**
    * 有序途经地节点（TripStop[] = [{ name, adcode, center }]，多城市/环线）。
    * destinationCity/cityAdcode/cityCenterLng/Lat 保留为 stops[0] 的兼容镜像，
    * 旧前端/搜索/自愈逻辑零破坏（同 selected_hotel_candidate_id 镜像模式）；由 service 层同步维护。
    * 单城市行程恒为单元素；环线闭合不落库（由末段 transit 讫点 == stops[0] 推断）。
    */
-  stops: jsonb("stops"),
+  stops: text("stops", { mode: "json" }),
   startDate: text("start_date"), // YYYY-MM-DD
   endDate: text("end_date"),
   /**
@@ -43,11 +40,11 @@ export const trips = pgTable("trips", {
   travelerCount: integer("traveler_count").notNull().default(1),
   currency: text("currency").notNull().default("CNY"),
   shareToken: text("share_token").notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
 });
 
-export const places = pgTable(
+export const places = sqliteTable(
   "places",
   {
     id: text("id").primaryKey(),
@@ -56,8 +53,8 @@ export const places = pgTable(
       .references(() => trips.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     category: text("category").notNull(), // PlaceCategory
-    lng: numeric("lng", { precision: 10, scale: 6 }).notNull(),
-    lat: numeric("lat", { precision: 10, scale: 6 }).notNull(),
+    lng: real("lng").notNull(),
+    lat: real("lat").notNull(),
     address: text("address"),
     /** 官网链接 */
     website: text("website"),
@@ -83,12 +80,12 @@ export const places = pgTable(
     createdBy: text("created_by").notNull().default("human"), // human | agent
     /** 候选状态机：candidate | locked；human 手动创建在 service 层置 locked */
     status: text("status").notNull().default("candidate"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
   },
   (t) => [index("places_trip_idx").on(t.tripId)],
 );
 
-export const days = pgTable(
+export const days = sqliteTable(
   "days",
   {
     id: text("id").primaryKey(),
@@ -101,7 +98,7 @@ export const days = pgTable(
   (t) => [uniqueIndex("days_trip_index_uq").on(t.tripId, t.dayIndex)],
 );
 
-export const entries = pgTable(
+export const entries = sqliteTable(
   "entries",
   {
     id: text("id").primaryKey(),
@@ -137,7 +134,7 @@ export const entries = pgTable(
   ],
 );
 
-export const transportLegs = pgTable(
+export const transportLegs = sqliteTable(
   "transport_legs",
   {
     id: text("id").primaryKey(),
@@ -159,15 +156,15 @@ export const transportLegs = pgTable(
     modeOverride: text("mode_override"),
     distanceM: integer("distance_m"),
     durationS: integer("duration_s"),
-    polyline: jsonb("polyline"), // LngLat[] | null
+    polyline: text("polyline", { mode: "json" }), // LngLat[] | null
     /** 公交分段详情（TransitSegment[] | null）：仅 amap transit 真实公交路由填充，osm/降级/旧数据为 null */
-    transitDetail: jsonb("transit_detail"),
-    computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+    transitDetail: text("transit_detail", { mode: "json" }),
+    computedAt: integer("computed_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
   },
   (t) => [index("legs_day_idx").on(t.dayId)],
 );
 
-export const hotelCandidates = pgTable(
+export const hotelCandidates = sqliteTable(
   "hotel_candidates",
   {
     id: text("id").primaryKey(),
@@ -180,7 +177,7 @@ export const hotelCandidates = pgTable(
     pricePerNight: integer("price_per_night"),
     notes: text("notes"),
     /** 是否已选定（多酒店：同一行程可选定多家，各覆盖一段天数） */
-    selected: boolean("selected").notNull().default(false),
+    selected: integer("selected", { mode: "boolean" }).notNull().default(false),
     /** 入住天序号（1-based）；闭开区间 [checkInDay, checkOutDay) 覆盖每晚住宿，仅 selected 时有意义 */
     checkInDay: integer("check_in_day"),
     /** 离店天序号（1-based，不含当天住宿）；换酒店日 = 旧酒店 checkOutDay = 新酒店 checkInDay */
@@ -189,7 +186,7 @@ export const hotelCandidates = pgTable(
   (t) => [index("hotel_cand_trip_idx").on(t.tripId)],
 );
 
-export const chatSessions = pgTable(
+export const chatSessions = sqliteTable(
   "chat_sessions",
   {
     id: text("id").primaryKey(),
@@ -200,18 +197,18 @@ export const chatSessions = pgTable(
     agentLabel: text("agent_label").notNull(),
     acpSessionId: text("acp_session_id"), // agent 侧返回的 sessionId（resume 用）
     status: text("status").notNull().default("starting"),
-    allowAllPermissions: boolean("allow_all_permissions").notNull().default(false),
+    allowAllPermissions: integer("allow_all_permissions", { mode: "boolean" }).notNull().default(false),
     /** 会话是否命中过 yarnball MCP 工具调用（/mcp 层置位的持久化 ground truth，冒烟提示据此免误报） */
-    hasMcpCall: boolean("has_mcp_call").notNull().default(false),
+    hasMcpCall: integer("has_mcp_call", { mode: "boolean" }).notNull().default(false),
     lastError: text("last_error"),
-    uiContext: jsonb("ui_context"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    uiContext: text("ui_context", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
   },
   (t) => [index("chat_sessions_trip_idx").on(t.tripId)],
 );
 
-export const chatMessages = pgTable(
+export const chatMessages = sqliteTable(
   "chat_messages",
   {
     id: text("id").primaryKey(),
@@ -221,8 +218,8 @@ export const chatMessages = pgTable(
     turnId: text("turn_id"),
     seq: integer("seq").notNull(),
     kind: text("kind").notNull(), // ChatMessageKind
-    content: jsonb("content").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    content: text("content", { mode: "json" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
   },
   (t) => [
     index("chat_messages_session_idx").on(t.sessionId),
@@ -230,28 +227,28 @@ export const chatMessages = pgTable(
   ],
 );
 
-export const agentRegistry = pgTable("agent_registry", {
+export const agentRegistry = sqliteTable("agent_registry", {
   id: text("id").primaryKey(),
   label: text("label").notNull(),
   command: text("command").notNull(),
-  args: jsonb("args").notNull().default([]), // string[]
-  enabled: boolean("enabled").notNull().default(true),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  args: text("args", { mode: "json" }).notNull().default([]), // string[]
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
 });
 
 /**
  * 全局设置（单行，id 固定 "global"）。
  * 存的值覆盖同名 env（读取优先级 DB > env），null = 未覆盖回退 env。
  */
-export const settings = pgTable("settings", {
+export const settings = sqliteTable("settings", {
   id: text("id").primaryKey(),
   amapJsKey: text("amap_js_key"),
   amapServerKey: text("amap_server_key"),
   amapJsSecret: text("amap_js_secret"),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
 });
 
-export const agentTokens = pgTable(
+export const agentTokens = sqliteTable(
   "agent_tokens",
   {
     id: text("id").primaryKey(),
@@ -259,8 +256,8 @@ export const agentTokens = pgTable(
       .notNull()
       .references(() => chatSessions.id, { onDelete: "cascade" }),
     tokenHash: text("token_hash").notNull(), // sha256 hex
-    revokedAt: timestamp("revoked_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
   },
   (t) => [index("agent_tokens_hash_idx").on(t.tokenHash)],
 );

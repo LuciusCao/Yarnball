@@ -1,1 +1,0 @@
-ALTER TABLE "places" ADD COLUMN "visit_duration_min" integer;

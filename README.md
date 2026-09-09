@@ -47,14 +47,13 @@ Hono Server                                     │
 
 ## 快速开始
 
-前置：Node 22+、pnpm、Docker、一个 ACP agent（本机装好 `kimi` 或 `gemini` CLI）。**海外行程无需任何 key**；国内行程需[高德开放平台](https://lbs.amap.com)两个 key（「Web端(JS API)」+「Web服务」）。
+前置：Node 22+、pnpm、一个 ACP agent（本机装好 `kimi` 或 `gemini` CLI）。数据库为内嵌 SQLite（better-sqlite3），无需 Docker。**海外行程无需任何 key**；国内行程需[高德开放平台](https://lbs.amap.com)两个 key（「Web端(JS API)」+「Web服务」）。
 
 ```bash
 pnpm install
 cp .env.example .env        # 海外行程可跳过 key；国内行程填 AMAP_*
 cp .env.example apps/server/.env  # dotenv 从 server 目录读取
-docker compose up -d db     # Postgres 16 (localhost:5433)
-pnpm db:migrate
+pnpm db:migrate             # 初始化 SQLite（默认 ~/.yarnball/yarnball.db，可用 DATABASE_URL 改路径）
 pnpm dev                    # server :18788 + web :15173
 ```
 
@@ -67,9 +66,9 @@ pnpm smoke                  # fake-acp-agent 端到端：prompt 流 / permission
 pnpm verify                 # 提交前质量门：build（tsc + vite）+ smoke 串行，任一失败即红
 ```
 
-`pnpm verify` 前置与 smoke 相同：dev server（:18788）与 DB（:5433）已在线（`pnpm dev` 已跑、已迁移）——verify 脚本本身假设环境就绪，不负责起服务。
+`pnpm verify` 前置与 smoke 相同：dev server（:18788）已在线（`pnpm dev` 已跑、SQLite 已迁移）——verify 脚本本身假设环境就绪，不负责起服务。
 
-CI（GitHub Actions，`.github/workflows/ci.yml`）在 push 到 main 与每个 PR 上跑同一条 verify：起 postgres:16 service → `db:migrate` → 后台起 server（CI 端口 18789，避免与本地 18788 冲突）→ `SMOKE_BASE=http://127.0.0.1:18789 pnpm verify`，红则阻断合并。
+CI（GitHub Actions，`.github/workflows/ci.yml`）在 push 到 main 与每个 PR 上跑同一条 verify：`db:migrate`（内嵌 SQLite，无需 postgres service）→ 后台起 server（CI 端口 18789，避免与本地 18788 冲突）→ `SMOKE_BASE=http://127.0.0.1:18789 pnpm verify`，红则阻断合并。
 
 ## Agent 手册（MCP 工具）
 
