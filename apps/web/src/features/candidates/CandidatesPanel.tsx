@@ -32,7 +32,7 @@ import {
 } from "./hotelStays";
 
 /**
- * 候选池面板 —— 全部未删地点的大本营（整合原 HotelPanel 的候选管理 + DiningPanel 的清单）。
+ * 候选面板 —— 全部未删地点的大本营（整合原 HotelPanel 的候选管理 + DiningPanel 的清单）。
  * 按 酒店/景点/美食/其他 分组；每项可加入行程（=确认要去，加入后才排日程）、删除；
  * 已排期地点也进池（M20）：徽章「已排期」（与 locked 的「已加入」区分）+ agent 推荐标记，排在各组候选之前，
  * 「移出行程」撤销其全部日程 entry（POST /api/places/:id/unschedule），place 退回候选态不删除；
@@ -99,7 +99,7 @@ export function CandidatesPanel({
   const cur = bundle.trip.currency;
   const scheduledPlaceIds = new Set(bundle.entries.map((e) => e.placeId));
 
-  /** 未排期 + 已排期地点都按组归桶（M20：已排期地点也进候选池，徽章「已排期」可移出；酒店走 hotelCandidates 以拿到候选 id 与每晚价） */
+  /** 未排期 + 已排期地点都按组归桶（M20：已排期地点也进候选，徽章「已排期」可移出；酒店走 hotelCandidates 以拿到候选 id 与每晚价） */
   const grouped: Record<GroupKey, PlaceDto[]> = { hotel: [], attraction: [], dining: [], other: [] };
   for (const place of bundle.places) {
     for (const key of GROUP_ORDER) {
@@ -272,7 +272,7 @@ export function CandidatesPanel({
       {totalCount === 0 && (
         <div className="rounded-xl border border-dashed border-slate-300 bg-white/40 py-8 text-center">
           <p className="text-xs text-slate-400">
-            候选池是空的。把攻略粘给 agent，它会把想去的地点先放进这里，
+            候选是空的。把攻略粘给 agent，它会把想去的地点先放进这里，
             <br />
             你加入行程后再让它排进日程。
           </p>
@@ -349,7 +349,7 @@ export function CandidatesPanel({
                     ? (hotelCand?.pricePerNight ?? place.priceCny)
                     : place.priceCny;
                 const selected = place.id === selectedPlaceId;
-                /** 已排期（M20：也进候选池，徽章「已排期」（与 locked 的「已加入」区分）+ agent 推荐标记，可「移出行程」撤销排期） */
+                /** 已排期（M20：也进候选，徽章「已排期」（与 locked 的「已加入」区分）+ agent 推荐标记，可「移出行程」撤销排期） */
                 const scheduled = scheduledPlaceIds.has(place.id);
 
                 // 是否有徽章要展示（没有就不渲染徽章行，避免多余间距）
@@ -510,9 +510,9 @@ export function CandidatesPanel({
                             <button
                               title={
                                 scheduled
-                                  ? "移出行程（撤销排入的日程，退回候选池）"
+                                  ? "移出行程（撤销排入的日程，退回候选）"
                                   : locked
-                                    ? "移出行程（退回候选池，不再必排进日程）"
+                                    ? "移出行程（退回候选，不再必排进日程）"
                                     : "加入行程（确认要去，排日程时必排）"
                               }
                               disabled={busy}
