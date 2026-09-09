@@ -11,6 +11,7 @@ import { amapConfigured, initSettingsCache } from "./services/settings.js";
 import { AcpSessionManager } from "./acp/sessionManager.js";
 import { createMcpApp } from "./mcp/app.js";
 import { createApi } from "./routes/api.js";
+import { mountWebStatic } from "./services/staticWeb.js";
 
 /**
  * 毛线团（Yarnball）server —— 组装：DB / 事件总线 / TripService / MCP 工具面 / ACP 会话 / REST + SSE。
@@ -37,6 +38,10 @@ app.route("/mcp", createMcpApp(db, tripService, (chatSessionId) => {
 
 app.get("/healthz", (c) => c.json({ ok: true }));
 
+// 生产态静态托管：apps/web/dist 存在时挂载（SPA 回退 index.html；/api、/mcp、/healthz 优先级不受影响）。
+// dev 模式（vite :15173）下通常无 dist，不挂载，行为不变。
+const webDistDir = mountWebStatic(app);
+
 // ---------- agent registry 种子 ----------
 
 const SEED_AGENTS = [
@@ -58,8 +63,9 @@ async function seedAgents() {
   }
 }
 
-const server = serve({ fetch: app.fetch, port: env.serverPort }, async (info) => {
-  console.log(`[yarnball] server listening on http://127.0.0.1:${info.port}`);
+const server = serve({ fetch: app.fetch, port: env.serverPort, hostname: env.serverHost }, async (info) => {
+  console.log(`[yarnball] server listening on http://${env.serverHost}:${info.port}`);
+  if (webDistDir) console.log(`[yarnball] serving web dist: ${webDistDir}`);
   await initSettingsCache(db);
   await seedAgents();
   if (!amapConfigured()) {
