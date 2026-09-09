@@ -38,6 +38,9 @@ interface MapCanvasProps {
   selectedPlaceId: string | null;
   /** 按需显示的交通段（M47）：非空时地图只画该段路线并 fit 到起讫点 */
   selectedLegId?: string | null;
+  /** 地点聚焦请求（M83）：仅行程面板地点行点击时由 TripPage 发出；按 nonce 去重消费，
+      与 selectedPlaceId 解耦——其他面板/地图 marker 的选中不移动相机 */
+  placeFocus?: { placeId: string; nonce: number } | null;
   onSelectPlace: (placeId: string) => void;
   /** 打开设置抽屉（缺高德 Key 时引导用户去配置）；未提供时退回 .env 文案 */
   onOpenSettings?: () => void;
@@ -51,6 +54,7 @@ export function MapCanvas({
   hotelArea,
   selectedPlaceId,
   selectedLegId = null,
+  placeFocus = null,
   onSelectPlace,
   onOpenSettings,
 }: MapCanvasProps) {
@@ -60,6 +64,8 @@ export function MapCanvas({
   const fittedRef = useRef<string>("");
   /** 已 fit 的交通段 id（M47）：段选中变化才 fitPath，避免随 SSE 快照反复 fit */
   const fittedLegRef = useRef<string>("");
+  /** 已消费的地点聚焦 nonce（M83）：同一请求不重复 flyTo；place 暂查不到时不消费，待 bundle 刷新后重试 */
+  const focusedPlaceNonceRef = useRef(0);
   const [initError, setInitError] = useState<string | null>(null);
   /** 重试计数：+1 触发引擎重挂载（不刷新整页） */
   const [retryCount, setRetryCount] = useState(0);
@@ -178,6 +184,19 @@ export function MapCanvas({
       renderer.fit(specs);
     }
   }, [bundle, visibleDayIndex, hotelArea, selectedPlaceId, selectedLegId]);
+
+  // 地点聚焦（M83）：行程面板地点行点击 → flyTo 到该 place 坐标；按 nonce 去重，
+  // 清除选中/切换天不回拉视野；place 暂查不到（聚焦请求早于 bundle 到达）时不消费 nonce，
+  // 依赖里的 bundle 刷新后自然重试
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer || !bundle || !placeFocus) return;
+    if (placeFocus.nonce === focusedPlaceNonceRef.current) return;
+    const place = bundle.places.find((p) => p.id === placeFocus.placeId);
+    if (!place) return;
+    focusedPlaceNonceRef.current = placeFocus.nonce;
+    renderer.flyTo(place.location, 15);
+  }, [placeFocus, bundle]);
 
   // 兜底一：缺高德 key —— 配置问题，引导去设置（区别于下面的引擎运行失败）
   if (provider === "amap" && !amapJsKey) {
