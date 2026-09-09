@@ -40,6 +40,8 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  * - entry 之间显示交通段（模式图标 + 时长 + 距离），可手动切换 步行/驾车（M1 leg override 端点）；
  *   点击交通段行/大交通卡在地图上只显示该段路线（M47 按需显示，再点一次取消；分享页不可点）；
  *   公交段带 M77 公交详情时主行附「· N 段」概要，可展开看步行接驳/线路分段明细（M78）
+ * - 点击地点行（entry / 酒店与大交通端点 / 住宿行）选中该地点并请求地图聚焦到其坐标（M83，
+ *   对齐 M47 段选交互；onFocusPlace 由 TripPage 传入，分享页不传则只选中不聚焦，同 M47 策略）
  * - 每天头部显示当晚住宿（多酒店，M10：取覆盖该天的已选定酒店）；
  *   换酒店日（M50）不再合并成一行，而是时间轴拆两条：天首「离店 · 酒店A」（时刻=离店出发，
  *   能从酒店 openingHours/notes 解析出退房时刻时附「HH:MM 前退房」提示）、天尾「入住 · 酒店B」；
@@ -94,6 +96,8 @@ interface ItineraryPanelProps {
   /** 按需显示的交通段（M47）：当前选中的 legId；点击交通段行切换，地图只画该段 */
   selectedLegId?: string | null;
   onSelectLeg?: (legId: string | null) => void;
+  /** 点击地点行请求地图聚焦到该 place 坐标（M83）；未传（分享页）时点击只选中不聚焦 */
+  onFocusPlace?: (placeId: string) => void;
   /** 打开候选面板（M17：无覆盖酒店天的「去候选加入」引导；TripPage 传入，分享页不传则只显示文案） */
   onOpenCandidates?: () => void;
 }
@@ -109,10 +113,17 @@ export function ItineraryPanel({
   onVisibleDayChange,
   selectedLegId = null,
   onSelectLeg,
+  onFocusPlace,
   onOpenCandidates,
 }: ItineraryPanelProps) {
   const [busy, setBusy] = useState(false);
   const placeById = new Map(bundle.places.map((p) => [p.id, p]));
+
+  /** 地点行点击（M83）：选中 + 请求地图聚焦；onFocusPlace 未传（分享页）时仅选中，保持现有行为 */
+  const selectAndFocus = (placeId: string) => {
+    onSelectPlace(placeId);
+    onFocusPlace?.(placeId);
+  };
 
   const sortedDays = [...bundle.days].sort((a, b) => a.dayIndex - b.dayIndex);
   const dayEntries = new Map<string, TripBundle["entries"]>();
@@ -137,7 +148,7 @@ export function ItineraryPanel({
     return (
       <button
         className="font-medium text-slate-500 underline decoration-dotted underline-offset-2 hover:text-blue-600"
-        onClick={() => onSelectPlace(stay.placeId)}
+        onClick={() => selectAndFocus(stay.placeId)}
       >
         {placeName(stay.placeId)}
       </button>
@@ -416,7 +427,7 @@ export function ItineraryPanel({
                         : null
                     }
                     estimated={timeline[0]?.estimated ?? true}
-                    onSelect={() => onSelectPlace(startLeg?.fromPlaceId ?? switchFrom!.placeId)}
+                    onSelect={() => selectAndFocus(startLeg?.fromPlaceId ?? switchFrom!.placeId)}
                   />
                   {startLeg && (
                     <LegRow
@@ -482,7 +493,7 @@ export function ItineraryPanel({
                         timeMin={startMin}
                         estimated
                         onSelect={
-                          entry.fromPlaceId ? () => onSelectPlace(entry.fromPlaceId!) : undefined
+                          entry.fromPlaceId ? () => selectAndFocus(entry.fromPlaceId!) : undefined
                         }
                       />
                     )}
@@ -499,7 +510,7 @@ export function ItineraryPanel({
                         busy={busy}
                         isFirst={i === 0}
                         isLast={i === timeline.length - 1}
-                        onSelect={() => place && onSelectPlace(place.id)}
+                        onSelect={() => place && selectAndFocus(place.id)}
                         onToggleLeg={
                           rideLeg != null && toggleLeg ? () => toggleLeg(rideLeg.id) : undefined
                         }
@@ -512,7 +523,7 @@ export function ItineraryPanel({
                       className={`group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 ${
                         selected ? "bg-brand/10 ring-1 ring-brand/40" : "hover:bg-slate-50"
                       }`}
-                      onClick={() => place && onSelectPlace(place.id)}
+                      onClick={() => place && selectAndFocus(place.id)}
                     >
                       {/* 时段：startTime 直取；缺失时按 09:00 起推算，~ 前缀表示是估算 */}
                       <span
@@ -610,7 +621,7 @@ export function ItineraryPanel({
                         }
                         estimated={timeline[1]?.estimated ?? true}
                         onSelect={
-                          entry.toPlaceId ? () => onSelectPlace(entry.toPlaceId!) : undefined
+                          entry.toPlaceId ? () => selectAndFocus(entry.toPlaceId!) : undefined
                         }
                       />
                     )}
@@ -644,7 +655,7 @@ export function ItineraryPanel({
                         : null
                     }
                     estimated={timeline[timeline.length - 1]?.estimated ?? true}
-                    onSelect={() => onSelectPlace(endLeg?.toPlaceId ?? nightStay!.placeId)}
+                    onSelect={() => selectAndFocus(endLeg?.toPlaceId ?? nightStay!.placeId)}
                   />
                 </li>
               )}
