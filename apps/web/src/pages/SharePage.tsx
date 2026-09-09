@@ -14,6 +14,7 @@ import {
   Wallet,
 } from "lucide-react";
 import {
+  formatDayLabel,
   formatMoney,
   formatVisitDuration,
   type BudgetSummary,
@@ -97,8 +98,8 @@ export function SharePage() {
         </span>
       </header>
 
-      {/* Day chips：与 ItineraryPanel 筛选胶囊同口径——只放「D1」紧凑形态（M75），
-          日期+星期在右侧行程面板各天明细区头部展示 */}
+      {/* Day chips：保留 formatDayLabel 完整形态（D1 · 9/23 周三）——分享页行程面板可收起/隐藏，
+          收起来后 chips 是访客唯一能直接看到每天日期的位置（评审 r1），不做紧凑化 */}
       {days.length > 0 && (
         <div className="panel-in absolute left-4 top-[60px] z-10 flex flex-wrap gap-1.5 pr-4">
           <button
@@ -119,7 +120,7 @@ export function SharePage() {
                 className="glass rounded-full px-3 py-1 text-xs font-medium shadow transition-all hover:scale-105"
                 style={active ? { background: color, color: "#fff", borderColor: "transparent" } : { color }}
               >
-                D{d.dayIndex}
+                {formatDayLabel(bundle.trip.startDate, d.dayIndex)}
               </button>
             );
           })}
