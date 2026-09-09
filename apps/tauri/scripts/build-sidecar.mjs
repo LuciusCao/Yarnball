@@ -93,7 +93,16 @@ async function bundleServer() {
     format: "cjs",
     logLevel: "info",
     banner: {
-      js: 'globalThis.__seaRequire = require("node:module").createRequire(process.execPath);',
+      // __seaRequire：见 seaExternalPlugin。
+      // __seaImportMetaUrl：esbuild 打 CJS 时 import.meta 会变 {}（无 url），
+      // 依赖里 `new URL(rel, import.meta.url)` 会抛 Invalid URL（M85 staticWeb 踩中）。
+      // SEA 里模块本无真实文件路径，用 exe 的 file URL 作锚点即可——语义上最准，
+      // 且 staticWeb 的候选目录会被 YARNBALL_WEB_DIST_DIR 先行命中，不会用到它。
+      js: 'globalThis.__seaRequire = require("node:module").createRequire(process.execPath);\n' +
+          'globalThis.__seaImportMetaUrl = require("node:url").pathToFileURL(process.execPath).href;',
+    },
+    define: {
+      "import.meta.url": "__seaImportMetaUrl",
     },
     plugins: [seaExternalPlugin, stripDotenvPlugin],
     // 原生依赖不进 bundle：better-sqlite3 的 .node 由 stageResources() 外置分发

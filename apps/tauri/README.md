@@ -13,19 +13,22 @@ Tauri 2 壳：窗口加载本地 server 提供的界面，server 以 sidecar 单
        = 官方 node 二进制 + Node SEA 注入的 server bundle（esbuild CJS 打包）
        · 启动：探测端口（18788 被占则系统分配空闲端口）→ spawn → 自动迁移 SQLite → 轮询 /healthz
        · 退出：Cmd+Q/菜单退出走 RunEvent::Exit 显式 kill；SIGTERM/SIGINT 由 tokio signal 兜底回收
+       · 随包 resources：node_modules/better-sqlite3（原生模块）、migrations/（drizzle 迁移）、
+         web-dist/（apps/web 构建产物，壳注入 YARNBALL_WEB_DIST_DIR，server 生产态静态托管）
 ```
 
 ## 常用命令
 
 ```bash
 # 开发（前置：仓库根目录已 pnpm install；另开终端先起 pnpm dev 提供 :15173 与 :18788）
-pnpm -C apps/tauri dev          # 等价于在 apps/tauri 下 pnpm dev / pnpm tauri dev
+pnpm tauri:dev                # 根目录透传（M85 加）；等价 pnpm -C apps/tauri dev
 
 # sidecar 单可执行（esbuild bundle + Node SEA + postject + 资源就位 + ad-hoc 签名）
 pnpm -C apps/tauri build:sidecar
 
-# 打包（先 build:sidecar，再构建 web 产物，最后 tauri build；脚本名不用 build 以免被根 pnpm -r build / CI 拉起）
-pnpm -C apps/tauri package      # 产物：src-tauri/target/release/bundle/dmg/毛线团_0.1.0_aarch64.dmg
+# 打包（先 build:sidecar；tauri build 的 beforeBuildCommand 会先跑 web build，再产出 dmg；
+#      脚本名不用 build 以免被根 pnpm -r build / CI 拉起）
+pnpm tauri:package            # 根目录透传；产物：src-tauri/target/release/bundle/dmg/毛线团_0.1.0_aarch64.dmg
 ```
 
 > 根目录 `pnpm tauri dev` 便捷脚本需要改根 package.json（超出本包 scope），已报 tower 协调；
@@ -36,7 +39,8 @@ pnpm -C apps/tauri package      # 产物：src-tauri/target/release/bundle/dmg/�
 - **Node SEA（已落地）**：esbuild 把 server（TS/ESM + 全部依赖 + `@yarnball/shared` TS 源码）打成单 CJS bundle，经 `scripts/sea-entry.ts` 入口（先跑 drizzle 迁移再启动 server），`node --experimental-sea-config` 生成 blob，postject 注入官方 node 二进制副本。底座与开发期 node/tsx 行为一致，风险最低。
 - pkg：仓库已归档停维护，排除。
 - `bun build --compile`：依赖 bun 工具链，且 ACP agent 子进程 stdio、`@hono/node-server` 在 bun 运行时下的兼容性未验证，排除。
-- SEA 对 ESM 入口的支持仍是实验性，因此先转 CJS 再注入（esbuild 处理 `import.meta` 等转换），绕开该限制。
+- SEA 对 ESM 入口的支持仍是实验性，因此先转 CJS 再注入（esbuild 处理 ESM→CJS 转换），绕开该限制。
+- **import.meta 兼容修正**：esbuild 打 CJS 时 `import.meta` 变 `{}`（无 url），依赖里 `new URL(rel, import.meta.url)` 会抛 Invalid URL。bundle 用 `define: { "import.meta.url": "__seaImportMetaUrl" }` + banner 预置 `pathToFileURL(process.execPath).href` 作锚点——SEA 里模块本无真实文件路径，exe 位置语义上最准（staticWeb 的 dist 候选会被 `YARNBALL_WEB_DIST_DIR` 先行命中，实际用不到它）。
 - **底座二进制**：SEA 要求带 sentinel 的官方 node 二进制。Homebrew 的 node 是 shared-libnode 构建（主程序仅 ~68KB，不含 sentinel），脚本会自动下载与当前 node 同版本的官方发行版（缓存于 `dist/.node-bin/`，git 忽略）；也可用 `NODE_SEA_BINARY=/path/to/node` 显式指定。交叉打包其他平台架构时同样用 `NODE_SEA_BINARY` 指向目标平台的官方二进制。
 
 ## 原生模块（better-sqlite3）—— 已实测
@@ -94,5 +98,4 @@ pnpm -C apps/tauri package      # dmg：src-tauri/target/release/bundle/dmg/毛�
 
 ### 已知边界（脚手架阶段）
 
-- prod 窗口加载的是 sidecar server 的源地址；server 目前不托管 web 静态产物（/ 返回 404），需 apps/server 增加静态托管（serve-static 挂 `apps/web/dist`，已报 tower 协调）。在此之前 dmg 已完整走通「编译 → 打包 → sidecar 拉起 → 自动迁移 → 窗口打开」，窗口内容依赖该服务端改动落地。
 - Windows / Linux 目标未验证（配置仅启用了 dmg target）。
