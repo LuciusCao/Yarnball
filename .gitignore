@@ -7,3 +7,4 @@ dist/
 /drizzle/
 .tower/
 .zcode/
+.logs/
