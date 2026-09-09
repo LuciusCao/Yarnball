@@ -6,8 +6,10 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "package": "pnpm build:sidecar && tauri build",
+    "package": "pnpm build:sidecar && tauri build && pnpm copy:dmg",
     "build:sidecar": "node scripts/build-sidecar.mjs",
+    "inject:splash": "node scripts/inject-splash.mjs",
+    "copy:dmg": "node scripts/copy-dmg.mjs",
     "gen:icon": "node scripts/gen-icon.mjs"
   },
   "devDependencies": {

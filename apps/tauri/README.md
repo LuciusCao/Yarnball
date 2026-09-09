@@ -8,10 +8,15 @@ Tauri 2 壳：窗口加载本地 server 提供的界面，server 以 sidecar 单
 毛线团.app (Tauri 2, WKWebView)
   ├─ 窗口
   │    ├─ dev  → http://localhost:15173（vite dev server，需先 pnpm dev）
-  │    └─ prod → http://127.0.0.1:<port>/（sidecar server 地址）
+  │    └─ prod → 先加载本地 splash.html（奶油底 + icon，随 frontendDist 打包），
+  │              sidecar 健康检查通过后 navigate 到 http://127.0.0.1:<port>/
   └─ sidecar：yarnball-server-<target-triple>（src-tauri/binaries/，git 忽略）
        = 官方 node 二进制 + Node SEA 注入的 server bundle（esbuild CJS 打包）
-       · 启动：探测端口（18788 被占则系统分配空闲端口）→ spawn → 自动迁移 SQLite → 轮询 /healthz
+       · 启动：探测端口 → spawn → 自动迁移 SQLite → 轮询 /healthz
+         · 18788 空闲：直接用；被占：先验对端 /healthz 身份（app:"yarnball" + webStatic）
+           - 同包 server 且托管 web 产物（dev server / 已运行实例）→ 复用，不再起进程
+           - 同包但无静态托管（旧版孤儿 sidecar，指过去就是 404）或陌生进程 → 换系统分配的空闲端口
+           - 健康检查轮询同样验 app:"yarnball" 身份，不被旧 server 的 {"ok":true} 骗过
        · 退出：Cmd+Q/菜单退出走 RunEvent::Exit 显式 kill；SIGTERM/SIGINT 由 tokio signal 兜底回收
        · 随包 resources：node_modules/better-sqlite3（原生模块）、migrations/（drizzle 迁移）、
          web-dist/（apps/web 构建产物，壳注入 YARNBALL_WEB_DIST_DIR，server 生产态静态托管）
@@ -26,9 +31,9 @@ pnpm tauri:dev                # 根目录透传（M85 加）；等价 pnpm -C ap
 # sidecar 单可执行（esbuild bundle + Node SEA + postject + 资源就位 + ad-hoc 签名）
 pnpm -C apps/tauri build:sidecar
 
-# 打包（先 build:sidecar；tauri build 的 beforeBuildCommand 会先跑 web build，再产出 dmg；
-#      脚本名不用 build 以免被根 pnpm -r build / CI 拉起）
-pnpm tauri:package            # 根目录透传；产物：src-tauri/target/release/bundle/dmg/毛线团_0.1.0_aarch64.dmg
+# 打包（先 build:sidecar；tauri build 的 beforeBuildCommand 会先跑 web build、再注入 splash.html，
+#      最后产出 dmg 并复制到仓库根 dist/；脚本名不用 build 以免被根 pnpm -r build / CI 拉起）
+pnpm tauri:package            # 根目录透传；产物：dist/毛线团_0.1.0_aarch64.dmg
 ```
 
 > 根目录 `pnpm tauri dev` 便捷脚本需要改根 package.json（超出本包 scope），已报 tower 协调；
@@ -66,7 +71,7 @@ SEA 有两层限制，解法均已落地并实测通过（全新 DB 路径下自
 
 ```bash
 pnpm install                    # 仓库根目录，一次
-pnpm -C apps/tauri package      # dmg：src-tauri/target/release/bundle/dmg/毛线团_0.1.0_aarch64.dmg
+pnpm -C apps/tauri package      # dmg 复制到仓库根 dist/（原件在 src-tauri/target/release/bundle/dmg/）
 ```
 
 前置依赖：Rust 工具链（rustup）、Xcode CLT、Node 22+、pnpm 10。打包机会自动下载 SEA 底座（见上）。
