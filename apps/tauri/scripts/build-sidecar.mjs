@@ -226,6 +226,6 @@ const outPath = path.join(BIN_DIR, `yarnball-server-${triple}${ext}`);
 const bundlePath = await bundleServer();
 stageResources();
 fs.mkdirSync(BIN_DIR, { recursive: true });
-seaInject(bundlePath, outPath);
+await seaInject(bundlePath, outPath);
 
 console.log(`[sidecar] ${outPath} (${(fs.statSync(outPath).size / 1024 / 1024).toFixed(1)} MB)`);
