@@ -98,7 +98,8 @@ export function SharePage() {
         </span>
       </header>
 
-      {/* Day chips */}
+      {/* Day chips：保留 formatDayLabel 完整形态（D1 · 9/23 周三）——分享页行程面板可收起/隐藏，
+          收起来后 chips 是访客唯一能直接看到每天日期的位置（评审 r1），不做紧凑化 */}
       {days.length > 0 && (
         <div className="panel-in absolute left-4 top-[60px] z-10 flex flex-wrap gap-1.5 pr-4">
           <button

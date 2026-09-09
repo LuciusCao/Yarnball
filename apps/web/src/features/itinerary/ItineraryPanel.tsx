@@ -230,7 +230,9 @@ export function ItineraryPanel({
 
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      {/* Day 筛选 tabs（M15）：替代原地图左上浮条；选中天 = 面板过滤 + 地图聚焦 */}
+      {/* Day 筛选 tabs（M15）：替代原地图左上浮条；选中天 = 面板过滤 + 地图聚焦。
+          胶囊只放「D1」紧凑形态（M75：撤掉 M46 加的日期/星期，避免胶囊变高占空间），
+          日期+星期保留在下方每天明细区头部（formatDayLabel 徽章） */}
       {dayTabsEnabled && sortedDays.length > 0 && (
         <div className="sticky top-0 z-10 flex flex-wrap items-center gap-1.5 border-b border-slate-900/8 bg-white/80 px-3 py-2 backdrop-blur-sm">
           <button
@@ -255,7 +257,7 @@ export function ItineraryPanel({
                 }`}
                 style={active ? { background: color } : { color }}
               >
-                {formatDayLabel(bundle.trip.startDate, d.dayIndex)}
+                D{d.dayIndex}
               </button>
             );
           })}
@@ -334,6 +336,8 @@ export function ItineraryPanel({
             : null;
         return (
           <section key={day.id} className="border-b border-slate-900/8 p-3">
+            {/* 明细区头部：日期+星期只在这里展示（M75 从上方筛选胶囊撤下）；
+                无 startDate 时徽章退化为「Day N」，日期由右侧灰字 day.date 兜底 */}
             <header className="mb-2 flex items-center gap-2">
               <span
                 className="rounded px-2 py-0.5 text-xs font-semibold text-white"
