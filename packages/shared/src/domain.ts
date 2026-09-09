@@ -199,8 +199,9 @@ export const PlaceDtoSchema = z.object({
   sourceType: z.enum(SOURCE_TYPES),
   sourceUrl: z.string().nullable(),
   notes: z.string().nullable(),
+  /** 停留时长（分钟）——排程口径：时间轴推算唯一依据（entry.durationMin 单条覆盖 > 本字段 > 默认 90 分钟）。M72 起 DTO 层从 visitDurationMin 兜底 */
   durationMin: z.number().nullable(),
-  /** 预计游览/用餐分钟数（景点/美食的参观时长预估，规划每日行程的参考输入；展示为「约 X 小时」） */
+  /** 预计游览/用餐分钟数——展示/参考口径（信息卡「约 X 小时」）。与 durationMin 在 DTO 层互相兜底；新写入统一用 durationMin */
   visitDurationMin: z.number().nullable(),
   /** 价格：餐厅=人均 / 景点=门票 / 酒店=每晚，币种为行程 currency */
   priceCny: z.number().nullable(),
@@ -327,11 +328,14 @@ export const CreateTripInputSchema = z.object({
 export type CreateTripInput = z.infer<typeof CreateTripInputSchema>;
 
 /**
- * 更新行程（PATCH /api/trips/:tripId 与 MCP set_start_date）。
- * 当前仅出发日期：YYYY-MM-DD；传 null 清除（天标签退化为「Day N」，见 formatDayLabel）。
+ * 更新行程（PATCH /api/trips/:tripId 与 MCP set_start_date / set_end_date）。
+ * startDate 出发日期 / endDate 结束日期：YYYY-MM-DD；传 null 清除。
+ * 两者同时非空且区间为正时，行程天数按日期区间计（天数口径、select_hotel 上界、聚类分天都依赖它）；
+ * 只设一个时天数回退已建天兜底。清掉 startDate 天标签退化为「Day N」（见 formatDayLabel）。
  */
 export const UpdateTripInputSchema = z.object({
   startDate: CalendarDateSchema.nullable().optional(),
+  endDate: CalendarDateSchema.nullable().optional(),
 });
 export type UpdateTripInput = z.infer<typeof UpdateTripInputSchema>;
 
@@ -362,8 +366,9 @@ export const CreatePlaceInputSchema = z.object({
   sourceType: z.enum(SOURCE_TYPES).default("manual"),
   sourceUrl: HttpUrlSchema.nullable().optional(),
   notes: z.string().max(4000).nullable().optional(),
+  /** 停留时长（分钟）——排程口径：时间轴推算依据，景点务必填写（建议游玩时长） */
   durationMin: z.number().int().min(0).max(24 * 60).nullable().optional(),
-  /** 预计游览/用餐分钟数（景点/美食尽量填写；规划每日行程的重要输入） */
+  /** 预计游览/用餐分钟数——展示/参考口径（信息卡展示）；与 durationMin 在 DTO 层互相兜底，新写入统一用 durationMin */
   visitDurationMin: z.number().int().min(0).max(24 * 60).nullable().optional(),
   priceCny: z.number().min(0).nullable().optional(),
   bookingInfo: z.string().max(2000).nullable().optional(),
@@ -486,6 +491,8 @@ export type ReorderDayInput = z.infer<typeof ReorderDayInputSchema>;
 /** 一个地理聚类：未排期地点按位置聚成的一片区域 + 建议排入的天 */
 export const DayClusterSchema = z.object({
   clusterIndex: z.number(),
+  /** 归属途经地/城市（M72：同城才同簇，多城市行程不跨城错配）；null = 未能归属（离所有途经地 >150km） */
+  cityName: z.string().nullable(),
   places: z.array(
     z.object({
       id: z.string(),
@@ -496,12 +503,12 @@ export const DayClusterSchema = z.object({
   ),
   /** 簇质心（成员坐标均值） */
   centroid: LngLatSchema,
-  /** 建议排入的天（1-based，按各天当前负载分配，少的优先）；行程无天信息时为 null */
+  /** 建议排入的天（1-based，同城天优先、再按负载最轻）；行程无天信息或簇多于天数时为 null */
   suggestedDayIndex: z.number().nullable(),
 });
 export type DayCluster = z.infer<typeof DayClusterSchema>;
 
-/** 区域聚类建议（只建议不落库）：把未排期的非酒店地点按地理聚成 1-4 片，建议每天一片 */
+/** 区域聚类建议（只建议不落库）：未排期非酒店地点先按途经地分组（同城才同簇），组内按地理聚成 1-4 片（簇数按点数自适应），建议每天一片 */
 export const SuggestDayClustersResultSchema = z.object({
   clusters: z.array(DayClusterSchema),
   /** 参与聚类的未排期地点数（不含酒店、不含已排入某天行程的） */

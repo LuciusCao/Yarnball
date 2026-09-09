@@ -71,8 +71,11 @@ export function toPlaceDto(row: PlaceRow): PlaceDto {
     sourceType: row.sourceType as PlaceDto["sourceType"],
     sourceUrl: row.sourceUrl,
     notes: row.notes,
-    durationMin: row.durationMin,
-    visitDurationMin: row.visitDurationMin,
+    // durationMin/visitDurationMin 口径统一（M72）：durationMin 是排程口径（时间轴唯一依据），
+    // visitDurationMin 是展示/参考口径（信息卡「约 X 小时」）。DTO 层互相兜底——agent 只填其中一个时，
+    // 时间轴与信息卡都能拿到估值（DB 两列保留原始写入，互不回写）。
+    durationMin: row.durationMin ?? row.visitDurationMin,
+    visitDurationMin: row.visitDurationMin ?? row.durationMin,
     priceCny: row.priceCny,
     bookingInfo: row.bookingInfo,
     openingHours: row.openingHours,
