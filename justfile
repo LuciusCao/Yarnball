@@ -115,6 +115,20 @@ smoke:
 verify:
     pnpm verify
 
+# Tauri 桌面壳 dev（前置：just up 已跑起 vite + server）
+tauri-dev:
+    pnpm tauri:dev
+
+# Tauri 打 dmg（sidecar + web 产物），产物在 apps/tauri/src-tauri/target/release/bundle/dmg/
+package:
+    pnpm tauri:package
+    @echo "dmg 产物：apps/tauri/src-tauri/target/release/bundle/dmg/"
+
+# （之后还需 pnpm -C apps/tauri exec tauri icon icons/app-icon.png -o src-tauri/icons 产出全尺寸图标）
+# 从 apps/web/public/icon-1024.png 重生成图标种子 icons/app-icon.png
+icon:
+    pnpm -C apps/tauri gen:icon
+
 # 首次初始化：装依赖 + 准备 .env + 迁移（SQLite，无需 Docker）
 setup:
     #!/usr/bin/env bash
