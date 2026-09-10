@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { ChatMessageDto } from "@yarnball/shared";
-import { and, asc, eq, max, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gt, max, ne, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { chatChannel, type EventBus } from "../events.js";
@@ -13,7 +13,8 @@ import { env } from "../env.js";
 import { MCP_SERVER_NAME, SESSION_ID_HEADER, mintSessionToken, revokeSessionTokens } from "../mcp/tools.js";
 import { toChatSessionDto } from "../services/mappers.js";
 import { getEnhancedEnv } from "../services/processEnv.js";
-import { bootstrapPrompt, buildReplayPrompt, mcpHintMessage } from "./prompts.js";
+import { listAllChatMessages } from "../services/chatStore.js";
+import { bootstrapPrompt, buildReplayPrompt, CONTEXT_SUMMARY_PROMPT, mcpHintMessage } from "./prompts.js";
 import { decidePermission, parkPermission, type ParkedPermission } from "./permissions.js";
 import type { PendingPermission, PermissionOutcome } from "./types.js";
 
@@ -39,6 +40,13 @@ import type { PendingPermission, PermissionOutcome } from "./types.js";
 const PROMPT_TIMEOUT_MS = 60 * 60 * 1000;
 const TERMINAL_OUTPUT_MAX = 4 * 1024 * 1024;
 const MAX_ACTIVE_SESSIONS = 32;
+/**
+ * 上下文滚动阈值：本连接累计转录（user_text + agent_text 的 content 字符数）达到
+ * 15 万字符（≈5 万 token）触发。留足余量——agent 自身还有压缩策略，过早滚动
+ * 反而丢原文。每次回合边界动态读 YARNBALL_CONTEXT_ROLL_CHARS（调试用）。
+ */
+const contextRollThresholdChars = () =>
+  Number(process.env.YARNBALL_CONTEXT_ROLL_CHARS ?? 150_000);
 
 export class AcpSessionManager {
   private handles = new Map<string, SessionHandle>();
@@ -206,10 +214,20 @@ export class SessionHandle {
   /**
    * 就绪信号：session/new 完成、状态到 idle 时 resolve；启动失败 / 提前关闭时 reject。
    * start() 本身挂起整个连接生命周期，调用方要等待「可用」必须等这个。
+   * 每次 start()（含上下文滚动的原地重启）都会重建——等待方在调用 start 后读取，
+   * 拿到的就是本次连接的就绪 promise。
    */
-  readonly whenReady: Promise<void>;
+  whenReady!: Promise<void>;
   private readyResolve!: () => void;
   private readyReject!: (err: Error) => void;
+  private resetReady(): void {
+    this.whenReady = new Promise<void>((resolve, reject) => {
+      this.readyResolve = resolve;
+      this.readyReject = reject;
+    });
+    // 不 await 的旁观者不应把拒绝变成 unhandledRejection
+    this.whenReady.catch(() => {});
+  }
 
   private promptQueue: { text: string; resolve: () => void; reject: (err: Error) => void }[] = [];
   private draining = false;
@@ -233,6 +251,12 @@ export class SessionHandle {
 
   private firstPromptDone = false;
   private pendingReplay: string | null = null;
+  /** 上下文滚动：失败一次就不再尝试（rollFailed），直到换句柄（懒恢复/重连）重置 */
+  private rollFailed = false;
+  /** 原地重启进行中：旧进程 exit / 更新流断开是预期噪声，不得落错误消息 */
+  private restarting = false;
+  /** 内部回合（摘要 turn）：agent_message_chunk 只进聚合槽不落库——摘要文本由 context_summary 行承载 */
+  private internalTurn = false;
   /** 内存快照，初值取自 DB 持久化的 hasMcpCall（重启/换实例后提示不误报） */
   private mcpToolCallSeen = false;
   private mcpHintSent = false;
@@ -247,12 +271,7 @@ export class SessionHandle {
     private agentSpec: { command: string; args: string[] },
     private markMcpObserved: (chatSessionId: string) => void,
   ) {
-    this.whenReady = new Promise<void>((resolve, reject) => {
-      this.readyResolve = resolve;
-      this.readyReject = reject;
-    });
-    // startSession 之外的旁观者不 await whenReady，拒绝时不触发 unhandledRejection
-    this.whenReady.catch(() => {});
+    this.resetReady();
     // 持久化 ground truth 作初值：本句柄建起来之前（含 server 重启前）命中过 MCP 就不再提示
     this.mcpToolCallSeen = sessionRow.hasMcpCall;
   }
@@ -261,6 +280,8 @@ export class SessionHandle {
 
   async start(): Promise<void> {
     const sessionId = this.sessionRow.id;
+    // 每次连接一个就绪信号（上下文滚动的原地重启会再次进入 start）
+    this.resetReady();
     await this.setStatus("starting");
 
     // 懒恢复重建句柄时 seq 从 DB 续号：(session_id, seq) 有唯一索引，从 0 计数会撞历史消息
@@ -276,6 +297,9 @@ export class SessionHandle {
       stdio: ["pipe", "pipe", "pipe"],
       // 增强 PATH：GUI/sidecar 极简 PATH 下也要找得到 npm/brew/nvm 装的 agent CLI（与 /agents/detect 同一套）
       env: await getEnhancedEnv(),
+      // 独立进程组（pid 即 pgid）：node shim 型 agent（npm bin 脚本 spawnSync 原生二进制，
+      // 如 codex-acp）的孙进程留在同组，close 时 terminateProcessTree 可整组收走，不会孤儿化
+      detached: true,
     });
     this.process = child;
 
@@ -286,7 +310,7 @@ export class SessionHandle {
     });
     child.on("error", (err) => {
       // spawn 失败（command 不存在等）：无 exit 事件，必须单独兜底，否则异常冒泡崩 server
-      if (!this.closed) {
+      if (!this.closed && !this.restarting) {
         void this.appendMessage({
           turnId: null,
           kind: "error",
@@ -297,7 +321,8 @@ export class SessionHandle {
       }
     });
     child.on("exit", (code, signal) => {
-      if (!this.closed) {
+      // restarting 下的 exit 是滚动换进程的主动收尾，不是故障
+      if (!this.closed && !this.restarting) {
         void this.appendMessage({
           turnId: null,
           kind: "error",
@@ -349,7 +374,8 @@ export class SessionHandle {
       })
       .catch(async (err) => {
         this.readyReject(err as Error);
-        if (this.closed) return;
+        // restarting 下的连接错误是旧连接的预期拆除
+        if (this.closed || this.restarting) return;
         console.error(`[acp:${sessionId}] connection error:`, err);
         await this.appendMessage({
           turnId: null,
@@ -372,6 +398,8 @@ export class SessionHandle {
     const builder = ctx.buildSession(this.cwd!).withMcpServer(mcpServer);
     this.activeSession = await builder.start();
     if (this.activeSession.sessionId !== this.sessionRow.acpSessionId) {
+      // 行内快照同步：上下文滚动的原地重启再入 openSession 时，据此判定「有历史要回放」
+      this.sessionRow.acpSessionId = this.activeSession.sessionId;
       await this.db
         .update(schema.chatSessions)
         .set({ acpSessionId: this.activeSession.sessionId, updatedAt: new Date() })
@@ -424,16 +452,7 @@ export class SessionHandle {
     } catch {}
 
     const child = this.process;
-    if (child?.pid) {
-      child.kill("SIGTERM");
-      await Promise.race([
-        new Promise<void>((resolve) => child.once("exit", () => resolve())),
-        new Promise<void>((resolve) => setTimeout(resolve, 5000)),
-      ]);
-      if (child.exitCode === null && !child.killed) {
-        child.kill("SIGKILL");
-      }
-    }
+    if (child) await this.terminateProcessTree(child);
 
     if (this.cwd) await rm(this.cwd, { recursive: true, force: true }).catch(() => {});
     await revokeSessionTokens(this.db, this.sessionRow.id);
@@ -459,6 +478,11 @@ export class SessionHandle {
         try {
           await this.runTurn(item.text);
           item.resolve();
+          // 回合边界检查上下文滚动：串行队列保证滚动与用户回合互不交错，
+          // 滚动期间入队的新 prompt 自然排在换好的新进程上执行
+          if (!this.closed && !this.rollFailed && (await this.shouldRoll())) {
+            await this.rollContext();
+          }
         } catch (err) {
           item.reject(err as Error);
         }
@@ -468,7 +492,14 @@ export class SessionHandle {
     }
   }
 
-  private async runTurn(userText: string): Promise<void> {
+  /**
+   * 执行一个回合。普通回合：user_text 落库 → prompt → 回合结束 advisory。
+   * 内部回合（opts.internal，上下文滚动的摘要 turn）：不落 user_text（用户没说过这话，
+   * 落一条 advisory 作「正在压缩」的可见标记）、不落回合结束 advisory、不触发 MCP 冒烟提示；
+   * agent_message_chunk 只进聚合槽不落库（见 appendAggregated），回合结束后把聚合到的
+   * 全部 agent_text 段作为摘要文本返回给调用方（rollContext）。
+   */
+  private async runTurn(userText: string, opts: { internal?: boolean } = {}): Promise<string | null> {
     const session = this.activeSession;
     if (!session) throw new Error("session 未就绪");
 
@@ -480,8 +511,16 @@ export class SessionHandle {
     this.aggregateSegments.clear();
     this.aggregateClosed.clear();
     this.openAggregateKey = null;
+    this.internalTurn = opts.internal === true;
 
-    await this.appendMessage({ turnId, kind: "user_text", content: { text: userText } });
+    if (opts.internal) {
+      await this.appendMessage(
+        { turnId, kind: "advisory", content: { text: "正在压缩对话上下文，稍候…" } },
+        { closesAggregate: false },
+      );
+    } else {
+      await this.appendMessage({ turnId, kind: "user_text", content: { text: userText } });
+    }
 
     let prefix = "";
     if (!this.firstPromptDone) {
@@ -504,6 +543,10 @@ export class SessionHandle {
       ]);
       // 等 trailing chunks 落库，保证 advisory 的 seq 排在回合所有消息之后
       await this.drainUpdates();
+      if (opts.internal) {
+        // 摘要文本只活在聚合槽里，由 rollContext 落成 context_summary 行
+        return this.captureTurnText(turnId);
+      }
       // 回合终端消息不封闭聚合段：prompt resolve 后才到达的 trailing chunk
       // 要并回本回合最后一个同 kind 聚合段（原地更新），而不是开孤儿新段
       const advisory = await this.appendMessage(
@@ -515,24 +558,29 @@ export class SessionHandle {
         { closesAggregate: false },
       );
       this.lastTurnTerminal = { turnId, dto: advisory };
+      return null;
     } catch (err) {
       await this.drainUpdates();
-      const failure = await this.appendMessage(
-        {
-          turnId,
-          kind: "error",
-          content: { text: `回合失败：${(err as Error).message}` },
-        },
-        { closesAggregate: false },
-      );
-      this.lastTurnTerminal = { turnId, dto: failure };
+      // 内部回合的失败由 rollContext 统一落提示，这里不再叠加 error 消息
+      if (!opts.internal) {
+        const failure = await this.appendMessage(
+          {
+            turnId,
+            kind: "error",
+            content: { text: `回合失败：${(err as Error).message}` },
+          },
+          { closesAggregate: false },
+        );
+        this.lastTurnTerminal = { turnId, dto: failure };
+      }
       throw err;
     } finally {
+      this.internalTurn = false;
       await this.setStatus("idle").catch(() => {});
       // MCP 冒烟：会话从未见过毛线团工具调用 → 一次性提示。
       // mcpToolCallSeen 初值来自 DB 持久化的 hasMcpCall（重启/换实例不丢），
       // 回合内的 /mcp 真实命中经 manager.noteMcpCall 路由进来置位
-      if (!this.mcpToolCallSeen && !this.mcpHintSent) {
+      if (!opts.internal && !this.mcpToolCallSeen && !this.mcpHintSent) {
         this.mcpHintSent = true;
         // 服务端注记，不算 agent 事件：不封闭聚合段，迟到 chunk 仍能并回回合末段
         await this.appendMessage({ ...mcpHintMessage() }, { closesAggregate: false });
@@ -585,7 +633,8 @@ export class SessionHandle {
           this.updatesHandled++;
         } catch (err) {
           this.consumerIdle = false;
-          if (this.closed) return;
+          // restarting 下的流断开是旧进程拆除的预期结果；closed 亦然
+          if (this.closed || this.restarting) return;
           console.error(`[acp:${this.sessionRow.id}] update stream error:`, err);
           await this.appendMessage({
             turnId: null,
@@ -691,6 +740,13 @@ export class SessionHandle {
    * tool_call 首通知），那种情况仍开新段。
    */
   private async appendAggregated(kind: "agent_text" | "agent_thought", text: string) {
+    // 内部回合（摘要 turn）：agent 输出只进聚合槽不落库——摘要由 rollContext
+    // 聚合成一条 context_summary 行承载，避免「正在压缩」提示与摘要正文重复入流
+    if (this.internalTurn) {
+      const key = `${this.currentTurnId}:${kind}:0`;
+      this.aggregateSlots.set(key, (this.aggregateSlots.get(key) ?? "") + text);
+      return;
+    }
     let segment = this.aggregateSegments.get(kind) ?? 0;
     let key = `${this.currentTurnId}:${kind}:${segment}`;
     if (this.aggregateSlots.has(key)) {
@@ -745,6 +801,187 @@ export class SessionHandle {
   private seqCache = new Map<string, number>();
   private seqOf(messageId: string): number | undefined {
     return this.seqCache.get(messageId);
+  }
+
+  // ---------- 上下文滚动 ----------
+
+  /** 内部回合结束后取回聚合槽里的 agent_text 文本（多段以换行拼接；空回合返回 null） */
+  private captureTurnText(turnId: string): string | null {
+    const parts: string[] = [];
+    for (let i = 0; ; i++) {
+      const text = this.aggregateSlots.get(`${turnId}:agent_text:${i}`);
+      if (text == null) break;
+      parts.push(text.trim());
+    }
+    const joined = parts.join("\n\n").trim();
+    return joined.length > 0 ? joined : null;
+  }
+
+  /**
+   * 是否应该滚动：本连接自建立以来累计的转录字符数（user_text + agent_text，
+   * 不含摘要 turn 自身的输出）超过阈值。DB 全量行数不参与判定——上下文膨胀
+   * 是「本连接喂给模型的量」，与界面历史长度无关。
+   */
+  private async shouldRoll(): Promise<boolean> {
+    const [row] = await this.db
+      .select({ total: sql<number>`coalesce(sum(length(${schema.chatMessages.content})), 0)` })
+      .from(schema.chatMessages)
+      .where(
+        and(
+          eq(schema.chatMessages.sessionId, this.sessionRow.id),
+          // 只算会说话的 kind：tool_call rawInput 等卡片数据是给用户看的，不进模型上下文
+          sql`${schema.chatMessages.kind} in ('user_text', 'agent_text')`,
+        ),
+      );
+    return (row?.total ?? 0) >= contextRollThresholdChars();
+  }
+
+  /**
+   * 上下文滚动：转录超阈值时，先让老 agent 写交接摘要，再原地换一个新 agent 进程，
+   * 新进程用「摘要 + 滚动点之后的近期原文」回放。对用户只是多一条「正在压缩」提示
+   * 和一条 context_summary 分隔线；消息流不断（seq 续号）。
+   *
+   * 失败策略：任一步失败落 advisory 提示并置 rollFailed（本连接不再自动滚动，
+   * 直到换句柄重置）——绝不把会话标 error，老进程若还活着就继续用。
+   */
+  private async rollContext(): Promise<void> {
+    const throughSeq = this.seq;
+    console.log(`[acp:${this.sessionRow.id}] context roll triggered (seq=${throughSeq})`);
+    try {
+      // ① 老 agent 写交接摘要（内部回合：不落 user_text/回合结束标记）
+      const summary = await this.runTurn(CONTEXT_SUMMARY_PROMPT, { internal: true });
+      if (!summary || summary.length < 100) {
+        throw new Error(`摘要内容过短（${summary?.length ?? 0} 字符）`);
+      }
+
+      // ② 原地换新进程：停旧连接（restarting 标记让 exit/流断开不再落错误消息），
+      //    同一 this 重新 start() —— seq 续号、聚合状态清空、首个 prompt 重走 bootstrap。
+      //    start() 的函数体挂在 connectWith 回调的生命周期上不会返回（与 startSession 同理
+      //    只能 void），可用性靠 whenReady 判定
+      this.restarting = true;
+      try {
+        await this.teardownConnection("context roll");
+        this.activeSession = null;
+        this.firstPromptDone = false;
+        this.rollFailed = false;
+        void this.start();
+        await this.whenReady;
+      } finally {
+        this.restarting = false;
+      }
+
+      // ③ 摘要 + 滚动点之后的近期原文（近 2 万字符，尾部硬截断）作为新连接的回放
+      const replay = await this.buildRollReplay(summary, throughSeq);
+      this.pendingReplay = replay;
+
+      // ④ 分隔线落库：前端据此渲染「上下文已压缩」标记（可展开看摘要全文）
+      await this.appendMessage(
+        {
+          turnId: null,
+          kind: "context_summary",
+          content: { text: summary, throughSeq },
+        },
+        { closesAggregate: false },
+      );
+      console.log(`[acp:${this.sessionRow.id}] context roll done (summary ${summary.length} chars, replay ${replay.length} chars)`);
+    } catch (err) {
+      this.rollFailed = true;
+      console.warn(`[acp:${this.sessionRow.id}] context roll failed:`, err);
+      await this.appendMessage(
+        {
+          turnId: null,
+          kind: "advisory",
+          content: {
+            text: `对话上下文较长，自动压缩未完成（${(err as Error).message}）；本次继续使用原上下文。如遇回复变慢或遗忘，可新建会话。`,
+          },
+        },
+        { closesAggregate: false },
+      ).catch(() => {});
+    }
+  }
+
+  /** 滚动回放：交接摘要 + 滚动点之后保留的近期原文（user/agent 文本，尾部截断到预算内） */
+  private async buildRollReplay(summary: string, throughSeq: number): Promise<string> {
+    const messages = await this.db
+      .select({ kind: schema.chatMessages.kind, content: schema.chatMessages.content })
+      .from(schema.chatMessages)
+      .where(
+        and(
+          eq(schema.chatMessages.sessionId, this.sessionRow.id),
+          gt(schema.chatMessages.seq, throughSeq),
+          sql`${schema.chatMessages.kind} in ('user_text', 'agent_text')`,
+        ),
+      )
+      .orderBy(desc(schema.chatMessages.seq))
+      .limit(200);
+    const recentBudget = 20_000;
+    const parts: string[] = [];
+    let used = 0;
+    for (const m of messages) {
+      const text = String((m.content as { text?: string }).text ?? "").trim();
+      if (!text) continue;
+      const line = `${m.kind === "user_text" ? "用户" : "你"}: ${text}\n`;
+      if (used + line.length > recentBudget) break;
+      parts.unshift(line);
+      used += line.length;
+    }
+    return [
+      `【上下文压缩】本会话此前的对话已压缩。以下是上一个 agent 留下的交接摘要（此后以它为准继续）：`,
+      ``,
+      summary,
+      ``,
+      ...(parts.length > 0
+        ? [`压缩之后最近的对话原文：`, ``, ...parts]
+        : []),
+    ].join("\n");
+  }
+
+  /**
+   * 整组终止 agent 进程树：spawn 时 detached 使 pid 即 pgid，kill 负 pid 覆盖组内全部进程
+   * （node shim 型 agent 的原生孙进程、agent 自行 spawn 的子进程一并收走）。
+   * 组已不存在（ESRCH，直接型 agent 正常退出后）时回退只 kill 直接子进程，双双失败静默。
+   */
+  private async terminateProcessTree(child: ChildProcess): Promise<void> {
+    const killTree = (signal: NodeJS.Signals) => {
+      if (!child.pid) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        try {
+          child.kill(signal);
+        } catch {}
+      }
+    };
+    // 已退出的进程（崩溃残留句柄的 close）：无 exit 事件可等，直接清尾返回，
+    // 否则会白等 5s 超时
+    if (child.exitCode !== null || child.signalCode !== null) {
+      killTree("SIGKILL");
+      return;
+    }
+    killTree("SIGTERM");
+    await Promise.race([
+      new Promise<void>((resolve) => child.once("exit", () => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+    ]);
+    // 无条件清尾：leader 先退但组内孙进程可能还在持管道；组已空时 ESRCH 静默
+    killTree("SIGKILL");
+  }
+
+  /**
+   * 只拆连接不置终态：close() 的完整收尾（closed 标记、状态落库、token 回收）
+   * 对上下文滚动不适用——滚动后句柄继续服役。复用 close 的拆除序列，单独实现。
+   */
+  private async teardownConnection(reason: string): Promise<void> {
+    this.settleAllPermissions();
+    this.releaseConnect?.();
+    this.releaseConnect = null;
+    try {
+      this.activeSession?.dispose();
+    } catch {}
+    const child = this.process;
+    if (child) await this.terminateProcessTree(child);
+    this.process = null;
+    void reason;
   }
 
   // ---------- permission ----------
@@ -1022,20 +1259,7 @@ export class SessionHandle {
   }
 
   private async listMessages(): Promise<ChatMessageDto[]> {
-    const rows = await this.db
-      .select()
-      .from(schema.chatMessages)
-      .where(eq(schema.chatMessages.sessionId, this.sessionRow.id))
-      .orderBy(asc(schema.chatMessages.seq));
-    return rows.map((r) => ({
-      id: r.id,
-      sessionId: r.sessionId,
-      seq: r.seq,
-      turnId: r.turnId,
-      kind: r.kind as ChatMessageDto["kind"],
-      content: r.content as Record<string, unknown>,
-      createdAt: new Date(r.createdAt).toISOString(),
-    }));
+    return listAllChatMessages(this.db, this.sessionRow.id);
   }
 
   setTripInfo(title: string, city: string, provider: "amap" | "osm") {

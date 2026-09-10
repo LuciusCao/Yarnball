@@ -3,7 +3,7 @@ import { marked } from "marked";
 import sanitizeHtml from "sanitize-html";
 import type { AgentRegistryDto, ChatMessageDto, ChatSessionDto, TripDto } from "@yarnball/shared";
 import { toast } from "sonner";
-import { AlertTriangle, Brain, CalendarClock, Check, Clock, ListChecks, Loader2, SendHorizontal, ShieldCheck, Unplug, X } from "lucide-react";
+import { AlertTriangle, Archive, Brain, CalendarClock, Check, Clock, ListChecks, Loader2, SendHorizontal, ShieldCheck, Unplug, X } from "lucide-react";
 import { api } from "../../api/client";
 import { api as libApi } from "../../lib/api";
 import {
@@ -70,7 +70,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
     () => sessions.find((s) => s.status !== "closed") ?? null,
     [sessions],
   );
-  const { messages, subscribe, reset } = useChatStore();
+  const { messages, hasMore, loadingEarlier, subscribe, reset, loadEarlier } = useChatStore();
   const activeSessionId = activeSession?.id ?? null;
 
   useEffect(() => {
@@ -118,11 +118,13 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
     }
   }, [visibleCount]);
 
-  const loadEarlier = useCallback(() => {
+  const loadEarlierMessages = useCallback(() => {
+    // 滚动位置按「距容器底部」记忆，前插消息后按新滚动高度回补
     const el = scrollRef.current;
     if (el) pendingScrollRestoreRef.current = el.scrollHeight - el.scrollTop;
+    void loadEarlier();
     setVisibleCount((c) => c + PAGE_SIZE);
-  }, []);
+  }, [loadEarlier]);
 
   // 窗口化切片：只完整渲染最近 visibleCount 条
   const hiddenCount = Math.max(0, messages.length - visibleCount);
@@ -449,10 +451,10 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
         )}
         {hiddenCount > 0 && (
           <button
-            onClick={loadEarlier}
+            onClick={loadEarlierMessages}
             className="mx-auto block rounded-full border border-slate-300/60 bg-white/60 px-3 py-1 text-[11px] text-slate-500 transition-colors hover:bg-white/90"
           >
-            加载更早的消息（还有 {hiddenCount} 条）
+            {loadingEarlier ? "加载中…" : `加载更早的消息（还有 ${hiddenCount} 条）`}
           </button>
         )}
         {visibleMessages.map((m) => (
@@ -606,6 +608,9 @@ const MessageBubble = memo(function MessageBubble({
           {String(message.content.text ?? "")}
         </div>
       );
+    case "context_summary":
+      // 上下文滚动分隔线：默认收起一行，点开看交接摘要全文
+      return <ContextSummaryDivider message={message} />;
     case "error":
       return (
         <div className="flex items-start gap-1.5 rounded-lg border border-red-200/70 bg-red-100/70 px-3 py-2 text-xs text-red-600">
@@ -617,6 +622,31 @@ const MessageBubble = memo(function MessageBubble({
       return null;
   }
 });
+
+function ContextSummaryDivider({ message }: { message: ChatMessageDto }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="my-1">
+      <div className="flex items-center gap-2 text-[11px] text-slate-400">
+        <span className="h-px flex-1 bg-slate-300/60" />
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-1 rounded-full border border-slate-300/60 bg-white/60 px-2.5 py-0.5 transition-colors hover:bg-white/90"
+          title="agent 的上下文已压缩：此前对话被一段交接摘要替代（消息记录仍完整保留）"
+        >
+          <Archive className="size-3" />
+          上下文已压缩{open ? "（点击收起摘要）" : "（点击查看摘要）"}
+        </button>
+        <span className="h-px flex-1 bg-slate-300/60" />
+      </div>
+      {open && (
+        <div className="mt-1.5 whitespace-pre-wrap rounded-lg border border-slate-900/8 bg-white/60 px-3 py-2 text-xs leading-relaxed text-slate-500">
+          {String(message.content.text ?? "")}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function PermissionRequestCard({
   message,

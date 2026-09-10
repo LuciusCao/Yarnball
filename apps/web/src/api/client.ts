@@ -141,8 +141,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ agentId }),
     }),
-  chatMessages: (sessionId: string) =>
-    request<{ messages: ChatMessageDto[] }>(`/chat-sessions/${sessionId}/messages`),
+  chatMessages: (sessionId: string, query: { beforeSeq?: number; limit?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (query.beforeSeq != null) qs.set("beforeSeq", String(query.beforeSeq));
+    if (query.limit != null) qs.set("limit", String(query.limit));
+    const suffix = qs.size > 0 ? `?${qs}` : "";
+    return request<{ messages: ChatMessageDto[]; hasMore: boolean }>(
+      `/chat-sessions/${sessionId}/messages${suffix}`,
+    );
+  },
   sendPrompt: (sessionId: string, text: string) =>
     request<{ ok: true }>(`/chat-sessions/${sessionId}/prompt`, {
       method: "POST",

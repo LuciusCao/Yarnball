@@ -26,6 +26,10 @@
  *                               前后文本聚合为同一条 agent_text
  *   FAKE_SCRIPT=plain_text_flow 纯文本回复，无任何工具调用 —— 验证 MCP 提示的
  *                               误报/该报两条路径（配合 DB 预置 has_mcp_call）
+ *   FAKE_SCRIPT=context_roll_flow 上下文滚动链路：普通 prompt 回显「第 N 轮」；
+ *                               收到摘要指令（【上下文交接】）时输出 ≥100 字符的
+ *                               固定摘要；新进程首 prompt 含【上下文压缩】回放时
+ *                               报告回放长度（验证滚动确实把回放喂给了新进程）
  *
  * 所有收到的线流量 sink 到 stderr（不打断 stdout 协议流）。
  */
@@ -370,6 +374,39 @@ async function handlePrompt(requestId, text) {
       sessionUpdate: "plan",
       entries: [{ content: "补全候选详情", priority: "medium", status: "pending" }],
     });
+    return;
+  }
+
+  if (script === "context_roll_flow") {
+    // 摘要指令（内部回合，实际文本为「【系统指令：上下文交接】…」）：输出 ≥100 字符的交接摘要
+    if (text.includes("上下文交接")) {
+      update({
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: "交接摘要：用户计划杭州两日游，节奏偏好悠闲，不赶早；同行两人，预算中等偏上，无忌口。已确认第一天灵隐寺加西湖环线，第二天西溪湿地方向；餐厅未定，用户倾向本地本帮菜，候选了楼外茂与知味观，等用户拍板。用户明确说过不要安排任何早起行程，也不要把购物排进日程。酒店倾向住湖滨一带，方便步行。后续工作重点是补齐第二天午餐晚餐并确认酒店预订。\n",
+        },
+      });
+      respond(requestId, { stopReason: "end_turn" });
+      return;
+    }
+    // 新进程的 bootstrap+回放首 prompt：报告回放是否送达（滚动链路的核心断言点）
+    if (text.includes("【上下文压缩】")) {
+      update({
+        sessionUpdate: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: `新进程已收到上下文压缩回放（长度 ${text.length}），接管成功。\n`,
+        },
+      });
+      respond(requestId, { stopReason: "end_turn" });
+      return;
+    }
+    update({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: `第 ${promptCount} 轮回复完成。\n` },
+    });
+    respond(requestId, { stopReason: "end_turn" });
     return;
   }
 

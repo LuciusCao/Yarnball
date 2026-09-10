@@ -78,15 +78,23 @@ export const useTripStore = create<TripStore>((set, get) => ({
 
 interface ChatStore {
   messages: ChatMessageDto[];
+  /** 是否还有更早的消息在服务器端（分页翻页驱动；全量在内存时为 false） */
+  hasMore: boolean;
+  /** 向更早翻页请求进行中（「加载更早」按钮 loading 态） */
+  loadingEarlier: boolean;
   sessionId: string | null;
-  /** 订阅会话的 SSE 消息流并加载历史；切换到不同 sessionId 时清空上一会话的消息 */
+  /** 订阅会话的 SSE 消息流并加载历史（最新一页）；切换到不同 sessionId 时清空上一会话的消息 */
   subscribe: (sessionId: string) => () => void;
   reset: () => void;
   upsertMessage: (message: ChatMessageDto) => void;
+  /** 「加载更早」：按本页最早 seq 向服务器翻页，前插进消息列表 */
+  loadEarlier: () => Promise<void>;
 }
 
 export const useChatStore = create<ChatStore>((set, get) => ({
   messages: [],
+  hasMore: false,
+  loadingEarlier: false,
   sessionId: null,
 
   upsertMessage: (message) => {
@@ -111,24 +119,44 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     });
   },
 
-  subscribe: (sessionId: string) => {
+  loadEarlier: async () => {
+    const { sessionId, messages, loadingEarlier } = get();
+    if (!sessionId || loadingEarlier || messages.length === 0) return;
+    const oldestSeq = messages[0].seq;
+    if (!get().hasMore) return;
+    set({ loadingEarlier: true });
+    try {
+      const { messages: older, hasMore } = await api.chatMessages(sessionId, { beforeSeq: oldestSeq });
+      // 请求途中切了会话：这份历史属于旧会话，直接丢弃
+      if (get().sessionId !== sessionId) return;
+      set((state) => {
+        // 与内存中已有消息按 id 去重（SSE 可能已推过重叠区间的消息）
+        const existing = new Set(older.map((m) => m.id));
+        const merged = [...older, ...state.messages.filter((m) => !existing.has(m.id))];
+        merged.sort((a, b) => a.seq - b.seq);
+        return { messages: merged, hasMore };
+      });
+    } finally {
+      set({ loadingEarlier: false });
+    }
+  },
+
+  subscribe: (sessionId) => {
     // 切换 trip/session 时清空上一会话的消息（TripPage/ChatPanel 不随路由 param 重挂载，
     // 否则旧会话消息会在历史合并里作为 extras 残留并累积进新会话）
     if (get().sessionId !== sessionId) {
-      set({ messages: [], sessionId });
+      set({ messages: [], hasMore: false, sessionId });
     }
-    // 初始加载历史
-    void api.chatMessages(sessionId).then(({ messages }) => {
+    // 初始加载最新一页（分页；更早的按需「加载更早」）
+    void api.chatMessages(sessionId).then(({ messages, hasMore }) => {
       // 请求途中又切了会话：这份历史属于旧会话，直接丢弃
       if (get().sessionId !== sessionId) return;
       // SSE 可能已经先推了新消息：按 id 合并而不是直接替换，最终同样按 seq 排序
       set((state) => {
-        const existing = new Map(state.messages.map((m) => [m.id, m]));
-        const merged = messages.map((m) => existing.get(m.id) ?? m);
-        const extras = state.messages.filter((m) => !messages.some((x) => x.id === m.id));
-        const next = [...merged, ...extras];
-        next.sort((a, b) => a.seq - b.seq);
-        return { messages: next };
+        const incoming = new Map(messages.map((m) => [m.id, m]));
+        const merged = [...messages, ...state.messages.filter((m) => !incoming.has(m.id))];
+        merged.sort((a, b) => a.seq - b.seq);
+        return { messages: merged, hasMore };
       });
     });
 
@@ -142,5 +170,5 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     return unsubscribe;
   },
 
-  reset: () => set({ messages: [], sessionId: null }),
+  reset: () => set({ messages: [], hasMore: false, loadingEarlier: false, sessionId: null }),
 }));
