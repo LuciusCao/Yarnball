@@ -12,6 +12,7 @@ import { chatChannel, type EventBus } from "../events.js";
 import { env } from "../env.js";
 import { MCP_SERVER_NAME, SESSION_ID_HEADER, mintSessionToken, revokeSessionTokens } from "../mcp/tools.js";
 import { toChatSessionDto } from "../services/mappers.js";
+import { getEnhancedEnv } from "../services/processEnv.js";
 import { bootstrapPrompt, buildReplayPrompt, mcpHintMessage } from "./prompts.js";
 import { decidePermission, parkPermission, type ParkedPermission } from "./permissions.js";
 import type { PendingPermission, PermissionOutcome } from "./types.js";
@@ -273,6 +274,8 @@ export class SessionHandle {
     const child = spawn(this.agentSpec.command, this.agentSpec.args, {
       cwd: this.cwd,
       stdio: ["pipe", "pipe", "pipe"],
+      // 增强 PATH：GUI/sidecar 极简 PATH 下也要找得到 npm/brew/nvm 装的 agent CLI（与 /agents/detect 同一套）
+      env: await getEnhancedEnv(),
     });
     this.process = child;
 
@@ -871,8 +874,8 @@ export class SessionHandle {
     for (const v of p.env ?? []) envOverride[v.name] = v.value;
     const child = spawn(p.command, p.args ?? [], {
       cwd: p.cwd ?? this.cwd ?? undefined,
-      // env 只送 override 时必须 merge 继承环境，不能替换
-      env: { ...process.env, ...envOverride },
+      // env 只送 override 时必须 merge 继承环境，不能替换；PATH 用增强版（与 agent 主进程 spawn 一致）
+      env: { ...(await getEnhancedEnv()), ...envOverride },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true, // 独立进程组，可整组 kill
     });

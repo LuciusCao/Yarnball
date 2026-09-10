@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { and, asc, eq, ne } from "drizzle-orm";
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -34,6 +33,7 @@ import { getProvider } from "../services/geo.js";
 import { amapConfigured, getSettings, updateSettings } from "../services/settings.js";
 import { toAgentDto, toChatSessionDto } from "../services/mappers.js";
 import { listChatMessages } from "../services/chatStore.js";
+import { findExecutable } from "../services/processEnv.js";
 
 /**
  * 分享包 id 脱敏：把 bundle 内所有真实 id（含 tripId/placeId/dayId/entryId 等引用字段）
@@ -379,7 +379,7 @@ export function createApi(
     return c.json({ agents: rows.map(toAgentDto) });
   });
 
-  /** 检测各注册 agent 的 command 在本机是否可用（which） */
+  /** 检测各注册 agent 的 command 在本机是否可用（增强 PATH 搜索，GUI/sidecar 极简 PATH 也能找到用户级 CLI） */
   api.get("/agents/detect", async (c) => {
     const rows = await db
       .select()
@@ -388,9 +388,7 @@ export function createApi(
     const agents: AgentAvailability[] = await Promise.all(
       rows.map(async (row) => ({
         ...toAgentDto(row),
-        available: await new Promise<boolean>((resolve) =>
-          execFile("which", [row.command], (err) => resolve(!err)),
-        ),
+        available: (await findExecutable(row.command)) !== null,
       })),
     );
     return c.json({ agents });
