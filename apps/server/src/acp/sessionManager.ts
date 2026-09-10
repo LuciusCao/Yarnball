@@ -276,6 +276,9 @@ export class SessionHandle {
       stdio: ["pipe", "pipe", "pipe"],
       // 增强 PATH：GUI/sidecar 极简 PATH 下也要找得到 npm/brew/nvm 装的 agent CLI（与 /agents/detect 同一套）
       env: await getEnhancedEnv(),
+      // 独立进程组（pid 即 pgid）：node shim 型 agent（npm bin 脚本 spawnSync 原生二进制，
+      // 如 codex-acp）的孙进程留在同组，close 时 terminateProcessTree 可整组收走，不会孤儿化
+      detached: true,
     });
     this.process = child;
 
@@ -406,6 +409,37 @@ export class SessionHandle {
     return buildReplayPrompt(messages);
   }
 
+  /**
+   * 整组终止 agent 进程树：spawn 时 detached 使 pid 即 pgid，kill 负 pid 覆盖组内全部进程
+   * （node shim 型 agent 的原生孙进程、agent 自行 spawn 的子进程一并收走）。
+   * 组已不存在（ESRCH，直接型 agent 正常退出后）时回退只 kill 直接子进程，双双失败静默。
+   */
+  private async terminateProcessTree(child: ChildProcess): Promise<void> {
+    const killTree = (signal: NodeJS.Signals) => {
+      if (!child.pid) return;
+      try {
+        process.kill(-child.pid, signal);
+      } catch {
+        try {
+          child.kill(signal);
+        } catch {}
+      }
+    };
+    // 已退出的进程（崩溃残留句柄的 close）：无 exit 事件可等，直接清尾返回，
+    // 否则会白等 5s 超时
+    if (child.exitCode !== null || child.signalCode !== null) {
+      killTree("SIGKILL");
+      return;
+    }
+    killTree("SIGTERM");
+    await Promise.race([
+      new Promise<void>((resolve) => child.once("exit", () => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+    ]);
+    // 无条件清尾：leader 先退但组内孙进程可能还在持管道；组已空时 ESRCH 静默
+    killTree("SIGKILL");
+  }
+
   /** final 缺省 closed（用户主动断开/行程删除）；server 关停时传 idle 保可恢复语义 */
   async close(reason: string, final: { status: string; lastError?: string | null } = { status: "closed" }): Promise<void> {
     if (this.closed) return;
@@ -424,16 +458,7 @@ export class SessionHandle {
     } catch {}
 
     const child = this.process;
-    if (child?.pid) {
-      child.kill("SIGTERM");
-      await Promise.race([
-        new Promise<void>((resolve) => child.once("exit", () => resolve())),
-        new Promise<void>((resolve) => setTimeout(resolve, 5000)),
-      ]);
-      if (child.exitCode === null && !child.killed) {
-        child.kill("SIGKILL");
-      }
-    }
+    if (child) await this.terminateProcessTree(child);
 
     if (this.cwd) await rm(this.cwd, { recursive: true, force: true }).catch(() => {});
     await revokeSessionTokens(this.db, this.sessionRow.id);
