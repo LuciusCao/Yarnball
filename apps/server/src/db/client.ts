@@ -15,9 +15,11 @@ export function resolveDbPath(value: string | undefined = process.env.DATABASE_U
   const raw = value && value.trim() !== "" ? value : `${homedir()}/.yarnball/yarnball.db`;
   if (raw === ":memory:") return raw;
   if (raw.startsWith("file:")) return raw.slice("file:".length);
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) {
+  const schemeMatch = raw.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//);
+  if (schemeMatch) {
+    // 只回显 scheme：连接串里可能带用户名密码，原文进错误信息会泄到 stderr/日志
     throw new Error(
-      `无法识别的 DATABASE_URL：「${raw}」。M80 起已改用 SQLite（better-sqlite3），` +
+      `无法识别的 DATABASE_URL scheme：「${schemeMatch[1]}://」。M80 起已改用 SQLite（better-sqlite3），` +
         `DATABASE_URL 只接受 SQLite 文件路径（可带 file: 前缀），不再支持 postgres:// 等连接串。` +
         `旧 Postgres 数据可用 pnpm -C apps/server migrate:pg-legacy 迁移。`,
     );

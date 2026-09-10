@@ -17,7 +17,9 @@
  * - 迁移前自动备份：cp 目标 SQLite（若存在）与 pg_dump 全库到 /tmp，文件名带时间戳。
  * - 幂等策略：**按主键跳过已存在的行**（INSERT OR IGNORE），重复执行不会产生重复数据，
  *   也不会覆盖 SQLite 里更新的行。若希望以 PG 为准重灌，请先手动清空目标表再跑。
- * - PG 里不存在的表直接跳过；全部写入在单事务内完成，任一步失败整体回滚。
+ * - 写入前先 preflight：逐表比对 PG 实际列与 schema 列规格，缺列（PG 库缺最后几次迁移）
+ *   直接列出缺失列并退出，不会在迁移中途撞上 NOT NULL 约束；PG 里整表不存在则跳过该表。
+ * - 全部写入在单事务内完成，任一步失败整体回滚。
  * - 类型转换：boolean → 0/1；timestamptz → 毫秒整数（schema 的 timestamp_ms）；jsonb → JSON 文本；
  *   numeric → real；uuid/文本列原样保留。
  */
@@ -37,8 +39,10 @@ const container = argValue("--container") ?? "yarnball-db";
 function resolveTargetDb() {
   const fromArg = argValue("--db");
   const raw = fromArg ?? (process.env.DATABASE_URL?.trim() || undefined) ?? `${homedir()}/.yarnball/yarnball.db`;
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw) && !raw.startsWith("file://")) {
-    console.error(`✗ 目标 DATABASE_URL 的 scheme 无法识别（${raw}）。M80 起已改用 SQLite，请传 SQLite 文件路径（可用 --db 覆盖）。`);
+  const schemeMatch = raw.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//);
+  if (schemeMatch && !raw.startsWith("file://")) {
+    // 只回显 scheme，避免连接串里的用户名密码泄到日志
+    console.error(`✗ 目标 DATABASE_URL 的 scheme 无法识别（${schemeMatch[1]}://）。M80 起已改用 SQLite，请传 SQLite 文件路径（可用 --db 覆盖）。`);
     process.exit(1);
   }
   return raw.startsWith("file:") ? raw.slice("file:".length) : raw;
@@ -134,6 +138,29 @@ function exportTable(table) {
   return JSON.parse(out.trim() || "[]");
 }
 
+// ---- preflight：表/列核对（在备份与写入之前，失败零副作用）----
+// json_agg(t) 只导出 PG 里存在的列；若 PG 库缺最后几次迁移，缺列会以难解的 NOT NULL
+// 约束失败收场，所以先逐表比对 information_schema.columns，缺列直接列出并退出。
+const existingTables = new Set(
+  psql("select table_name from information_schema.tables where table_schema='public'").split("\n").map((s) => s.trim()).filter(Boolean),
+);
+const missingByTable = [];
+for (const [table, cols] of TABLES) {
+  if (!existingTables.has(table)) continue; // 整表缺失允许跳过，列缺失不允许
+  const pgCols = new Set(
+    psql(`select column_name from information_schema.columns where table_schema='public' and table_name='${table}'`)
+      .split("\n").map((s) => s.trim()).filter(Boolean),
+  );
+  const missing = Object.keys(cols).filter((c) => !pgCols.has(c));
+  if (missing.length > 0) missingByTable.push(`   ${table} 缺列：${missing.join(", ")}`);
+}
+if (missingByTable.length > 0) {
+  console.error("✗ PG 库结构与当前 schema 不一致（可能缺最后几次迁移），请先回到旧版代码跑齐 PG 迁移再执行本脚本：");
+  for (const line of missingByTable) console.error(line);
+  process.exit(1);
+}
+console.log("⓪ preflight 列核对通过");
+
 // ---- 备份 ----
 const ts = new Date().toISOString().replace(/[:.]/g, "-");
 const pgDumpPath = `/tmp/yarnball-pg-backup-${ts}.sql`;
@@ -152,10 +179,6 @@ if (existsSync(dbPath)) {
 mkdirSync(dirname(dbPath), { recursive: true });
 const sqlite = new Database(dbPath);
 sqlite.pragma("foreign_keys = ON");
-
-const existingTables = new Set(
-  psql("select table_name from information_schema.tables where table_schema='public'").split("\n").map((s) => s.trim()).filter(Boolean),
-);
 
 const summary = [];
 sqlite.transaction(() => {
