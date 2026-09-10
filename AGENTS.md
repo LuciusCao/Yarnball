@@ -77,6 +77,7 @@ just icon             # 从 apps/web/public/icon-1024.png 重生成图标种子
 pnpm install
 cp .env.example .env && cp .env.example apps/server/.env   # dotenv 从 server 目录读取
 pnpm db:migrate         # 初始化 SQLite（默认 ~/.yarnball/yarnball.db，DATABASE_URL 可改路径）
+                        # 旧 Postgres（M80 前）数据迁移：pnpm -C apps/server migrate:pg-legacy
 pnpm dev                # 并行起 server (:18788) + web (:15173)
 
 # 单端 / 其他
@@ -114,7 +115,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 
 ## 环境变量与安全
 
-- 见 `.env.example`；无必填项（`DATABASE_URL` 为 SQLite 文件路径，可选，默认 `~/.yarnball/yarnball.db`），其余有默认值（`SERVER_PORT=18788`、`WEB_ORIGIN=http://localhost:15173`、`SERVER_BASE_URL` 默认 loopback）
+- 见 `.env.example`；无必填项（`DATABASE_URL` 为 SQLite 文件路径，可选，默认 `~/.yarnball/yarnball.db`；M80 起 `postgres://` 等无法识别的 scheme 会直接报错退出，不再被当成文件路径），其余有默认值（`SERVER_PORT=18788`、`WEB_ORIGIN=http://localhost:15173`、`SERVER_BASE_URL` 默认 loopback）
 - `SERVER_HOST` 默认 `127.0.0.1`：`/api` 无鉴权（`POST /api/agents` 可 spawn agent 子进程），绑 `0.0.0.0` 会暴露 LAN 构成同网段 RCE 链路；LAN 调试需显式设置。Tauri 桌面壳场景保持默认即可
 - 生产态 server 直接托管 web 静态产物：探测到 `apps/web/dist/index.html`（或 `YARNBALL_WEB_DIST_DIR` 指定目录，Tauri 打包后由壳注入）即挂载 serve-static + SPA 回退，`/api` `/mcp` `/healthz` 优先不受影响；dev（vite :15173）无 dist 时行为不变（`apps/server/src/services/staticWeb.ts`）
 - `/healthz` 返回 `{ ok, app:"yarnball", version, webStatic }`：Tauri 壳靠 `app`/`webStatic` 判定 18788 占用者身份——同包且托管 web 产物才复用，否则换端口，避免窗口被指向旧版孤儿 sidecar 的 404（`apps/tauri/src-tauri/src/sidecar.rs`）
