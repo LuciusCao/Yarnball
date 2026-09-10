@@ -85,6 +85,8 @@ export const CHAT_MESSAGE_KINDS = [
   "permission_result",
   "advisory",
   "error",
+  /** 上下文滚动标记：agent 侧会话压缩换新后落一条，content = { text: 交接摘要, throughSeq: 摘要覆盖到的 seq } */
+  "context_summary",
 ] as const;
 export type ChatMessageKind = (typeof CHAT_MESSAGE_KINDS)[number];
 
@@ -693,6 +695,7 @@ export type ChatSessionDto = z.infer<typeof ChatSessionDtoSchema>;
  * - plan: { entries: [{ content, status }] }
  * - permission_request: { sessionId, requestId, toolCall, options }
  * - permission_result: { requestId, outcome }
+ * - context_summary: { text: 交接摘要, throughSeq: 摘要覆盖到的最大 seq }
  */
 export const ChatMessageDtoSchema = z.object({
   id: z.string(),
@@ -704,6 +707,24 @@ export const ChatMessageDtoSchema = z.object({
   createdAt: z.string(),
 });
 export type ChatMessageDto = z.infer<typeof ChatMessageDtoSchema>;
+
+/**
+ * 消息分页（keyset）：GET /chat-sessions/:id/messages?beforeSeq=&limit=
+ * - 缺省取最新一页（limit 默认 200，上限 500）
+ * - beforeSeq：取 seq 严格小于它的更早一页
+ */
+export const ChatMessagesQuerySchema = z.object({
+  beforeSeq: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+export type ChatMessagesQuery = z.infer<typeof ChatMessagesQuerySchema>;
+
+export const ChatMessagesPageSchema = z.object({
+  messages: z.array(ChatMessageDtoSchema),
+  /** 服务器端是否还有比本页更早的消息（驱动「加载更早」翻页） */
+  hasMore: z.boolean(),
+});
+export type ChatMessagesPage = z.infer<typeof ChatMessagesPageSchema>;
 
 /** 预算汇总（服务端按地点价格计算） */
 export const BudgetSummarySchema = z.object({

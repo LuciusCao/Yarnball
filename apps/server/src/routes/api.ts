@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   AddEntryInputSchema,
+  ChatMessagesQuerySchema,
   CreateAgentInputSchema,
   CreateHotelCandidateInputSchema,
   CreatePlaceInputSchema,
@@ -487,8 +488,10 @@ export function createApi(
   });
 
   api.get("/chat-sessions/:sessionId/messages", async (c) => {
-    const messages = await listChatMessages(db, c.req.param("sessionId"));
-    return c.json({ messages });
+    // keyset 分页：缺省取最新一页；?beforeSeq=&limit= 向更早翻页（「加载更早」）
+    const query = ChatMessagesQuerySchema.parse(c.req.query());
+    const page = await listChatMessages(db, c.req.param("sessionId"), query);
+    return c.json(page);
   });
 
   /**

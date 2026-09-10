@@ -265,6 +265,39 @@ async function main() {
     assert(true, "MCP hit persisted has_mcp_call=true to chat_sessions");
     await api(`/chat-sessions/${mcpSession.id}`, { method: "DELETE" });
 
+    // 4.5.05 messages_pagination：keyset 分页——缺省最新一页（limit 钳制）、beforeSeq 向更早翻页、
+    // hasMore 边界正确。复用 mcp flow 已落库的消息，不额外开会话
+    console.log("-- messages_pagination --");
+    {
+      const page1 = await api(`/chat-sessions/${mcpSession.id}/messages?limit=3`);
+      assert(page1.messages.length === 3, "pagination: latest page returns 3 messages (limit)");
+      assert(page1.hasMore === true, "pagination: hasMore=true when older messages exist");
+      const seqs1 = page1.messages.map((m: any) => m.seq);
+      assert(
+        seqs1.every((s: number, i: number) => i === 0 || seqs1[i - 1] < s),
+        "pagination: messages are seq-ascending within a page",
+      );
+      const page2 = await api(`/chat-sessions/${mcpSession.id}/messages?limit=3&beforeSeq=${seqs1[0]}`);
+      assert(page2.messages.length > 0, "pagination: beforeSeq returns earlier messages");
+      const seqs2 = page2.messages.map((m: any) => m.seq);
+      assert(
+        seqs2.every((s: number) => s < seqs1[0]),
+        "pagination: beforeSeq page strictly earlier than anchor",
+      );
+      assert(
+        seqs2[seqs2.length - 1] === seqs1[0] - 1 || page2.messages.length < 3,
+        "pagination: pages are contiguous (next seq is anchor-1 or short page)",
+      );
+      // 翻到头：beforeSeq=1 必空且 hasMore=false
+      const pageTop = await api(`/chat-sessions/${mcpSession.id}/messages?beforeSeq=1`);
+      assert(pageTop.messages.length === 0 && pageTop.hasMore === false, "pagination: exhausted page is empty with hasMore=false");
+      // 超上限 limit → 400（zod 校验）
+      {
+        const res = await fetch(`${BASE}/api/chat-sessions/${mcpSession.id}/messages?limit=999`);
+        assert(res.status === 400, "pagination: limit>500 rejected with 400");
+      }
+    }
+
     // 4.5.1 MCP 提示改读持久化值：DB 预置 has_mcp_call=true 的会话，新句柄纯文本回合不得误报；
     // 对照组（未置位）应在首回合收到提示
     console.log("-- mcp_hint_persistence_flow --");
@@ -458,6 +491,108 @@ async function main() {
     );
 
     await api(`/chat-sessions/${trailSession.id}`, { method: "DELETE" });
+
+    // 4.6.5 context_roll_flow：上下文滚动端到端——
+    // DB 直连灌一条超阈值（15 万字符）的 user_text，让生产阈值自然触发滚动；
+    // ② 老 agent 收摘要指令输出交接摘要（内部回合：不落 user_text / 回合结束 advisory）；
+    // ③ 原地换进程后 context_summary 分隔线落库（content 带 throughSeq）；
+    // ④ 下一回合走新进程：bootstrap+回放首 prompt 含【上下文压缩】，fake agent 回报
+    //    「新进程已收到上下文压缩回放」——证明回放真的喂给了新的 agent 进程
+    console.log("-- context_roll_flow --");
+    {
+      const rollAgentId = `fake-agent-smoke-roll-${RUN_ID}`;
+      // env 前缀模式（与 permission_flow 同款）：/usr/bin/env FAKE_SCRIPT=... node fake-agent.mjs
+      upsertAgent(rollAgentId, "Fake Agent (context roll)", "/usr/bin/env", [
+        `FAKE_SCRIPT=context_roll_flow`,
+        FAKE_AGENT_COMMAND,
+        ...FAKE_AGENT_ARGS,
+      ]);
+      smokeAgentIds.push(rollAgentId);
+      // 直插 session 行（不经 startSession，与 mcp_hint_persistence_flow 同模式）+
+      // 灌大消息，再发 prompt 触发懒恢复——句柄 start() 时 maxSeq 已含大消息，
+      // 后续续号不会撞 (session_id, seq) 唯一索引
+      const rollSessionId = `smoke-context-roll-${RUN_ID}`;
+      sqlite
+        .prepare(
+          `INSERT INTO chat_sessions (id, trip_id, agent_registry_id, agent_label, status)
+           VALUES (?, ?, ?, ?, 'idle') ON CONFLICT (id) DO NOTHING`,
+        )
+        .run(rollSessionId, trip.id, rollAgentId, "Fake Agent (context roll)");
+      sqlite
+        .prepare(
+          `INSERT INTO chat_messages (id, session_id, seq, turn_id, kind, content)
+           VALUES (?, ?, 1, NULL, 'user_text', ?)`,
+        )
+        .run(`smoke-bigmsg-${RUN_ID}`, rollSessionId, JSON.stringify({ text: "历史包袱：".repeat(31_000) }));
+
+      await api(`/chat-sessions/${rollSessionId}/prompt`, {
+        method: "POST",
+        body: JSON.stringify({ text: "帮我看看杭州" }),
+      });
+
+      let rollMsgs: Awaited<ReturnType<typeof messages>> = [];
+      // 滚动完成后：摘要 advisory + context_summary 落库，会话回 idle（新进程已就绪）
+      await waitUntil(
+        async () => {
+          rollMsgs = await messages(rollSessionId);
+          return rollMsgs.some((m) => m.kind === "context_summary");
+        },
+        20_000,
+        "context roll completed (context_summary persisted)",
+      );
+      const summaryMsg = rollMsgs.find((m) => m.kind === "context_summary")!;
+      assert(
+        String(summaryMsg.content.text ?? "").includes("交接摘要"),
+        "context_summary carries the handoff summary text",
+      );
+      assert(
+        typeof summaryMsg.content.throughSeq === "number" && summaryMsg.content.throughSeq > 0,
+        "context_summary carries throughSeq anchor",
+      );
+      // 内部回合纪律：摘要 turn 不落 user_text、不落回合结束 advisory、
+      // 「正在压缩」提示（advisory）先于 context_summary
+      const summaryIdx = rollMsgs.findIndex((m) => m.id === summaryMsg.id);
+      const beforeSummary = rollMsgs.slice(0, summaryIdx);
+      assert(
+        !beforeSummary.some((m) => m.kind === "user_text" && String(m.content.text).includes("上下文交接")),
+        "summary turn does NOT persist a user_text for the summary instruction",
+      );
+      assert(
+        beforeSummary.some((m) => m.kind === "advisory" && String(m.content.text).includes("正在压缩")),
+        "compressing advisory precedes the context_summary divider",
+      );
+      assert(
+        rollMsgs.filter((m) => m.kind === "advisory" && String(m.content.text).includes("回合结束")).length === 1,
+        "exactly one end-of-turn advisory (the summary turn adds none)",
+      );
+      // 换进程后 acp_session_id 已更新为新连接的会话 id
+      {
+        const row = sqlite
+          .prepare(`SELECT acp_session_id FROM chat_sessions WHERE id = ?`)
+          .get(rollSessionId) as { acp_session_id: string | null } | undefined;
+        assert(!!row?.acp_session_id, "chat session keeps acp_session_id after roll");
+      }
+
+      // 下一回合走新进程：首 prompt = bootstrap + 摘要回放（含【上下文压缩】），
+      // fake agent 据此回报「新进程已收到上下文压缩回放」
+      await api(`/chat-sessions/${rollSessionId}/prompt`, {
+        method: "POST",
+        body: JSON.stringify({ text: "继续" }),
+      });
+      await waitUntil(
+        async () => {
+          rollMsgs = await messages(rollSessionId);
+          return rollMsgs.some(
+            (m) => m.kind === "agent_text" && String(m.content.text).includes("新进程已收到上下文压缩回放"),
+          );
+        },
+        20_000,
+        "post-roll turn runs on the new process with replay injected",
+      );
+      assert(true, "new agent process received the roll replay in its first prompt");
+
+      await api(`/chat-sessions/${rollSessionId}`, { method: "DELETE" });
+    }
 
     // 4.7 multi_city_flow：多城市服务端地基（stops 镜像 / cityName 填充 / transitMode=drive 真实路由段 / 多中心防编造）
     console.log("-- multi_city_flow --");
