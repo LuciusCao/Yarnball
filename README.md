@@ -1,10 +1,16 @@
+<div align="center">
+
+<img src="apps/tauri/src-tauri/icons/128x128@2x.png" width="128" alt="毛线团 app 图标" />
+
 # 毛线团（Yarnball）
+
+基于地图的旅行攻略编辑器 —— **Agent-native**，国内海外双引擎
 
 [![CI](https://github.com/LuciusCao/Yarnball/actions/workflows/ci.yml/badge.svg)](https://github.com/LuciusCao/Yarnball/actions/workflows/ci.yml)
 [![Release](https://github.com/LuciusCao/Yarnball/actions/workflows/release.yml/badge.svg)](https://github.com/LuciusCao/Yarnball/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-基于地图的旅行攻略编辑器 —— **Agent-native**，国内海外双引擎。
+</div>
 
 传统攻略按内容组织（清单式的餐厅/景点/酒店列表），毛线团按**空间和时间**组织：行程是地图上的节点 + 节点间的交通段，按天串联。你在右侧悬浮面板里与**自己的 agent** 对话（ACP 接入，如 `kimi acp`、`gemini acp`、`claude-code-acp`），agent 通过 MCP 工具直接读写行程数据结构，全屏地图实时刷新。
 
