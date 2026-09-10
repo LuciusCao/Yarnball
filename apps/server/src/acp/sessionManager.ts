@@ -144,6 +144,9 @@ export class AcpSessionManager {
       command: agent.command,
       args: (agent.args as string[]) ?? [],
     }, (id) => this.noteMcpCall(id));
+    // 句柄自判不可自愈时（上下文滚动换进程失败）把自己从 map 摘除，
+    // 后续 prompt 走 REST 层懒恢复重建，而不是复用死句柄反复报「session 未就绪」
+    handle.setUnregisterSelf(() => this.handles.delete(row.id));
     handle.setTripInfo(
       trip?.title ?? "",
       trip?.destinationCity ?? "",
@@ -263,6 +266,12 @@ export class SessionHandle {
   private tripTitle = "";
   private tripCity = "";
   private tripProvider: "amap" | "osm" = "osm";
+  /** 句柄自判不可自愈（滚动换进程失败）时把自己从 manager 摘除；startSession 注入 */
+  private unregisterSelf: (() => void) | null = null;
+
+  setUnregisterSelf(fn: () => void): void {
+    this.unregisterSelf = fn;
+  }
 
   constructor(
     private db: Db,
@@ -821,8 +830,23 @@ export class SessionHandle {
    * 是否应该滚动：本连接自建立以来累计的转录字符数（user_text + agent_text，
    * 不含摘要 turn 自身的输出）超过阈值。DB 全量行数不参与判定——上下文膨胀
    * 是「本连接喂给模型的量」，与界面历史长度无关。
+   *
+   * 已滚动过的会话只累计「最近一次滚动点（context_summary.throughSeq）之后」
+   * 的行：滚动换新进程后喂给模型的是「摘要 + 滚动点后原文」，若继续全量累计，
+   * 被摘要覆盖的历史永远超阈值，每个回合边界都会再次触发重建。
    */
   private async shouldRoll(): Promise<boolean> {
+    const [lastRoll] = await this.db
+      .select({ throughSeq: schema.chatMessages.seq })
+      .from(schema.chatMessages)
+      .where(
+        and(
+          eq(schema.chatMessages.sessionId, this.sessionRow.id),
+          eq(schema.chatMessages.kind, "context_summary"),
+        ),
+      )
+      .orderBy(desc(schema.chatMessages.seq))
+      .limit(1);
     const [row] = await this.db
       .select({ total: sql<number>`coalesce(sum(length(${schema.chatMessages.content})), 0)` })
       .from(schema.chatMessages)
@@ -831,6 +855,8 @@ export class SessionHandle {
           eq(schema.chatMessages.sessionId, this.sessionRow.id),
           // 只算会说话的 kind：tool_call rawInput 等卡片数据是给用户看的，不进模型上下文
           sql`${schema.chatMessages.kind} in ('user_text', 'agent_text')`,
+          // 有滚动点则只算其后新增的（无滚动点时 gt 0 保持全量语义）
+          gt(schema.chatMessages.seq, lastRoll?.throughSeq ?? 0),
         ),
       );
     return (row?.total ?? 0) >= contextRollThresholdChars();
@@ -897,6 +923,15 @@ export class SessionHandle {
         },
         { closesAggregate: false },
       ).catch(() => {});
+      // 换进程阶段失败（② 之后异常）：旧连接已拆、activeSession 已清、新进程没起来，
+      // 本句柄已不可用。摘除自己 + 落 error 态，后续 prompt 走 REST 层懒恢复重建新句柄，
+      // 而不是复用死句柄反复报「session 未就绪」。
+      // （摘要阶段失败的路径不触达：旧进程还在，老连接继续可用。）
+      if (!this.activeSession) {
+        this.unregisterSelf?.();
+        await this.setStatus("error", `上下文压缩中重建 agent 失败：${(err as Error).message}。发送消息时会自动重连。`)
+          .catch(() => {});
+      }
     }
   }
 
