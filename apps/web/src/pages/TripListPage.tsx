@@ -16,7 +16,7 @@ import type { TripDto } from "@yarnball/shared";
 import { api } from "../api/client";
 import { api as uxApi } from "../lib/api";
 import { OnboardingBanner } from "../features/settings/OnboardingBanner";
-import { SettingsDrawer } from "../features/settings/SettingsDrawer";
+import { SettingsDrawer, type SettingsSection } from "../features/settings/SettingsDrawer";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import {
@@ -121,6 +121,8 @@ export function TripListPage() {
   // 设置抽屉 + 引导条（抽屉关闭后递增 refreshKey 让引导条重新检测）
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [bannerRefreshKey, setBannerRefreshKey] = useState(0);
+  // 引导条步骤点击传入，抽屉打开后定位到对应分区
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
   // 城市联想
   const [suggestions, setSuggestions] = useState<
     { name: string; country: string | null; center: { lng: number; lat: number } }[]
@@ -256,10 +258,13 @@ export function TripListPage() {
           </p>
         </header>
 
-        {/* 首次使用引导（未配置密钥或无可用 agent 时显示） */}
+        {/* 新手两步设置引导（agent 未就绪或密钥未配置/未跳过时显示） */}
         <OnboardingBanner
           refreshKey={bannerRefreshKey}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={(section) => {
+            setSettingsSection(section);
+            setSettingsOpen(true);
+          }}
         />
 
         {/* 创建 */}
@@ -432,9 +437,13 @@ export function TripListPage() {
       {/* 设置抽屉 */}
       <SettingsDrawer
         open={settingsOpen}
+        focusSection={settingsSection}
         onOpenChange={(open) => {
           setSettingsOpen(open);
-          if (!open) setBannerRefreshKey((k) => k + 1);
+          if (!open) {
+            setBannerRefreshKey((k) => k + 1);
+            setSettingsSection(undefined);
+          }
         }}
       />
 
