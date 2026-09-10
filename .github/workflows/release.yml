@@ -55,6 +55,14 @@ jobs:
       - name: 列出产物
         run: ls -lh dist/
 
+      # GitHub 资产名会削掉 CJK 字符（毛线团_0.1.0_aarch64.dmg → _0.1.0_aarch64.dmg），
+      # 上传前换成 ASCII 前缀：Yarnball_0.1.0_aarch64.dmg
+      - name: 重命名为 ASCII 文件名
+        run: |
+          cd dist
+          for f in *.dmg; do mv "$f" "Yarnball_${f#*_}"; done
+          ls -lh
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*.dmg
