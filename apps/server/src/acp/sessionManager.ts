@@ -1003,37 +1003,6 @@ export class SessionHandle {
   }
 
   /**
-   * 整组终止 agent 进程树：spawn 时 detached 使 pid 即 pgid，kill 负 pid 覆盖组内全部进程
-   * （node shim 型 agent 的原生孙进程、agent 自行 spawn 的子进程一并收走）。
-   * 组已不存在（ESRCH，直接型 agent 正常退出后）时回退只 kill 直接子进程，双双失败静默。
-   */
-  private async terminateProcessTree(child: ChildProcess): Promise<void> {
-    const killTree = (signal: NodeJS.Signals) => {
-      if (!child.pid) return;
-      try {
-        process.kill(-child.pid, signal);
-      } catch {
-        try {
-          child.kill(signal);
-        } catch {}
-      }
-    };
-    // 已退出的进程（崩溃残留句柄的 close）：无 exit 事件可等，直接清尾返回，
-    // 否则会白等 5s 超时
-    if (child.exitCode !== null || child.signalCode !== null) {
-      killTree("SIGKILL");
-      return;
-    }
-    killTree("SIGTERM");
-    await Promise.race([
-      new Promise<void>((resolve) => child.once("exit", () => resolve())),
-      new Promise<void>((resolve) => setTimeout(resolve, 5000)),
-    ]);
-    // 无条件清尾：leader 先退但组内孙进程可能还在持管道；组已空时 ESRCH 静默
-    killTree("SIGKILL");
-  }
-
-  /**
    * 只拆连接不置终态：close() 的完整收尾（closed 标记、状态落库、token 回收）
    * 对上下文滚动不适用——滚动后句柄继续服役。复用 close 的拆除序列，单独实现。
    */
