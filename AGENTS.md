@@ -93,6 +93,10 @@ pnpm verify             # 提交前质量门：build + smoke 串行，任一失�
                         # （脚本本身假设 server 环境就绪，不负责起服务；
                         #  CI 里由 .github/workflows/ci.yml 起 server :18789 后跑同一条 verify）
 pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit generate）
+
+# 发布：没有 pnpm 命令，push tag v* 触发 .github/workflows/release.yml——
+# 复用 ci.yml 质量门（workflow_call）后在 macOS arm64 runner 打 dmg 附 GitHub Release；
+# tag（去 v 前缀）须与 tauri.conf.json 的 version 一致（v0.1.0 ↔ 0.1.0），带 - 后缀自动 prerelease
 ```
 
 ## 代码约定

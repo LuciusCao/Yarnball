@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  # 供 release.yml 以 uses: 复用同一质量门（tag 发布前先过一遍，链路单一定义点）
+  workflow_call:
+
+# 同一分支 / PR 的新 push 取消尚未完成的旧 run，省 runner 额度
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # 质量门：与本地 `pnpm verify` 同一条链路（build + smoke），红则阻断合并。
 # smoke 需要 server 在线，由本 workflow 负责起（verify 脚本本身假设环境就绪）。
@@ -36,7 +44,7 @@ jobs:
 
       - name: 等待 server 就绪（/api/trips 返回 200）
         run: |
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl -sf http://127.0.0.1:18789/api/trips > /dev/null; then
               echo "server ready"
               exit 0

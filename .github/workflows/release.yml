@@ -1,0 +1,70 @@
+name: Release
+
+# 打 tag（v*）触发：先过 ci.yml 同一套质量门（workflow_call 复用，链路单一定义点），
+# 再在 macOS runner 打 dmg 附到 GitHub Release。tag 必须与 tauri.conf.json 的 version
+# 一致（去 v 前缀，如 v0.1.0 ↔ 0.1.0），否则校验步红掉，防止错版发布。
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  # 质量门：与 CI / 本地 `pnpm verify` 完全同一条链路（build + smoke）
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: verify
+    # macos-latest = arm64 runner：产物为 aarch64 dmg（Apple Silicon）。
+    # x86_64 dmg 需要 GitHub 付费 x64 runner 或交叉编译改造，v1 不做。
+    runs-on: macos-latest
+    permissions:
+      contents: write # 创建 GitHub Release 并上传 dmg
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm/action-setup 从 package.json 的 packageManager 字段读取版本（pnpm@10）
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/tauri/src-tauri
+
+      - name: 校验 tag 与应用版本一致
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          conf="$(jq -r .version apps/tauri/src-tauri/tauri.conf.json)"
+          if [ "$tag" != "$conf" ]; then
+            echo "tag ($tag) 与 tauri.conf.json version ($conf) 不一致；请先对齐再打 tag" >&2
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+
+      # 与本地 just package / pnpm tauri:package 同链路：
+      # build:sidecar（Node SEA）→ tauri build（dmg，含 web 构建 + splash 注入）→ copy:dmg（复制到仓库根 dist/）
+      - name: 打包 dmg
+        run: pnpm -C apps/tauri package
+
+      - name: 列出产物
+        run: ls -lh dist/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.dmg
+          # v0.2.0-beta.1 这类带 - 后缀的 tag 自动标记 prerelease
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          body: |
+            macOS（Apple Silicon / aarch64）桌面版。
+
+            未做 Developer ID 签名与公证：首次打开若被 Gatekeeper 拦截，请右键 App →「打开」，
+            或在「系统设置 → 隐私与安全性」点「仍要打开」。
+
+            环境变量与 agent CLI 配置见仓库 README。
