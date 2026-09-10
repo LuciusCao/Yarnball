@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Check, KeyRound, Pencil, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
@@ -38,13 +38,19 @@ interface AgentFormState {
 
 const EMPTY_FORM: AgentFormState = { id: null, label: "", command: "", argsText: "", enabled: true };
 
+/** 设置抽屉内的分区锚点：引导条点击步骤时定位 */
+export type SettingsSection = "amap" | "agents";
+
 /** 设置抽屉：高德密钥 + agent CLI 管理，从右侧滑出 */
 export function SettingsDrawer({
   open,
   onOpenChange,
+  focusSection,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 打开后滚动定位到的分区（来自引导条步骤点击） */
+  focusSection?: SettingsSection;
 }) {
   const [settings, setSettings] = useState<SettingsDto | null>(null);
   // 三个 key 的输入值（留空 = 保持不变）；cleared 记录用户点了「清除」的字段
@@ -62,6 +68,20 @@ export function SettingsDrawer({
   const [savingAgent, setSavingAgent] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AgentAvailability | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  const amapSectionRef = useRef<HTMLElement>(null);
+  const agentsSectionRef = useRef<HTMLElement>(null);
+
+  // 引导条步骤点击：抽屉打开后滚动到对应分区
+  useEffect(() => {
+    if (!open || !focusSection) return;
+    const el = focusSection === "amap" ? amapSectionRef.current : agentsSectionRef.current;
+    const timer = window.setTimeout(
+      () => el?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      50,
+    );
+    return () => window.clearTimeout(timer);
+  }, [open, focusSection]);
 
   async function reload() {
     const [settingsRes, agentsRes] = await Promise.allSettled([
@@ -210,7 +230,7 @@ export function SettingsDrawer({
 
           <div className="flex-1 overflow-y-auto px-5 py-5">
             {/* 高德密钥 */}
-            <section>
+            <section ref={amapSectionRef}>
               <div className="mb-1 flex items-center gap-2">
                 <KeyRound className="size-4 text-slate-400" />
                 <h2 className="text-sm font-semibold text-slate-800">高德地图密钥</h2>
@@ -288,7 +308,7 @@ export function SettingsDrawer({
             <hr className="my-6 border-slate-100" />
 
             {/* Agent CLI */}
-            <section>
+            <section ref={agentsSectionRef}>
               <div className="mb-1 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <TerminalSquare className="size-4 text-slate-400" />
