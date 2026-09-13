@@ -20,6 +20,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Phone,
+  Printer,
   Search,
   Sparkles,
   Star,
@@ -47,6 +48,7 @@ import {
 } from "../features/candidates/booking";
 import { SearchAddPanel } from "../features/map/SearchAddPanel";
 import { BudgetStrip } from "../features/budget/BudgetStrip";
+import { ExportPrintDialog } from "../features/export/ExportPrintDialog";
 
 /**
  * 行程页 —— macOS Tahoe（Liquid Glass）布局：地图全屏打底，一切 UI 都是玻璃浮层。
@@ -142,6 +144,8 @@ export function TripPage() {
   const [panelMode, setPanelMode] = useState<"expanded" | "hidden">("expanded");
   /** 工具浮层放大态：跨面板切换保持（M15） */
   const [panelMaximized, setPanelMaximized] = useState(false);
+  /** 导出打印预览弹层（M97，issue #7） */
+  const [exportOpen, setExportOpen] = useState(false);
 
   useEffect(() => {
     if (!tripId) return;
@@ -493,6 +497,15 @@ export function TripPage() {
           <Link2 className="size-3" />
           分享
         </Link>
+        {/* 导出入口（M97，issue #7）：打印预览弹层，浏览器打印对话框另存为 PDF */}
+        <button
+          onClick={() => setExportOpen(true)}
+          title="导出打印版行程（可另存为 PDF，便于打印/离线查看）"
+          className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
+        >
+          <Printer className="size-3" />
+          导出
+        </button>
       </header>
 
       {/* 工具面板分段切换条（行程/候选/添加，M61 从原左下 dock 标签条迁来）：点击 tab 向下展开浮层，再点当前 tab 收起。
@@ -866,6 +879,9 @@ export function TripPage() {
           </div>
         </aside>
       )}
+
+      {/* 导出打印预览弹层（M97，portal 挂 body，打印时只留该浮层参与分页） */}
+      <ExportPrintDialog bundle={bundle} open={exportOpen} onClose={() => setExportOpen(false)} />
     </div>
   );
 }
