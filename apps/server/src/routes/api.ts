@@ -32,7 +32,7 @@ import type { AcpSessionManager } from "../acp/sessionManager.js";
 import { PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
 import { getProvider } from "../services/geo.js";
 import { amapConfigured, getSettings, updateSettings } from "../services/settings.js";
-import { toAgentDto, toChatSessionDto } from "../services/mappers.js";
+import { toAgentDto, toChatSessionDto, toTripDto } from "../services/mappers.js";
 import { listChatMessages } from "../services/chatStore.js";
 import { findExecutable } from "../services/processEnv.js";
 
@@ -169,6 +169,28 @@ export function createApi(
   api.patch("/trips/:tripId", async (c) => {
     const input = UpdateTripInputSchema.parse(await c.req.json());
     return c.json({ trip: await tripService.updateTrip(c.req.param("tripId"), input) });
+  });
+
+  /**
+   * 修改行程标题（issue #12，PATCH /api/trips/:tripId/title）。
+   * 本应并入上面 PATCH /trips/:tripId 的 UpdateTripInputSchema 加 title 字段，但 shared 包
+   * 被并行 mission 占用，这里用独立小端点 + 路由内联 zod（约束对齐 CreateTripInputSchema.title：
+   * trim 后 1-120 字）；后续 shared 空闲时可收敛进 UpdateTripInputSchema。
+   * tripService 同样不在改动范围，故落库与 SSE bundle 全量推送在路由内直接完成
+   * （等价于 tripService.updateTrip 的私有 publishBundle 路径）。
+   */
+  api.patch("/trips/:tripId/title", async (c) => {
+    const tripId = c.req.param("tripId");
+    const { title } = z.object({ title: z.string().trim().min(1).max(120) }).parse(await c.req.json());
+    await tripService.getTrip(tripId); // 不存在抛 404
+    await db
+      .update(schema.trips)
+      .set({ title, updatedAt: new Date() })
+      .where(eq(schema.trips.id, tripId));
+    // SSE 全量快照推送：打开的行程页（tripChannel 订阅）实时刷新标题；
+    // 分享页无 SSE 订阅（只一次性 fetch），新标题在下次加载分享页时生效
+    bus.publish(tripChannel(tripId), { type: "bundle", bundle: await tripService.getBundle(tripId) });
+    return c.json({ trip: toTripDto(await tripService.getTrip(tripId)) });
   });
 
   api.delete("/trips/:tripId", async (c) => {

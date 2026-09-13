@@ -146,6 +146,13 @@ export function TripPage() {
   const [panelMaximized, setPanelMaximized] = useState(false);
   /** 导出打印预览弹层（M97，issue #7） */
   const [exportOpen, setExportOpen] = useState(false);
+  /** 标题编辑态（issue #12）：点击信息条标题进入行内编辑；editingTitle 开关 + titleDraft 草稿 */
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  /** 标题 input 的 IME 组合输入标志位（r1 修复）：WebKit 下中文输入法确认候选的 Enter 会被误判为保存，
+      模式复刻 ChatPanel（issue #4 同款修复）——compositionstart 置位、compositionend 延迟一宏任务复位 */
+  const titleImeComposingRef = useRef(false);
+  const titleImeResetTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!tripId) return;
@@ -219,6 +226,26 @@ export function TripPage() {
       await load(tripId);
     } catch (err) {
       toast.error((err as Error).message);
+    }
+  }
+
+  /** 标题修改进行中（防重入） */
+  const [titleBusy, setTitleBusy] = useState(false);
+
+  /** 保存标题（issue #12）：空标题或与原标题一致直接退出编辑态不发请求；写后靠 SSE 全量刷新 + 主动 load 兜底 */
+  async function saveTitle() {
+    if (!tripId) return;
+    const title = titleDraft.trim();
+    setEditingTitle(false);
+    if (!title || title === bundle?.trip.title) return;
+    setTitleBusy(true);
+    try {
+      await uxApi.renameTrip(tripId, title);
+      await load(tripId);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setTitleBusy(false);
     }
   }
 
@@ -453,9 +480,76 @@ export function TripPage() {
         >
           ‹
         </Link>
-        <h1 className="glass-text max-w-64 truncate text-sm font-semibold" title={trip.title}>
-          {trip.title}
-        </h1>
+        {/* 标题（issue #12）：点击进入行内编辑；Enter/✓ 保存，Esc/✕ 取消；空标题或与原标题一致不发请求 */}
+        {editingTitle ? (
+          <span className="flex items-center gap-1">
+            <input
+              autoFocus
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onCompositionStart={() => {
+                // 新一轮组合开始时取消尚未执行的复位，避免误清标志位
+                if (titleImeResetTimerRef.current !== null) {
+                  clearTimeout(titleImeResetTimerRef.current);
+                  titleImeResetTimerRef.current = null;
+                }
+                titleImeComposingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                // WebKit（Tauri 桌面壳 / Safari）下按 Enter 确认候选时，compositionend 先于
+                // 那次 Enter 的 keydown 派发，且 keydown 的 isComposing 已为 false，
+                // 单靠 nativeEvent.isComposing 拦不住，半成品标题会被误保存（issue #4 同根因）。
+                // 故延迟一个宏任务复位标志位：紧随的「确认候选」Enter 仍视为组合输入被忽略；
+                // 用户真正想保存的 Enter 是后续独立输入事件，届时标志位已复位，不受影响。
+                titleImeResetTimerRef.current = window.setTimeout(() => {
+                  titleImeComposingRef.current = false;
+                  titleImeResetTimerRef.current = null;
+                }, 0);
+              }}
+              onKeyDown={(e) => {
+                if (
+                  e.key === "Enter" &&
+                  !e.nativeEvent.isComposing &&
+                  e.keyCode !== 229 &&
+                  !titleImeComposingRef.current
+                ) {
+                  void saveTitle();
+                }
+                if (e.key === "Escape") setEditingTitle(false);
+              }}
+              disabled={titleBusy}
+              maxLength={120}
+              className="w-52 rounded-lg bg-white/70 px-2 py-0.5 text-sm font-semibold outline-none ring-1 ring-slate-900/15 focus:ring-blue-500 disabled:opacity-50"
+            />
+            <button
+              onClick={() => void saveTitle()}
+              disabled={titleBusy}
+              title="保存"
+              className="flex size-6 items-center justify-center rounded-full text-blue-600 transition-colors hover:bg-slate-900/8 disabled:opacity-50"
+            >
+              ✓
+            </button>
+            <button
+              onClick={() => setEditingTitle(false)}
+              disabled={titleBusy}
+              title="取消"
+              className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-700 disabled:opacity-50"
+            >
+              ✕
+            </button>
+          </span>
+        ) : (
+          <h1
+            className="glass-text max-w-64 cursor-pointer truncate rounded-lg px-1 text-sm font-semibold transition-colors hover:bg-slate-900/8"
+            title={`${trip.title}（点击修改标题）`}
+            onClick={() => {
+              setTitleDraft(trip.title);
+              setEditingTitle(true);
+            }}
+          >
+            {trip.title}
+          </h1>
+        )}
         <span
           className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500"
           title={trip.stops.length > 1 ? `途经地（按游览顺序）：${trip.stops.map((s) => s.name).join(" → ")}` : undefined}
