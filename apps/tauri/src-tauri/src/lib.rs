@@ -1,5 +1,6 @@
 mod onboarding;
-mod pdf;
+// pub：examples/pdf_probe.rs 无头验证复用生产同一份打印配置/打印路径，防漂移
+pub mod pdf;
 mod sidecar;
 
 use std::thread;

@@ -18,10 +18,12 @@ tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 # M104 壳内「保存为 PDF」：直调 WKWebView printOperation 静默写盘（无打印面板）。
 # 四个 crate 均已在依赖树中（wry 的 macOS 依赖，版本锁定一致），仅开启所需 feature，无额外编译成本。
+# NSApplication/NSWindow/NSView/NSGraphics/NSRunningApplication + WKWebViewConfiguration
+# + NSGeometry/NSRunLoop/NSDate 供 examples/pdf_probe.rs 无头打印验证（M107 返工）使用。
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSDictionary", "NSObject"] }
-objc2-app-kit = { version = "0.3", features = ["NSPrintInfo", "NSPrintOperation"] }
-objc2-web-kit = { version = "0.3", features = ["WKWebView", "objc2-app-kit"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSDictionary", "NSObject", "NSGeometry", "NSRunLoop", "NSDate"] }
+objc2-app-kit = { version = "0.3", features = ["NSPrintInfo", "NSPrintOperation", "NSApplication", "NSWindow", "NSView", "NSResponder", "NSGraphics", "NSRunningApplication"] }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKWebViewConfiguration", "objc2-app-kit"] }
 tokio = { version = "1", features = ["signal", "macros"] }
 ureq = "3"
 serde_json = "1"
