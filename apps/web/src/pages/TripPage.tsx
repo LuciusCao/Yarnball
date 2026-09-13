@@ -587,7 +587,7 @@ export function TripPage() {
           <Link2 className="size-3" />
           分享
         </Link>
-        {/* 导出入口（M97，issue #7）：打印预览弹层，浏览器打印对话框另存为 PDF */}
+        {/* 导出入口（M97，issue #7）：预览弹层 → 保存为 PDF（Tauri 壳内走原生直存，浏览器回退 window.print） */}
         <button
           onClick={() => setExportOpen(true)}
           title="导出行程为 PDF（便于打印/离线查看）"
