@@ -6,6 +6,7 @@ import {
   CalendarDateSchema,
   CreateHotelCandidateInputSchema,
   CreatePlaceInputSchema,
+  isTransitLikeMode,
   LngLatSchema,
   SelectHotelInputSchema,
   TRANSIT_MODES,
@@ -15,7 +16,7 @@ import {
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
-import { amap, getProvider } from "../services/geo.js";
+import { amap, fallbackRoute, getProvider } from "../services/geo.js";
 
 /**
  * MCP 工具面：暴露毛线团（Yarnball）行程数据结构给用户 agent。
@@ -156,7 +157,7 @@ const GetRouteInput = z.object({
   to: LngLatSchema.nullable().optional(),
   fromPlaceId: z.string().optional(),
   toPlaceId: z.string().optional(),
-  mode: z.enum(["walk", "taxi", "transit", "drive"]).default("drive"),
+  mode: z.enum(TRANSPORT_MODES).default("drive"),
 });
 
 const AnalyzeDetourInput = z.object({
@@ -309,7 +310,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
           ` places[].cityName 为归属途经地/城市名（多城市分组依据）。` +
           ` places[].status：candidate=候选池（待用户确认），locked=用户已加入行程（确认要去；agent 可照常补全/修改信息字段，只排 locked 的地点进每日行程）。` +
           ` places[].openingHours 为营业时间（排天硬约束），visitDurationMin 为预计游览/用餐分钟数（排天参考），bookingStatus 为预订状态（none|pending|booked）；website 官网、bookingUrl 预订链接、phone 电话、address 地址会展示在地点信息卡上。` +
-          ` legs[] 为每天的市内交通段：seq 为天内顺序；端点二选一（entryId 或 placeId，酒店往返段用 placeId）；mode 为自动判定的方式（walk|taxi|transit|drive），modeOverride 非空表示被人工/agent 用 set_leg_mode 手动覆盖（重算交通段不会冲掉覆盖）；distanceM/durationS 为真实路由结果，polyline 为路径坐标。` +
+          ` legs[] 为每天的市内交通段：seq 为天内顺序；端点二选一（entryId 或 placeId，酒店往返段用 placeId）；mode 为交通方式（walk|taxi|drive|transit|bus|metro|light_rail|train|ferry，自动判定只会产出 walk/transit/drive/train/ferry，其余子类型靠 set_leg_mode 指定），modeOverride 非空表示被人工/agent 用 set_leg_mode 手动覆盖（重算交通段不会冲掉覆盖）；distanceM/durationS 为真实路由结果，polyline 为路径坐标。` +
           (overseas
             ? ` 本行程是海外目的地（${bundle.trip.destinationCity}，${bundle.trip.geoProvider} provider）：search_poi 时用英文或当地语言名称（如 "Sydney Opera House"）效果最好。`
             : ""),
@@ -577,7 +578,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "set_leg_mode",
     {
       description:
-        "手动覆盖某条市内交通段（leg）的交通方式：walk 步行 / taxi 出租车 / transit 公交地铁 / drive 驾车；传 null 清除覆盖、恢复自动判定（<2km 步行 / 2-6km 公交 / >6km 驾车）。覆盖存在 leg.modeOverride 上，之后重算交通段不会冲掉。什么时候用：用户说「这段想打车/想坐地铁/这段走路就行」，或自动判定与实际偏好不符时。legId 从 get_trip_context 的 legs[] 拿（端点是 fromEntryId/toEntryId 或 fromPlaceId/toPlaceId）。",
+        "手动覆盖某条市内交通段（leg）的交通方式：walk 步行 / taxi 出租车 / drive 驾车 / transit 泛公交（兜底）/ bus 公交 / metro 地铁 / light_rail 轻轨 / train 火车（市内线/机场线）/ ferry 渡轮；传 null 清除覆盖、恢复自动判定（<2km 步行 / 2-6km 公交 / >6km 驾车，端点含机场改判 train，路由绕行比 ≥1.8 的跨水段改判 ferry）。覆盖存在 leg.modeOverride 上，之后重算交通段不会冲掉。什么时候用：用户说「这段想打车/想坐地铁/这段坐渡轮」，或自动判定与实际偏好不符时。legId 从 get_trip_context 的 legs[] 拿（端点是 fromEntryId/toEntryId 或 fromPlaceId/toPlaceId）。",
       inputSchema: SetLegModeInput.shape,
     },
     async ({ legId, mode }) => {
@@ -615,7 +616,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "get_route",
     {
       description:
-        "查两点间路线，返回距离、耗时和真实路径坐标。mode：walk 步行 / drive 驾车 / taxi 出租车（按驾车路由估算，费用另计）/ transit 公交地铁（海外为估算）。端点二选一：**优先 fromPlaceId/toPlaceId**（行程内地点 id，从 get_trip_context 或 search_poi+add_place 拿）；或 from/to 裸坐标（坐标系必须与行程引擎一致：国内 GCJ-02、海外 WGS-84，直接复用 search_poi 返回的 location 不会错）。",
+        "查两点间路线，返回距离、耗时和真实路径坐标。mode：walk 步行 / drive 驾车 / taxi 出租车（按驾车路由估算，费用另计）/ transit 泛公交地铁 / bus 公交 / metro 地铁 / light_rail 轻轨 / train 火车（市内线/机场线，公交族均按公交换乘路由，海外为估算）/ ferry 渡轮（无上游轮渡路由，返回直线水域航线估算）。端点二选一：**优先 fromPlaceId/toPlaceId**（行程内地点 id，从 get_trip_context 或 search_poi+add_place 拿）；或 from/to 裸坐标（坐标系必须与行程引擎一致：国内 GCJ-02、海外 WGS-84，直接复用 search_poi 返回的 location 不会错）。",
       inputSchema: GetRouteInput.shape,
     },
     async ({ from, to, fromPlaceId, toPlaceId, mode }) => {
@@ -627,14 +628,35 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
           throw new ServiceError(422, "每个端点二选一：fromPlaceId/toPlaceId（行程内地点）或 from/to 裸坐标");
         }
         const { trip, provider } = await tripGeoInfo(ctx);
-        const route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity);
+        // 与 recalcDayLegs 同口径的降级（r1 评审）：osm 公交估算改真实 OSRM 底数后，
+        // 裸调用在上游故障时会直接报错——这里失败先退避重试一次，仍失败回退直线估算
+        // 并在结果里显式标注 estimated，不把上游故障抛给 agent
+        let estimated = false;
+        let route;
+        try {
+          route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity);
+        } catch {
+          try {
+            await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
+            route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity);
+          } catch (err) {
+            console.warn(`[get_route] route(${mode}) 重试仍失败，降级直线估算:`, (err as Error).message);
+            route = fallbackRoute(fromCoord, toCoord, mode);
+            estimated = true;
+          }
+        }
         return json({
           ok: true,
           route,
+          estimated: estimated || undefined,
           note:
-            provider.name === "osm" && mode === "transit"
-              ? "海外公交查询暂不可用，返回的是估算值（驾车时长 × 1.25 + 换乘时间）。"
-              : undefined,
+            estimated
+              ? "路由服务暂不可用，返回直线距离估算值。"
+              : mode === "ferry"
+                ? "渡轮无上游路由，返回的是直线水域航线估算（含候船缓冲）。"
+                : provider.name === "osm" && isTransitLikeMode(mode)
+                  ? "海外公交查询暂不可用，返回的是估算值（驾车时长 × 1.25 + 换乘时间）。"
+                  : undefined,
         });
       } catch (err) {
         return toolError(err);

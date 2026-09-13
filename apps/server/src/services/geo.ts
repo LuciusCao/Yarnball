@@ -1,4 +1,5 @@
 import type { LngLat, PoiCandidate, TransitSegment, TransportMode } from "@yarnball/shared";
+import { isTransitLikeMode } from "@yarnball/shared";
 import { ProxyAgent, type Dispatcher } from "undici";
 import { getAmapServerKey } from "./settings.js";
 
@@ -16,8 +17,8 @@ export interface RouteResult {
   durationS: number | null;
   polyline: LngLat[] | null;
   /**
-   * 公交分段详情（步行接驳 + 线路段）：仅 amap transit 真实公交路由成功时填充；
-   * walk/drive 路由、osm 估算、fallbackRoute 降级均不设置（调用方按 null 处理）。
+   * 公交分段详情（步行接驳 + 线路段）：仅 amap 公共交通族（transit/bus/metro/light_rail/train）
+   * 真实公交路由成功时填充；walk/drive/ferry 路由、osm 估算、fallbackRoute 降级均不设置（调用方按 null 处理）。
    */
   transitDetail?: TransitSegment[] | null;
 }
@@ -111,15 +112,44 @@ export function haversineM(a: LngLat, b: LngLat): number {
   return 2 * R * Math.asin(Math.sqrt(s));
 }
 
+/** 各方式估算速度（米/秒）：无 key / API 失败时按直线距离 ÷ 速度 × 非直线系数估算时长 */
+const FALLBACK_SPEED_MPS: Record<TransportMode, number> = {
+  walk: 1.3,
+  transit: 6,
+  bus: 6,
+  taxi: 8.5,
+  drive: 8.5,
+  metro: 8,
+  light_rail: 8,
+  train: 10,
+  ferry: 6.9, // ≈25km/h，渡轮走直线水域，不再乘非直线系数（见 ferryRouteEstimate）
+};
+
 /** 路线估算降级：无 key / API 失败时用直线距离 + 模式速度估算 */
 export function fallbackRoute(from: LngLat, to: LngLat, mode: TransportMode): RouteResult {
   const distanceM = Math.round(haversineM(from, to));
-  const speedMps = mode === "walk" ? 1.3 : mode === "transit" ? 6 : 8.5;
+  const speedMps = FALLBACK_SPEED_MPS[mode];
   return {
     mode,
     distanceM,
     durationS: Math.round((distanceM / speedMps) * 1.3), // 1.3 非直线系数
     polyline: null,
+  };
+}
+
+/**
+ * 渡轮段估算：免费上游均无轮渡路由（amap 公交换乘不含轮渡、OSRM 无 ferry profile），
+ * 统一按「直线水域航线」估算——polyline 为起讫直线两点（前端画水上航线样式），
+ * 时长 = 直线距离 ÷ 6.9m/s（≈25km/h）+ 7 分钟候船/靠泊缓冲。
+ * 两个 provider 与 recalcDayLegs 的跨水启发式共用这一个口径。
+ */
+export function ferryRouteEstimate(from: LngLat, to: LngLat): RouteResult {
+  const distanceM = Math.round(haversineM(from, to));
+  return {
+    mode: "ferry",
+    distanceM,
+    durationS: Math.round(distanceM / FALLBACK_SPEED_MPS.ferry) + 420,
+    polyline: [from, to],
   };
 }
 
@@ -227,6 +257,8 @@ export const amap: GeoProvider = {
   },
 
   async route(from, to, mode, city) {
+    // 渡轮：上游无轮渡路由，直线水域航线估算（两 provider 同口径）
+    if (mode === "ferry") return ferryRouteEstimate(from, to);
     const cacheKey = `${mode}|${loc(from)}|${loc(to)}|${city ?? ""}`;
     const cached = amapRouteCache.get(cacheKey);
     if (cached) return cached;
@@ -255,9 +287,10 @@ export const amap: GeoProvider = {
         polyline: path ? path.steps.flatMap((s) => parsePolyline(s.polyline)) : null,
       };
     } else {
-      // transit：公交换乘方案在 route.transits[]（方案列表，取首个最优方案），
-      // 每个方案 transit.segments[] 含 walking（步行接驳）与 bus.buslines[]（公交/地铁线路段）。
-      // city 是必填参数（起点城市），由调用方传入行程目的地城市。
+      // 公共交通族（transit/bus/metro/light_rail/train）：公交换乘方案在 route.transits[]（方案列表，
+      // 取首个最优方案），每个方案 transit.segments[] 含 walking（步行接驳）与 bus.buslines[]
+      // （公交/地铁线路段）。city 是必填参数（起点城市），由调用方传入行程目的地城市。
+      // 高德不区分子类型选型，统一走公交换乘，result.mode 保留请求的子类型供展示。
       const body = await amapGet<{
         route: {
           transits?: Array<{
@@ -320,7 +353,7 @@ export const amap: GeoProvider = {
         }
       }
       result = {
-        mode: "transit",
+        mode,
         distanceM: transit ? Number(transit.distance) : null,
         durationS: transit ? Number(transit.duration) : null,
         polyline: polyline.length > 0 ? polyline : null,
@@ -591,14 +624,26 @@ export const osm: GeoProvider = {
   },
 
   async route(from, to, mode) {
-    if (mode === "transit") {
-      // 免费公交路由不存在：car 时长 × 1.25 + 6 分钟换乘惩罚，作为估算
-      const est = fallbackRoute(from, to, "drive");
-      return { ...est, mode: "transit", durationS: Math.round((est.durationS ?? 0) * 1.25 + 360) };
-    }
+    // 渡轮：上游无轮渡路由，直线水域航线估算（两 provider 同口径）
+    if (mode === "ferry") return ferryRouteEstimate(from, to);
     const cacheKey = `${mode}|${loc(from)}|${loc(to)}`;
     const cached = osmRouteCache.get(cacheKey);
     if (cached) return cached;
+
+    if (isTransitLikeMode(mode)) {
+      // 免费公交路由不存在：真实 car 路线（OSRM）时长 × 1.25 + 6 分钟换乘惩罚作为估算；
+      // 里程/路径也取 car 真实路由（近似公交走向），result.mode 保留请求的子类型供展示。
+      // 用真实 car 里程而非直线：跨水场景绕行比（路由 ÷ 直线）是 recalcDayLegs 判渡轮的输入
+      const route = await osrmRouteRequest(OSRM_CAR, "driving", from, to);
+      const result: RouteResult = {
+        mode,
+        distanceM: Math.round(route.distance),
+        durationS: Math.round(route.duration * 1.25 + 360),
+        polyline: route.geometry.coordinates.map(([lng, lat]) => ({ lng, lat })),
+      };
+      osmRouteCache.set(cacheKey, result);
+      return result;
+    }
 
     const isWalk = mode === "walk";
     const route = await osrmRouteRequest(

@@ -6,7 +6,9 @@ import {
   circleSignature,
   lineSignature,
   markerSignature,
+  RAIL_LINE_COLOR,
   stopSignature,
+  WATER_LINE_COLOR,
   type OverlaySpecs,
 } from "./overlaySpecs";
 import type { MapRenderer } from "./MapCanvas";
@@ -163,18 +165,24 @@ export class MapLibreRenderer implements MapRenderer {
           properties: {},
         },
       });
+      // M98：渡轮画水上航线样式（固定水蓝短点划）、轨道类画铁路样式（深灰长划线），
+      // 与公路线（天色实线 / 酒店段 [2,2] 虚线）区分
+      const paint =
+        line.style === "water"
+          ? { "line-color": WATER_LINE_COLOR, "line-width": 3, "line-opacity": 0.9, "line-dasharray": [1.2, 1.8] }
+          : line.style === "rail"
+            ? { "line-color": RAIL_LINE_COLOR, "line-width": 3.5, "line-opacity": 0.9, "line-dasharray": [3, 2] }
+            : {
+                "line-color": line.color,
+                "line-width": 3.5,
+                "line-opacity": 0.85,
+                ...(line.dashed ? { "line-dasharray": [2, 2] } : {}),
+              };
       map.addLayer({
         id: `route-${line.id}`,
         type: "line",
         source: srcId,
-        paint: {
-          "line-color": line.color,
-          "line-width": 3.5,
-          "line-opacity": 0.85,
-          ...(line.dashed
-            ? { "line-dasharray": [2, 2] }
-            : {}),
-        },
+        paint,
       });
       this.lineSigs.set(line.id, lineSignature(line));
     }

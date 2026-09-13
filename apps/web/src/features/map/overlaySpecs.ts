@@ -1,4 +1,5 @@
-import type { LngLat, PlaceCategory, TripBundle } from "@yarnball/shared";
+import type { LngLat, PlaceCategory, TransportMode, TripBundle } from "@yarnball/shared";
+import { isRailMode } from "@yarnball/shared";
 import { getSelectedStays } from "../candidates/hotelStays";
 
 /**
@@ -32,12 +33,28 @@ export interface MarkerSpec {
   label: string;
   /** 地点类别（M60）：渲染器在 label 前加对应 emoji 图标（categoryIconEmoji） */
   category: PlaceCategory;
-  /** 背景色（天色/酒店色/锁定金/候选灰） */
+  /** 背景色（天色/酒店色/候选灰） */
   color: string;
-  /** 不透明度：候选=半透明（未确认），锁定/已排期=1 */
+  /** 不透明度：候选=半透明（未排期），已选定酒店/已排期=1 */
   opacity: number;
   /** 点击回调标识 */
   placeId: string;
+}
+
+/** 交通段线样式（M98）：road=公路线（默认，天色实线/酒店段虚线）；water=渡轮水上航线（固定水蓝色点划线，
+ *  与天色解耦——段线本就按需单段显示，样式优先表达交通方式）；rail=轨道类铁路样式（深灰长划线） */
+export type LineStyle = "road" | "water" | "rail";
+
+/** 水上航线（渡轮）颜色：固定水蓝，跨天一致，一眼可辨「这段走水路」 */
+export const WATER_LINE_COLOR = "#0284c7"; // sky-600
+/** 铁路样式（地铁/轻轨/火车）颜色：深灰中性色，区别于公路天色 */
+export const RAIL_LINE_COLOR = "#334155"; // slate-700
+
+/** 交通方式 → 段线样式：ferry=水上航线；metro/light_rail/train=铁路；其余公路 */
+export function lineStyleOfMode(mode: TransportMode): LineStyle {
+  if (mode === "ferry") return "water";
+  if (isRailMode(mode)) return "rail";
+  return "road";
 }
 
 export interface LineSpec {
@@ -46,6 +63,8 @@ export interface LineSpec {
   color: string;
   /** 酒店往返段（虚线）vs 景点间移动（实线） */
   dashed: boolean;
+  /** 交通方式样式（M98）：渡轮/轨道类区别于公路线 */
+  style: LineStyle;
 }
 
 export interface CircleSpec {
@@ -80,7 +99,7 @@ export function markerSignature(m: MarkerSpec, selected: boolean): string {
 }
 
 export function lineSignature(l: LineSpec): string {
-  return JSON.stringify([l.path, l.color, l.dashed]);
+  return JSON.stringify([l.path, l.color, l.dashed, l.style]);
 }
 
 export function stopSignature(s: StopSpec): string {
@@ -103,9 +122,9 @@ export const DAY_COLORS = [
 ];
 
 export const HOTEL_COLOR = "#dc2626";
-/** 未排期地点按 status 分色：候选=灰（半透明），锁定=金色实心 */
+/** 未排期地点统一候选灰半透明（M98/issue #3：不再按 locked 状态做金色/不透明的视觉区分——
+ *  交互上已无「锁定」概念，同一状态地点的地图钉视觉必须一致） */
 export const CANDIDATE_COLOR = "#94a3b8"; // slate-400
-export const LOCKED_COLOR = "#d97706"; // amber-600
 export const CANDIDATE_OPACITY = 0.55;
 
 export function dayColor(dayIndex: number): string {
@@ -175,6 +194,7 @@ export function buildOverlaySpecs(
             path: leg.polyline,
             color,
             dashed: !leg.fromEntryId || !leg.toEntryId,
+            style: lineStyleOfMode(leg.mode),
           });
           continue;
         }
@@ -209,6 +229,7 @@ export function buildOverlaySpecs(
           path: [from.location, to.location],
           color,
           dashed: !leg.fromEntryId || !leg.toEntryId,
+          style: lineStyleOfMode(leg.mode),
         });
       }
     }
@@ -220,28 +241,26 @@ export function buildOverlaySpecs(
       const place = placeById.get(cand.placeId);
       if (!place) continue;
       const isSel = selectedHotelPlaceIds.has(cand.placeId);
-      const locked = place.status === "locked";
       markers.push({
         id: `h-${cand.id}`,
         position: place.location,
         label: `${isSel ? "✓ " : ""}${place.name}${cand.pricePerNight ? ` · ${cand.pricePerNight}/晚` : ""}`,
         category: place.category,
-        color: isSel ? HOTEL_COLOR : locked ? LOCKED_COLOR : CANDIDATE_COLOR,
-        opacity: isSel || locked ? 1 : CANDIDATE_OPACITY,
+        color: isSel ? HOTEL_COLOR : CANDIDATE_COLOR,
+        opacity: isSel ? 1 : CANDIDATE_OPACITY,
         placeId: place.id,
       });
     }
-    // 未编排散点（agent 刚建的 / 用户收藏的）：候选灰半透明，锁定金色实心
+    // 未编排散点（agent 刚建的 / 用户收藏的）：统一候选灰半透明，不再区分 locked（issue #3）
     for (const place of bundle.places) {
       if (scheduledPlaceIds.has(place.id) || hotelPlaceIds.has(place.id)) continue;
-      const locked = place.status === "locked";
       markers.push({
         id: `p-${place.id}`,
         position: place.location,
         label: place.name,
         category: place.category,
-        color: locked ? LOCKED_COLOR : CANDIDATE_COLOR,
-        opacity: locked ? 1 : CANDIDATE_OPACITY,
+        color: CANDIDATE_COLOR,
+        opacity: CANDIDATE_OPACITY,
         placeId: place.id,
       });
     }

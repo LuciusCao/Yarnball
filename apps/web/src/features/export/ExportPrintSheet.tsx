@@ -3,7 +3,6 @@ import type {
   PlaceCategory,
   PlaceDto,
   TransportLegDto,
-  TransportMode,
   TripBundle,
 } from "@yarnball/shared";
 import {
@@ -12,6 +11,7 @@ import {
   formatDuration,
   formatMoney,
   formatVisitDuration,
+  TRANSPORT_MODE_LABELS,
 } from "@yarnball/shared";
 import { buildDayTimeline, formatHHMM } from "../itinerary/timeline";
 import {
@@ -30,13 +30,8 @@ import { groupDaysByStop } from "../itinerary/stops";
  * 数据来源与行程面板完全同源（bundle + itinerary/candidates 的推导层），不新造数据通道。
  */
 
-/** 市内交通段方式文案（值与 ItineraryPanel 的 TransportIcon 口径一致） */
-const LEG_MODE_LABEL: Record<TransportMode, string> = {
-  walk: "步行",
-  taxi: "打车/网约车",
-  transit: "公交",
-  drive: "驾车",
-};
+/** 市内交通段方式文案：直接用 shared 的 TRANSPORT_MODE_LABELS 单点（M98 起枚举含 ferry/metro 等子类型，不再本地双写） */
+const LEG_MODE_LABEL = TRANSPORT_MODE_LABELS;
 
 /** 地点类别文案（不含图标，打印用） */
 const PLACE_CATEGORY_LABEL: Record<PlaceCategory, string> = {

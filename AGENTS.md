@@ -23,7 +23,7 @@ Hono Server (apps/server, :18788)               │
 
 - 前端 Vite dev server 在 `:15173`，`/api` 代理到服务端（见 `apps/web/vite.config.ts`）
 - **地理引擎双 provider**（`src/services/geo.ts`）：创建行程时按目的地定死 `amap`（国内，高德 API，GCJ-02 坐标）或 `osm`（海外，Photon 搜索 + FOSSGIS OSRM 路线/矩阵 + Nominatim，全部零 key，WGS84），全链路不混用坐标系
-- **顺路引擎**（`src/services/tripService.ts`）：provider 距离矩阵 + 最近邻 + 2-opt 重排；交通段自动计算（<2km 步行 / 2-6km 公交 / >6km 驾车，真实路径 polyline）
+- **顺路引擎**（`src/services/tripService.ts`）：provider 距离矩阵 + 最近邻 + 2-opt 重排；交通段自动计算（基础分档 <2km 步行 / 2-6km 公交 / >6km 驾车 + 两条场景化启发式：端点含机场的长距段判 train 机场线、路由里程÷直线 ≥1.8 的跨水段判 ferry 轮渡；方式枚举 9 值 walk/taxi/drive/transit/bus/metro/light_rail/train/ferry，见 `packages/shared/src/domain.ts` TRANSPORT_MODES；地图上渡轮画水蓝点划水上航线、轨道类画深灰划线铁路样式）
 - **多城市模型**（M37 地基 + M39 界面层）：`trips.stops` 为有序途经地节点（stops[0] = 主目的地，`destinationCity`/`location` 是其兼容镜像）；`places.cityName` 为归属途经地（建点时自动填充）；`entries.transitMode`（flight/train/drive/bus）区分大交通方式，drive=自驾城际段走真实公路路由拿里程/时长。环线闭合不落库——末段 transit 讫点 == stops[0] 即闭合。前端：行程面板按 stop 分组 + 🚗 自驾卡、地图途经地标记层、候选池按城市分桶（`apps/web/src/features/itinerary/stops.ts` 是 day→stop / 环线闭合的推导单点）
 - **防编造校验**：agent 建点时坐标必须落在途经地附近——单城市行程退化为 stops[0] 单中心（国内 150km / 海外 300km），多城市行程为距任一 stop.center ≤200km（osm 保持 300km）；越界拒绝并引导先 `search_poi`
 
@@ -37,7 +37,7 @@ apps/server
                   add_transit_entry/update_entry（大交通 entry，transitMode=flight/train/drive/bus，
                   drive 走真实路由）、suggest_day_clusters（区域聚类分天建议）、
                   set_start_date/set_end_date（出发/结束日期，对话中说「9/23 出发」「玩到 9/28」时写回
-                  trip.startDate/endDate）、set_leg_mode（手动覆盖市内交通段方式，modeOverride）、
+                  trip.startDate/endDate）、set_leg_mode（手动覆盖市内交通段方式，9 值含 ferry/metro/light_rail/train/bus 子类型，modeOverride）、
                   recommend_hotel_area（多信号加权推荐住宿区域：每日首末锚点+大交通到发节点加权，
                   segments 按未被酒店覆盖的天段/途经地分段给建议）、unselect_hotel（取消单个
                   已选定酒店）、unschedule_place（按 placeId 撤销其全部日程并退回候选））、
@@ -132,6 +132,6 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 ## 已知边界（v1）
 
 - 单人编辑 + 只读分享链接（`/share/:token`）；多人实时协同（CRDT）留待 v2
-- 海外公交路线为估算（驾车时长 × 1.25 + 换乘惩罚）；国内公交走高德真实数据
+- 海外公交路线为估算（真实驾车路由时长 × 1.25 + 换乘惩罚）；国内公交走高德真实数据；渡轮无上游路由，统一按直线水域航线估算（含候船缓冲）
 - Photon / OSRM 是社区免费服务，高频使用应自托管（代码里换 base URL 即可）
 - ACP `session/load` 直连与 `session/cancel` 通知通道待 SDK（ActiveSession 封装）暴露后补
