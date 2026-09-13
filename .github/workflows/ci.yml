@@ -23,12 +23,14 @@ jobs:
       # CI 内用 18789，避免与本地 dev 默认的 18788 语义混淆
       SERVER_PORT: 18789
     steps:
-      - uses: actions/checkout@v4
+      # checkout v6 / setup-node v6 / pnpm action-setup v6 均为 node24 运行时，
+      # 消除 Node 20 弃用警告（2026-09-16 起 runner 移除 Node 20）
+      - uses: actions/checkout@v6
 
       # pnpm/action-setup 从 package.json 的 packageManager 字段读取版本（pnpm@10）
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
