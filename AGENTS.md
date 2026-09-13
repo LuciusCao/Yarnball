@@ -22,8 +22,9 @@ Hono Server (apps/server, :18788)               │
 ```
 
 - 前端 Vite dev server 在 `:15173`，`/api` 代理到服务端（见 `apps/web/vite.config.ts`）
-- **地理引擎双 provider**（`src/services/geo.ts`）：创建行程时按目的地定死 `amap`（国内，高德 API，GCJ-02 坐标）或 `osm`（海外，Photon 搜索 + FOSSGIS OSRM 路线/矩阵 + Nominatim，全部零 key，WGS84），全链路不混用坐标系
-- **顺路引擎**（`src/services/tripService.ts`）：provider 距离矩阵 + 最近邻 + 2-opt 重排；交通段自动计算（基础分档 <2km 步行 / 2-6km 公交 / >6km 驾车 + 两条场景化启发式：端点含机场的长距段判 train 机场线、路由里程÷直线 ≥1.8 的跨水段判 ferry 轮渡；方式枚举 9 值 walk/taxi/drive/transit/bus/metro/light_rail/train/ferry，见 `packages/shared/src/domain.ts` TRANSPORT_MODES；地图上渡轮画水蓝点划水上航线、轨道类画深灰划线铁路样式）
+- **地理引擎双 provider**（`src/services/geo.ts`）：创建行程时按目的地定死 `amap`（国内，高德 API，GCJ-02 坐标）或 `osm`（海外，Photon 搜索 + FOSSGIS OSRM 路线/矩阵 + Nominatim + transitous 真实公交，全部零 key，WGS84），全链路不混用坐标系
+- **海外真实公交**（M111，transitous = api.transitous.org，MOTIS 2 社区实例 API v6）：osm 公交族请求先走 transitous 真实换乘（`transitousPlan`），命中时 mode 取真实首段 transit 方式（SUBWAY→metro、TRAM→light_rail、BUS/COACH→bus、SUBURBAN/REGIONAL_RAIL/HIGHSPEED_RAIL→train、FERRY→ferry）、transitDetail 带真实线路名/上下车站/分段 polyline（Google polyline precision=6，自带解码器）；查询时刻为行程日（startDate+dayIndex）当地约 09:00（经度近似时区），cache key 含日期。GTFS 瑕疵过滤：纯数字 ≥5 位的内部 ID 不作线路名。降级链 transitous（空 itineraries 不重试/超时/错误）→ OSRM ×1.25 估算 → fallbackRoute；命中时绕行比渡轮启发式与机场线启发式自动退为兜底。usage policy 硬性义务：UA 带 app 名/版本/联系方式（TRANSITOUS_UA）+ 设置抽屉底部署名 transitous.org
+- **顺路引擎**（`src/services/tripService.ts`）：provider 距离矩阵 + 最近邻 + 2-opt 重排；交通段自动计算（基础分档 <2km 步行 / 2-6km 公交 / >6km 驾车 + 两条场景化启发式：端点含机场的长距段判 train 机场线、路由里程÷直线 ≥1.8 的跨水段判 ferry 轮渡——osm 侧 transitous 命中时由真实数据取代这两条启发式；方式枚举 9 值 walk/taxi/drive/transit/bus/metro/light_rail/train/ferry，见 `packages/shared/src/domain.ts` TRANSPORT_MODES；地图上渡轮画水蓝点划水上航线、轨道类画深灰划线铁路样式）
 - **多城市模型**（M37 地基 + M39 界面层）：`trips.stops` 为有序途经地节点（stops[0] = 主目的地，`destinationCity`/`location` 是其兼容镜像）；`places.cityName` 为归属途经地（建点时自动填充）；`entries.transitMode`（flight/train/drive/bus）区分大交通方式，drive=自驾城际段走真实公路路由拿里程/时长。环线闭合不落库——末段 transit 讫点 == stops[0] 即闭合。前端：行程面板按 stop 分组 + 🚗 自驾卡、地图途经地标记层、候选池按城市分桶（`apps/web/src/features/itinerary/stops.ts` 是 day→stop / 环线闭合的推导单点）
 - **防编造校验**：agent 建点时坐标必须落在途经地附近——单城市行程退化为 stops[0] 单中心（国内 150km / 海外 300km），多城市行程为距任一 stop.center ≤200km（osm 保持 300km）；越界拒绝并引导先 `search_poi`
 - **行程信息增强**（M101，issue #5/#9/#11）：
@@ -165,13 +166,13 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - 生产态 server 直接托管 web 静态产物：探测到 `apps/web/dist/index.html`（或 `YARNBALL_WEB_DIST_DIR` 指定目录，Tauri 打包后由壳注入）即挂载 serve-static + SPA 回退，`/api` `/mcp` `/healthz` 优先不受影响；dev（vite :15173）无 dist 时行为不变（`apps/server/src/services/staticWeb.ts`）
 - `/healthz` 返回 `{ ok, app:"yarnball", version, webStatic }`：Tauri 壳靠 `app`/`webStatic` 判定 18788 占用者身份——同包且托管 web 产物才复用，否则换端口，避免窗口被指向旧版孤儿 sidecar 的 404（`apps/tauri/src-tauri/src/sidecar.rs`）
 - 高德三个 key（`AMAP_JS_KEY` / `AMAP_SERVER_KEY` / `AMAP_JS_SECRET`）**仅国内行程需要**；海外行程零配置。未配 key 时国内路线降级为直线距离 × 1.3 估算、POI 搜索不可用，海外不受影响
-- 海外上游请求（Photon / Nominatim / OSRM，见 `geo.ts` 的 `overseasFetch`）支持标准代理环境变量：`https_proxy > all_proxy > http_proxy`（大小写均认），遵守 `no_proxy`；未设置时直连。国内高德请求永远直连，不走代理
+- 海外上游请求（Photon / Nominatim / OSRM / Open-Meteo / transitous，见 `geo.ts` 的 `overseasFetch`）支持标准代理环境变量：`https_proxy > all_proxy > http_proxy`（大小写均认），遵守 `no_proxy`；未设置时直连。国内高德请求永远直连，不走代理。transitous 走带版本/联系方式的专用 UA（TRANSITOUS_UA），其余上游共用 OSM_UA
 - `.env` 不入库；MCP token 只存 hash；agent 经 `session/new` 注入的 URL+header 直连 `/mcp`，不经浏览器
 - 前端渲染 agent 文本用 marked + sanitize-html，不要绕过 sanitize 直接 `dangerouslySetInnerHTML`
 
 ## 已知边界（v1）
 
 - 单人编辑 + 只读分享链接（`/share/:token`）；多人实时协同（CRDT）留待 v2
-- 海外公交路线为估算（真实驾车路由时长 × 1.25 + 换乘惩罚）；国内公交走高德真实数据；渡轮无上游路由，统一按直线水域航线估算（含候船缓冲）
-- Photon / OSRM 是社区免费服务，高频使用应自托管（代码里换 base URL 即可）
+- 海外公交走 transitous（MOTIS 2）真实换乘：覆盖城市命中真实线路/方式/分段；未覆盖（如部分小城返回空 itineraries）、超时或错误时降级为估算（真实驾车路由时长 × 1.25 + 换乘惩罚），transitous 为社区 best-effort 服务无 SLA。国内公交走高德真实数据；transitous 未命中时的渡轮仍按直线水域航线估算（含候船缓冲）
+- Photon / OSRM / transitous 是社区免费服务，高频使用应自托管（代码里换 base URL 即可）；transitous usage policy 要求 UA 带联系方式 + UI 署名 transitous.org（已在设置抽屉底部，改动时不得删除）
 - ACP `session/load` 直连与 `session/cancel` 通知通道待 SDK（ActiveSession 封装）暴露后补

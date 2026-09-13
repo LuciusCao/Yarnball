@@ -3,8 +3,9 @@ import { formatDistance, formatDuration, type TransportLegDto } from "@yarnball/
 /**
  * 公交段详情（M78 展示层）——M77（agent-transit-detail）定稿契约的本地镜像。
  * shared 包的 TransportLegDto.transitDetail 字段由 M77 落地（平铺数组，单 jsonb 列）；
- * 其合入前这里按定稿结构本地定义，访问走宽松可选链，无详情（osm 估算 / 路由降级 /
- * walk·drive 段 / 旧数据）时返回 null，调用处回退原有「时长 + 距离」展示。
+ * 填充来源：amap 真实公交路由（国内）或 transitous 真实换乘命中（海外，M111）；
+ * 无详情（osm 未命中走估算 / 路由降级 / walk·drive 段 / 旧数据）时返回 null，
+ * 调用处回退原有「时长 + 距离」展示。
  *
  * walk 段不带起讫点名（高德 walking 段只回坐标/距离/时长）：首段 walk 的讫点 =
  * 后邻 line 段的 boardStop，末段 walk 的起点 = 前邻 line 段的 alightStop，
@@ -85,12 +86,13 @@ export function lineSegmentText(seg: TransitSegment): string {
   const parts = [seg.lineName ?? "公交线路"];
   if (seg.boardStop && seg.alightStop) parts.push(`${seg.boardStop} → ${seg.alightStop}`);
   else if (seg.boardStop ?? seg.alightStop) parts.push((seg.boardStop ?? seg.alightStop)!);
-  if (seg.viaStops != null) parts.push(`${seg.viaStops} 站`);
+  // viaStops=0 是直达（上车站→下车站无中间站），不渲染「0 站」
+  if (seg.viaStops != null && seg.viaStops > 0) parts.push(`${seg.viaStops} 站`);
   if (seg.durationS != null) parts.push(formatDuration(seg.durationS));
   return parts.join(" ");
 }
 
-/** 线路段是否轨交（地铁/轻轨），用于图标选型 */
+/** 线路段是否轨交（地铁/轻轨/铁路/有轨电车），用于图标选型 */
 export function isRailSegment(seg: TransitSegment): boolean {
-  return /地铁|轻轨|subway|metro/i.test(`${seg.lineType ?? ""}${seg.lineName ?? ""}`);
+  return /地铁|轻轨|铁路|电车|subway|metro|rail/i.test(`${seg.lineType ?? ""}${seg.lineName ?? ""}`);
 }

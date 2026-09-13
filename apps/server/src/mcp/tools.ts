@@ -656,7 +656,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "get_route",
     {
       description:
-        "查两点间路线，返回距离、耗时和真实路径坐标。mode：walk 步行 / drive 驾车 / taxi 出租车（按驾车路由估算，费用另计）/ transit 泛公交地铁 / bus 公交 / metro 地铁 / light_rail 轻轨 / train 火车（市内线/机场线，公交族均按公交换乘路由，海外为估算）/ ferry 渡轮（无上游轮渡路由，返回直线水域航线估算）。端点二选一：**优先 fromPlaceId/toPlaceId**（行程内地点 id，从 get_trip_context 或 search_poi+add_place 拿）；或 from/to 裸坐标（坐标系必须与行程引擎一致：国内 GCJ-02、海外 WGS-84，直接复用 search_poi 返回的 location 不会错）。",
+        "查两点间路线，返回距离、耗时和真实路径坐标。mode：walk 步行 / drive 驾车 / taxi 出租车（按驾车路由估算，费用另计）/ transit 泛公交地铁 / bus 公交 / metro 地铁 / light_rail 轻轨 / train 火车（市内线/机场线，公交族均按公交换乘路由，海外走 transitous 真实换乘、未命中降级估算）/ ferry 渡轮（无上游轮渡路由，返回直线水域航线估算）。端点二选一：**优先 fromPlaceId/toPlaceId**（行程内地点 id，从 get_trip_context 或 search_poi+add_place 拿）；或 from/to 裸坐标（坐标系必须与行程引擎一致：国内 GCJ-02、海外 WGS-84，直接复用 search_poi 返回的 location 不会错）。",
       inputSchema: GetRouteInput.shape,
     },
     async ({ from, to, fromPlaceId, toPlaceId, mode }) => {
@@ -670,15 +670,18 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
         const { trip, provider } = await tripGeoInfo(ctx);
         // 与 recalcDayLegs 同口径的降级（r1 评审）：osm 公交估算改真实 OSRM 底数后，
         // 裸调用在上游故障时会直接报错——这里失败先退避重试一次，仍失败回退直线估算
-        // 并在结果里显式标注 estimated，不把上游故障抛给 agent
+        // 并在结果里显式标注 estimated，不把上游故障抛给 agent。
+        // osm 公交族传今天日期走 transitous 真实换乘（无日上下文，拿的是今天的班次形态）；
+        // 命中时 route.transitDetail 非空、mode 为真实首段方式
+        const queryDate = new Date().toISOString().slice(0, 10);
         let estimated = false;
         let route;
         try {
-          route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity);
+          route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity, queryDate);
         } catch {
           try {
             await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
-            route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity);
+            route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity, queryDate);
           } catch (err) {
             console.warn(`[get_route] route(${mode}) 重试仍失败，降级直线估算:`, (err as Error).message);
             route = fallbackRoute(fromCoord, toCoord, mode);
@@ -694,8 +697,8 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
               ? "路由服务暂不可用，返回直线距离估算值。"
               : mode === "ferry"
                 ? "渡轮无上游路由，返回的是直线水域航线估算（含候船缓冲）。"
-                : provider.name === "osm" && isTransitLikeMode(mode)
-                  ? "海外公交查询暂不可用，返回的是估算值（驾车时长 × 1.25 + 换乘时间）。"
+                : provider.name === "osm" && isTransitLikeMode(mode) && !route.transitDetail
+                  ? "真实公交换乘未命中（无覆盖或上游故障），返回的是估算值（驾车时长 × 1.25 + 换乘时间）。"
                   : undefined,
         });
       } catch (err) {

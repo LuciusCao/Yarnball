@@ -468,6 +468,24 @@ export function SettingsDrawer({
                 </Button>
               )}
             </section>
+
+            <hr className="my-6 border-slate-100" />
+
+            {/* 数据源署名（transitous usage policy 硬性义务：UI 可见处署名链接） */}
+            <section>
+              <p className="text-xs leading-relaxed text-slate-400">
+                海外公共交通数据由{" "}
+                <a
+                  href="https://transitous.org"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline underline-offset-2 transition-colors hover:text-slate-600"
+                >
+                  transitous.org
+                </a>{" "}
+                （MOTIS 2，全球 GTFS 聚合）提供；海外地图数据 © OpenStreetMap contributors。
+              </p>
+            </section>
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
