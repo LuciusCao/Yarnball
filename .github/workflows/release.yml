@@ -48,9 +48,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # 与本地 just package / pnpm tauri:package 同链路：
-      # build:sidecar（Node SEA）→ tauri build（dmg，含 web 构建 + splash 注入）→ copy:dmg（复制到仓库根 dist/）
+      # build:sidecar（Node SEA）→ tauri build（dmg，含 web 构建 + splash 注入 + ad-hoc 封印）
+      # → verify:sign（codesign --verify --deep --strict 防回归，见 scripts/verify-sign.mjs）→ copy:dmg
       - name: 打包 dmg
         run: pnpm -C apps/tauri package
+
+      # 防回归门槛：对 bundle/macos 与 dmg 内的 .app 跑 codesign --verify --deep --strict，
+      # 封印断裂（如历史上 linker-signed 导致的「已损坏」误报）直接 fail 整个 release。
+      # ad-hoc 签名本就会被 spctl 拒绝（无 Developer ID），故 spctl 只作信息项、不卡门槛。
+      - name: 校验签名封印
+        run: pnpm -C apps/tauri verify:sign
 
       - name: 列出产物
         run: ls -lh dist/
@@ -72,7 +79,7 @@ jobs:
           body: |
             macOS（Apple Silicon / aarch64）桌面版。
 
-            未做 Developer ID 签名与公证：首次打开若被 Gatekeeper 拦截，请右键 App →「打开」，
-            或在「系统设置 → 隐私与安全性」点「仍要打开」。
+            未做 Developer ID 签名与公证（ad-hoc 封印，已通过 codesign --verify --deep --strict 校验）：
+            首次打开若被 Gatekeeper 拦截，请右键 App →「打开」，或在「系统设置 → 隐私与安全性」点「仍要打开」。
 
             环境变量与 agent CLI 配置见仓库 README。
