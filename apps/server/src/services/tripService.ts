@@ -211,6 +211,16 @@ function minToHHMM(minutes: number): string {
   return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
 }
 
+/**
+ * YYYY-MM-DD 加 N 天（UTC 口径，避免本地时区在零点前后抖出隔日）：
+ * transitous 真实公交路由的查询日期（行程日 = startDate + dayIndex，当地 09:00 班次形态）。
+ */
+function addDaysIso(date: string, days: number): string {
+  return new Date(new Date(`${date}T00:00:00Z`).getTime() + days * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
 /** transit entry 大交通段时长：depart/arrive 时刻差（跨零点按次日到达计）；缺任一为 null */
 function transitDurationS(departTime: string | null, arriveTime: string | null): number | null {
   const parse = (t: string | null) => {
@@ -1212,13 +1222,14 @@ export class TripService {
     b: LngLat,
     mode: TransportMode,
     city?: string,
+    date?: string,
   ) {
     try {
-      return await routeLimit(() => geo.route(a, b, mode, city));
+      return await routeLimit(() => geo.route(a, b, mode, city, date));
     } catch {
       try {
         await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
-        return await routeLimit(() => geo.route(a, b, mode, city));
+        return await routeLimit(() => geo.route(a, b, mode, city, date));
       } catch (err) {
         console.warn(`[routing] route(${mode}) 重试仍失败，降级直线估算:`, (err as Error).message);
         return fallbackRoute(a, b, mode);
@@ -1244,6 +1255,12 @@ export class TripService {
     const geo = getProvider(trip?.geoProvider ?? "osm");
     const routeLimit = this.routeLimits[geo.name];
     const [day] = await this.db.select().from(schema.days).where(eq(schema.days.id, dayId));
+    // transitous 真实公交路由的查询日期（行程日 = startDate + dayIndex，当地 09:00 班次形态；
+    // startDate 未定用今天兜底——只影响查哪天的班次，不影响估算降级路径）
+    const dayDate = addDaysIso(
+      trip?.startDate ?? new Date().toISOString().slice(0, 10),
+      day?.dayIndex ?? 0,
+    );
     const entries = await this.db
       .select()
       .from(schema.entries)
@@ -1394,20 +1411,30 @@ export class TripService {
           }
         } else {
           // 自动交通方式（规则见 autoLegMode 注释）：<2km 步行；2-6km 公交（amap 走真实公交路由；
-          // osm 无免费公交路由，保持估算口径但 mode 标 transit——市区中段标驾车会与游客实际不符）；
-          // >6km 驾车，端点含机场改判 train（机场线）
+          // osm 走 transitous 真实换乘，未命中保持估算口径但 mode 标 transit——市区中段标驾车会
+          // 与游客实际不符）；>6km 驾车，端点含机场改判 train（机场线）
           const dist = haversineM(a, b);
           mode = override ?? autoLegMode(dist, from.name, to.name);
-          const result = await this.routeWithRetry(routeLimit, geo, a, b, mode, trip?.destinationCity);
-          mode = override ?? result.mode;
+          // osm 真实公交接入（transitous，MOTIS 2）：非步行段统一按 transit 请求——真实方式
+          // 由命中的首段 transit leg 定（FERRY/T8/333 等真实线路），>6km 段也有机会出真实
+          // 公交（如 Bondi→CBD 出 333），绕行比渡轮启发式与机场线启发式退化为未命中时的兜底。
+          // amap 保持原子类型请求（高德公交换乘不区分子类型选型）。
+          const requestMode: TransportMode =
+            !override && geo.name === "osm" && mode !== "walk" ? "transit" : mode;
+          const result = await this.routeWithRetry(routeLimit, geo, a, b, requestMode, trip?.destinationCity, dayDate);
+          // 真实公交命中（transitDetail 非空）时用真实首段方式定 mode；
+          // 未命中（估算/降级）保持 autoLegMode 的分档结果（osm 估算 result.mode == requestMode，不可信）
+          mode = override ?? (result.transitDetail ? result.mode : mode);
           distanceM = result.distanceM;
           durationS = result.durationS;
           polyline = result.polyline;
-          // 公交分段详情：仅 amap 真实公交路由返回（osm 估算/降级缺省为 undefined → 存 null）
+          // 公交分段详情：amap 真实公交路由 / osm transitous 命中时返回（估算/降级缺省为 undefined → 存 null）
           transitDetail = result.transitDetail ?? null;
           // 跨水启发式（无覆盖时）：路由里程 ÷ 直线 ≥ 1.8 且直线 1.5~30km —— 大概率被水域隔开
           // （绕行大桥/海湾），改判渡轮。典型：悉尼环形码头→塔龙加动物园，驾车绕桥 ~12km、
           // 直线 ~4km，真实最优是 12 分钟渡轮。误判可用 set_leg_mode 覆盖回来。
+          // transitous 命中（transitDetail 非空）时不启用：真实 FERRY leg 已直接定 mode=ferry，
+          // 非渡轮方案说明公交比渡轮更优，不再用绕行比猜。
           // 适用范围（r1 评审收窄）：仅「按距离档本应判 drive 的段」（>6km，真实驾车里程）
           // 或 osm provider（公交档估算底数同为真实 car 路由里程，绕行比可靠）启用；
           // amap 2-6km 公交档不启用——高德公交里程含步行接驳+公交绕行，陆地上
@@ -1416,6 +1443,7 @@ export class TripService {
           if (
             !override &&
             mode !== "walk" &&
+            transitDetail == null &&
             ferryCheckReliable &&
             result.distanceM != null &&
             dist >= LEG_FERRY_MIN_M &&

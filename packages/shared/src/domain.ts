@@ -327,10 +327,11 @@ export type EntryDto = z.infer<typeof EntryDtoSchema>;
 
 /**
  * 公交分段详情（TransportLegDto.transitDetail 的元素）：
- * 高德公交路由返回的完整分段 —— walk=步行接驳段（起点→上车站 / 下车站→终点），
+ * 真实公交路由返回的完整分段 —— walk=步行接驳段（起点→上车站 / 下车站→终点），
  * line=公交/地铁线路段（线路名、上下车站、途经站数、分段距离/时长）。
- * 仅公共交通族（transit/bus/metro/light_rail/train）且 amap 真实公交路由成功时填充；
- * osm（海外无免费公交路由）与估算降级场景整条 transitDetail 为 null，前端按「估算」口径展示。
+ * 填充来源：amap 公共交通族（transit/bus/metro/light_rail/train）真实公交路由，
+ * 或 osm 侧 transitous（MOTIS 2）真实公交换乘命中；
+ * osm 未命中（OSRM 估算）与降级场景整条 transitDetail 为 null，前端按「估算」口径展示。
  */
 export const TRANSIT_SEGMENT_KINDS = ["walk", "line"] as const;
 export type TransitSegmentKind = (typeof TRANSIT_SEGMENT_KINDS)[number];
@@ -342,9 +343,9 @@ export const TransitSegmentSchema = z.object({
   /** 该分段时长（秒） */
   durationS: z.number().nullable(),
   /** 以下字段仅 kind=line 有意义（walk 段为 null） */
-  /** 线路名（高德原文，如「地铁2号线(内环)」「45路(南十里居--地铁望京西站)」） */
+  /** 线路名（高德原文如「地铁2号线(内环)」，或 transitous 的 displayName/routeShortName 如「F2」「T8」「333」） */
   lineName: z.string().nullable(),
-  /** 线路类型（高德原文，如「地铁线路」「普通公交线路」） */
+  /** 线路类型（高德原文如「地铁线路」，或 transitous 方式中文标签如「渡轮」「城际铁路」） */
   lineType: z.string().nullable(),
   /** 上车站名 */
   boardStop: z.string().nullable(),
@@ -373,8 +374,9 @@ export const TransportLegDtoSchema = z.object({
   durationS: z.number().nullable(),
   polyline: z.array(LngLatSchema).nullable(),
   /**
-   * 公交分段详情（见 TransitSegmentSchema）：仅公共交通族（transit/bus/metro/light_rail/train）
-   * 且 amap 真实公交路由成功时非空；osm 估算、路由降级、walk/drive/taxi/ferry 段及旧数据均为
+   * 公交分段详情（见 TransitSegmentSchema）：公共交通族（transit/bus/metro/light_rail/train）
+   * 真实公交路由成功时非空（amap 真实公交路由，或 osm 侧 transitous 命中）；
+   * osm 估算、路由降级、walk/drive/taxi/ferry 段及旧数据均为
    * null —— null 即「无详情，按估算口径展示」。
    */
   transitDetail: z.array(TransitSegmentSchema).nullable(),

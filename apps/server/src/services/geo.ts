@@ -1,12 +1,14 @@
 import type { LngLat, PoiCandidate, TransitSegment, TransportMode } from "@yarnball/shared";
 import { isTransitLikeMode } from "@yarnball/shared";
 import { ProxyAgent, type Dispatcher } from "undici";
+import pkg from "../../package.json" with { type: "json" };
 import { getAmapServerKey } from "./settings.js";
 
 /**
  * GeoProvider —— 地理服务抽象。
  * - amap：国内。高德 Web 服务 API（需 key），POI/路径规划/距离矩阵，坐标 GCJ-02。
- * - osm：海外。Photon 搜索 + FOSSGIS OSRM 路线/矩阵（全部零 key），坐标 WGS84。
+ * - osm：海外。Photon 搜索 + FOSSGIS OSRM 路线/矩阵 + transitous（MOTIS 2）真实公交
+ *   换乘（全部零 key），坐标 WGS84。
  * 行程创建时按目的地定死 provider，之后搜索/路线/地图渲染/矩阵全部走同一 provider，
  * 绝不混用（GCJ-02 与 WGS84 偏移约几百米，混用会把点画进海里）。
  */
@@ -17,8 +19,9 @@ export interface RouteResult {
   durationS: number | null;
   polyline: LngLat[] | null;
   /**
-   * 公交分段详情（步行接驳 + 线路段）：仅 amap 公共交通族（transit/bus/metro/light_rail/train）
-   * 真实公交路由成功时填充；walk/drive/ferry 路由、osm 估算、fallbackRoute 降级均不设置（调用方按 null 处理）。
+   * 公交分段详情（步行接驳 + 线路段）：amap 公共交通族（transit/bus/metro/light_rail/train）
+   * 真实公交路由成功时填充；osm 侧由 transitous（MOTIS 2）真实公交换乘命中时填充。
+   * walk/drive/ferry 路由、osm 未命中时的 OSRM 估算、fallbackRoute 降级均不设置（调用方按 null 处理）。
    */
   transitDetail?: TransitSegment[] | null;
 }
@@ -39,8 +42,11 @@ export interface GeoProvider {
   resolveCity(city: string): Promise<ResolvedCity | null>;
   /** 城市名联想（创建表单自动补全用），返回带国家的规范候选 */
   suggestCities(q: string): Promise<CitySuggestion[]>;
-  /** 两点路线。osm 的 transit 返回估算值（免费公交路由不存在） */
-  route(from: LngLat, to: LngLat, mode: TransportMode, city?: string): Promise<RouteResult>;
+  /**
+   * 两点路线。osm 的公交族优先走 transitous（MOTIS 2）真实换乘（需传 date = 行程日
+   * YYYY-MM-DD，查询时刻取当地约 09:00；不传则跳过真实路由），未命中降级 OSRM 估算。
+   */
+  route(from: LngLat, to: LngLat, mode: TransportMode, city?: string, date?: string): Promise<RouteResult>;
   /**
    * 驾车时长矩阵（顺路度/重排优化用）：sources × destinations 的矩形时长表（秒）。
    * 点数超上限时返回 null，由 drivingMatrixBatched 分批拼接或调用方降级直线估算。
@@ -464,13 +470,14 @@ function overseasDispatcher(url: string | URL): Dispatcher | undefined {
 
 /**
  * 海外上游统一入口：带识别性 UA、超时，并按需挂代理 dispatcher。
- * 供全部零 key 海外上游共用（Photon / Nominatim / OSRM / Open-Meteo 天气）。
+ * 供全部零 key 海外上游共用（Photon / Nominatim / OSRM / Open-Meteo 天气 / transitous）。
+ * ua 可覆盖：transitous 的 usage policy 要求 UA 带 app 名/版本/联系方式，用 TRANSITOUS_UA。
  */
-export function overseasFetch(url: string | URL, timeoutMs = 15_000): Promise<Response> {
+export function overseasFetch(url: string | URL, timeoutMs = 15_000, ua: string = OSM_UA): Promise<Response> {
   // Node fetch 的 RequestInit 类型来自 undici-types，其 Dispatcher 与 undici 包自带的
   // Dispatcher 声明不完全相容（运行时同一套实现），这里显式断言。
   const init: RequestInit = {
-    headers: { "User-Agent": OSM_UA },
+    headers: { "User-Agent": ua },
     signal: AbortSignal.timeout(timeoutMs),
     dispatcher: overseasDispatcher(url) as unknown as RequestInit["dispatcher"],
   };
@@ -516,6 +523,195 @@ async function osrmRouteRequest(base: string, path: string, from: LngLat, to: Ln
   const body = (await res.json()) as { code: string; routes?: OsrmRoute[] };
   if (body.code !== "Ok" || !body.routes?.[0]) throw new Error(`osrm ${body.code}`);
   return body.routes[0];
+}
+
+// ---------- transitous（MOTIS 2，海外真实公交换乘路由，零 key） ----------
+/**
+ * transitous（https://api.transitous.org，MOTIS 2 社区实例，API v6）：全球 GTFS 聚合的
+ * 真实公交换乘路由。usage policy 要求 UA 带 app 名/版本/联系方式（TRANSITOUS_UA），
+ * 并在 UI 可见处署名 transitous.org（设置在「设置抽屉」底部数据源说明）。
+ * best-effort 无 SLA：空 itineraries（无覆盖/无解）、超时、错误一律返回 null/抛出，
+ * 由调用方降级 OSRM 估算（空结果不重试）。实测单次延迟 2-4s，走 GeoCache + 全局限流收口。
+ */
+const TRANSITOUS_BASE = "https://api.transitous.org/api/v6";
+const TRANSITOUS_UA = `Yarnball/${pkg.version} (https://github.com/lucius/yarnball; self-hosted travel planner)`;
+
+const transitousFetch = (url: string | URL, timeoutMs = 20_000) => overseasFetch(url, timeoutMs, TRANSITOUS_UA);
+
+/** MOTIS 交通方式 → 内部交通段方式（transitous 命中时真实首段方式定 leg mode 的映射表）。
+ *  注意悉尼 T 线/机场线是 REGIONAL_RAIL 不是 SUBWAY；未列出的方式（AIRPLANE/OTHER 等）归 transit。 */
+const MOTIS_MODE_MAP: Record<string, TransportMode> = {
+  SUBWAY: "metro",
+  METRO: "metro",
+  TRAM: "light_rail",
+  BUS: "bus",
+  COACH: "bus",
+  SUBURBAN: "train",
+  REGIONAL_RAIL: "train",
+  REGIONAL_FAST_RAIL: "train",
+  HIGHSPEED_RAIL: "train",
+  LONG_DISTANCE: "train",
+  NIGHT_RAIL: "train",
+  FERRY: "ferry",
+};
+
+/** MOTIS 方式中文标签：填 TransitSegment.lineType（前端明细展示 + 轨交图标选型用） */
+const MOTIS_MODE_LABEL: Record<string, string> = {
+  SUBWAY: "地铁",
+  METRO: "地铁",
+  TRAM: "有轨电车",
+  BUS: "公交",
+  COACH: "长途巴士",
+  SUBURBAN: "市郊铁路",
+  REGIONAL_RAIL: "城际铁路",
+  REGIONAL_FAST_RAIL: "城际铁路",
+  HIGHSPEED_RAIL: "高铁",
+  LONG_DISTANCE: "长途列车",
+  NIGHT_RAIL: "夜间列车",
+  FERRY: "渡轮",
+};
+
+/** Google polyline 解码（MOTIS legGeometry.points，precision 由响应携带，transitous 为 6）。自带实现，不引依赖。 */
+function decodeGooglePolyline(encoded: string, precision: number): LngLat[] {
+  const factor = 10 ** precision;
+  const points: LngLat[] = [];
+  let lat = 0;
+  let lng = 0;
+  let i = 0;
+  while (i < encoded.length) {
+    for (const coord of ["lat", "lng"] as const) {
+      let shift = 0;
+      let result = 0;
+      let byte: number;
+      do {
+        byte = encoded.charCodeAt(i++) - 63;
+        result |= (byte & 0x1f) << shift;
+        shift += 5;
+      } while (byte >= 0x20 && i < encoded.length);
+      const delta = result & 1 ? ~(result >> 1) : result >> 1;
+      if (coord === "lat") lat += delta;
+      else lng += delta;
+    }
+    points.push({ lng: lng / factor, lat: lat / factor });
+  }
+  return points;
+}
+
+/** 折线总长（米）：MOTIS transit 段 distance 常为 null，从 legGeometry 折线长估算 */
+function polylineLengthM(pts: LngLat[]): number {
+  let d = 0;
+  for (let i = 1; i < pts.length; i++) d += haversineM(pts[i - 1], pts[i]);
+  return d;
+}
+
+/**
+ * GTFS 数据瑕疵过滤：displayName/routeShortName 为纯数字内部 ID（≥5 位，如东京 GTFS
+ * 的 7869271）时视为无线路名；真实线路号 ≤4 位（悉尼 333/100 这类保留）。
+ * 按优先级取第一个通过过滤的名字。
+ */
+function saneLineName(...names: Array<string | null | undefined>): string | null {
+  for (const n of names) {
+    const t = n?.trim();
+    if (!t || /^\d{5,}$/.test(t)) continue;
+    return t;
+  }
+  return null;
+}
+
+/**
+ * 行程日「当地 09:00」的 ISO 时间：MOTIS time 参数必须带时区偏移（naive 直接 400），
+ * 无实时时区库，按经度 ÷ 15 四舍五入近似当地时区——只用于让查询落在白天班次形态
+ * （早晚高峰/末班车差异），不承担精确时刻表职责。
+ */
+function transitQueryTime(date: string, lng: number): string {
+  const offsetH = Math.max(-12, Math.min(12, Math.round(lng / 15)));
+  const sign = offsetH < 0 ? "-" : "+";
+  return `${date}T09:00:00${sign}${String(Math.abs(offsetH)).padStart(2, "0")}:00`;
+}
+
+interface MotisLeg {
+  mode: string;
+  distance: number | null;
+  duration: number;
+  routeShortName?: string | null;
+  displayName?: string | null;
+  headsign?: string | null;
+  agencyName?: string | null;
+  routeColor?: string | null;
+  from?: { name?: string | null };
+  to?: { name?: string | null };
+  intermediateStops?: unknown[] | null;
+  legGeometry?: { points?: string; precision?: number } | null;
+}
+
+/**
+ * transitous 真实公交换乘：命中返回 RouteResult（mode = 首段真实 transit 方式映射，
+ * transitDetail 为 walk/line 分段，polyline 为全段拼接）；无覆盖/无解/纯步行方案返回
+ * null（调用方降级 OSRM 估算，空结果不重试）。date 为行程日（YYYY-MM-DD）。
+ */
+async function transitousPlan(from: LngLat, to: LngLat, date: string): Promise<RouteResult | null> {
+  const url = new URL(`${TRANSITOUS_BASE}/plan`);
+  url.searchParams.set("fromPlace", `${from.lat},${from.lng}`);
+  url.searchParams.set("toPlace", `${to.lat},${to.lng}`);
+  url.searchParams.set("time", transitQueryTime(date, (from.lng + to.lng) / 2));
+  url.searchParams.set("numItineraries", "3");
+  const res = await transitousFetch(url);
+  if (!res.ok) throw new Error(`transitous http ${res.status}`);
+  const body = (await res.json()) as { itineraries?: Array<{ duration: number; legs: MotisLeg[] }> };
+  const itinerary = body.itineraries?.[0];
+  if (!itinerary || itinerary.legs.length === 0) return null;
+
+  const polyline: LngLat[] = [];
+  const transitDetail: TransitSegment[] = [];
+  let distanceM = 0;
+  let firstTransitMode: TransportMode | null = null;
+  for (const leg of itinerary.legs) {
+    const pts = leg.legGeometry?.points
+      ? decodeGooglePolyline(leg.legGeometry.points, leg.legGeometry.precision ?? 6)
+      : [];
+    // transit 段 distance 常为 null：从 polyline 折线长估算
+    const legDist = leg.distance ?? (pts.length > 1 ? Math.round(polylineLengthM(pts)) : null);
+    if (leg.mode === "WALK") {
+      // 步行接驳段：0 距离空段跳过（与 amap 侧口径一致）
+      if ((legDist ?? 0) > 0) {
+        transitDetail.push({
+          kind: "walk",
+          distanceM: legDist,
+          durationS: leg.duration,
+          lineName: null,
+          lineType: null,
+          boardStop: null,
+          alightStop: null,
+          viaStops: null,
+        });
+      }
+    } else {
+      const mapped = MOTIS_MODE_MAP[leg.mode] ?? "transit";
+      firstTransitMode ??= mapped;
+      transitDetail.push({
+        kind: "line",
+        distanceM: legDist,
+        durationS: leg.duration,
+        // GTFS 瑕疵过滤后无线路名时，退用运营商名（如「東京メトロ」）兜底展示
+        lineName: saneLineName(leg.displayName, leg.routeShortName) ?? leg.agencyName?.trim() ?? null,
+        lineType: MOTIS_MODE_LABEL[leg.mode] ?? leg.mode,
+        boardStop: leg.from?.name?.trim() ?? null,
+        alightStop: leg.to?.name?.trim() ?? null,
+        viaStops: leg.intermediateStops?.length ?? null,
+      });
+    }
+    polyline.push(...pts);
+    distanceM += legDist ?? 0;
+  }
+  // 纯步行方案（两点太近）不算公交命中：让调用方走原方式分档
+  if (!firstTransitMode) return null;
+  return {
+    mode: firstTransitMode,
+    distanceM: distanceM > 0 ? distanceM : null,
+    durationS: itinerary.duration,
+    polyline: polyline.length > 0 ? polyline : null,
+    transitDetail: transitDetail.length > 0 ? transitDetail : null,
+  };
 }
 
 export const osm: GeoProvider = {
@@ -626,15 +822,31 @@ export const osm: GeoProvider = {
       }));
   },
 
-  async route(from, to, mode) {
+  async route(from, to, mode, _city, date) {
     // 渡轮：上游无轮渡路由，直线水域航线估算（两 provider 同口径）
     if (mode === "ferry") return ferryRouteEstimate(from, to);
-    const cacheKey = `${mode}|${loc(from)}|${loc(to)}`;
+    // 公交族走 transitous 时按行程日查班次，cache key 须含日期（跨天不同时刻方案可能不同）
+    const dateKey = isTransitLikeMode(mode) && date ? `|${date}` : "";
+    const cacheKey = `${mode}|${loc(from)}|${loc(to)}${dateKey}`;
     const cached = osmRouteCache.get(cacheKey);
     if (cached) return cached;
 
     if (isTransitLikeMode(mode)) {
-      // 免费公交路由不存在：真实 car 路线（OSRM）时长 × 1.25 + 6 分钟换乘惩罚作为估算；
+      // 先试 transitous（MOTIS 2）真实公交换乘：命中返回真实方式（首段 transit leg 映射）/
+      // 线路名/分段详情/真实里程；无覆盖（空 itineraries）、超时、错误一律降级到下面的
+      // OSRM 估算（空结果不重试——雷克雅未克这类无覆盖城市每次都会空，重试纯浪费 2-4s）
+      if (date) {
+        try {
+          const real = await transitousPlan(from, to, date);
+          if (real) {
+            osmRouteCache.set(cacheKey, real);
+            return real;
+          }
+        } catch (err) {
+          console.warn("[geo] transitous 失败，降级 OSRM 公交估算:", (err as Error).message);
+        }
+      }
+      // transitous 未命中/未传日期：真实 car 路线（OSRM）时长 × 1.25 + 6 分钟换乘惩罚作为估算；
       // 里程/路径也取 car 真实路由（近似公交走向），result.mode 保留请求的子类型供展示。
       // 用真实 car 里程而非直线：跨水场景绕行比（路由 ÷ 直线）是 recalcDayLegs 判渡轮的输入
       const route = await osrmRouteRequest(OSRM_CAR, "driving", from, to);
