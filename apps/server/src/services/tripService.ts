@@ -451,12 +451,18 @@ export class TripService {
     if (trip.geoProvider === "amap" && resolved.provider === "osm" && resolved.domestic) {
       resolved.provider = "amap";
     }
-    const providerChanged = resolved.provider !== trip.geoProvider;
+    // 解析整体失败（上游不可达：center 与 country 均 null）不清除既有归属标记——
+    // provider/country 保持原值。否则国内 osm 行程的「中国」标记会被一次网络故障清掉：
+    // keepOsm 随之失效，下次配 key 重解析时坐标系混系经此窄路径复活，
+    // 徽标/横幅/prompt 纪律也同步丢失（r2 评审）。
+    const resolutionFailed = resolved.center == null && resolved.country == null;
+    const writtenProvider = resolutionFailed ? trip.geoProvider : resolved.provider;
+    const providerChanged = writtenProvider !== trip.geoProvider;
     await this.db
       .update(schema.trips)
       .set({
-        geoProvider: resolved.provider,
-        country: resolved.country,
+        geoProvider: writtenProvider,
+        country: resolutionFailed ? trip.country : resolved.country,
         cityAdcode: resolved.provider === "amap" ? resolved.adcode : null,
         cityCenterLng: resolved.center ? resolved.center.lng : null,
         cityCenterLat: resolved.center ? resolved.center.lat : null,
