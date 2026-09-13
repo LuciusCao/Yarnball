@@ -4,6 +4,7 @@ import type {
   PlaceDto,
   TransportLegDto,
   TripBundle,
+  TripWeather,
 } from "@yarnball/shared";
 import {
   formatDayLabel,
@@ -12,6 +13,10 @@ import {
   formatMoney,
   formatVisitDuration,
   TRANSPORT_MODE_LABELS,
+  TRIP_NOTE_CATEGORIES,
+  TRIP_NOTE_CATEGORY_LABELS,
+  type TripNoteCategory,
+  type TripNoteDto,
 } from "@yarnball/shared";
 import { buildDayTimeline, formatHHMM } from "../itinerary/timeline";
 import {
@@ -20,6 +25,7 @@ import {
   transitKindOf,
   transitRouteText,
 } from "../itinerary/transit";
+import { deriveDayIntensity } from "../itinerary/intensity";
 import { getSelectedStays, stayCoveringNight, stayNights, type HotelStay } from "../candidates/hotelStays";
 import { BOOKING_STATUS_META, bookingStatusOf, openingHoursOf } from "../candidates/booking";
 import { groupDaysByStop } from "../itinerary/stops";
@@ -28,6 +34,9 @@ import { groupDaysByStop } from "../itinerary/stops";
  * 行程打印稿（M97，issue #7）：纯展示组件，从 trip bundle 推导四个版块——
  * 行程概览（日期/天数/住宿）、每日时间轴、大交通、关键预订信息。
  * 数据来源与行程面板完全同源（bundle + itinerary/candidates 的推导层），不新造数据通道。
+ * M102（issue #5/#6/#9/#11）：每日开头段落填入每日概要 + 强度标签 + 天气（weather prop
+ * 由导出弹层经 react-query 拉取，仅预报可用的天输出天气行——超窗/无数据的天不印「暂无预报」，
+ * 避免整篇噪声）；行程级注意事项作为独立章节输出。
  */
 
 /** 市内交通段方式文案：直接用 shared 的 TRANSPORT_MODE_LABELS 单点（M98 起枚举含 ferry/metro 等子类型，不再本地双写） */
@@ -161,13 +170,26 @@ function LegRow({ leg }: { leg: TransportLegDto }) {
   return <div className="ybe-leg">→ {parts.join(" · ")}</div>;
 }
 
-export function ExportPrintSheet({ bundle }: { bundle: TripBundle }) {
+export function ExportPrintSheet({ bundle, weather = null }: { bundle: TripBundle; weather?: TripWeather | null }) {
   const { trip } = bundle;
   const placeById = new Map(bundle.places.map((p) => [p.id, p]));
   const sortedDays = [...bundle.days].sort((a, b) => a.dayIndex - b.dayIndex);
   const stays = getSelectedStays(bundle);
   /** 多城市行程按途经地分组（连续同 stop 并组）；单城市为 null 不分组 */
   const stopGroups = groupDaysByStop(bundle, stays, sortedDays);
+  /** dayIndex（1-based）→ 当天天气（M102，#5；仅预报可用的天会渲染天气行） */
+  const weatherByDay = new Map(
+    (weather?.days ?? []).filter((d) => d.dayIndex != null).map((d) => [d.dayIndex!, d]),
+  );
+  /** 注意事项按分类分组（M102，#11；同类内按 position 再按创建时间，与面板口径一致） */
+  const notesByCategory = new Map<TripNoteCategory, TripNoteDto[]>();
+  for (const note of [...bundle.notes].sort(
+    (a, b) => a.position - b.position || a.createdAt.localeCompare(b.createdAt),
+  )) {
+    const list = notesByCategory.get(note.category) ?? [];
+    list.push(note);
+    notesByCategory.set(note.category, list);
+  }
 
   const dayEntries = new Map<string, EntryDto[]>();
   for (const day of sortedDays) dayEntries.set(day.id, []);
@@ -212,15 +234,37 @@ export function ExportPrintSheet({ bundle }: { bundle: TripBundle }) {
     const timeline = buildDayTimeline(entries, placeById, legAfter);
     const nightStay = stayCoveringNight(stays, day.dayIndex);
     const nightHotel = nightStay ? placeById.get(nightStay.placeId)?.name : null;
+    // 强度标签（M102，#6）：与行程面板同一推导函数（intensity.ts），口径一致
+    const dayLegs = bundle.legs.filter((l) => l.dayId === day.id);
+    const intensity = deriveDayIntensity({ timeline, dayLegs });
+    // 天气（M102，#5）：仅预报可用的天输出行；超窗/无数据（available=false）不印「暂无预报」
+    const dayWeather = weatherByDay.get(day.dayIndex);
+    const forecast = dayWeather?.available ? dayWeather.forecast : null;
     return (
       <section className="ybe-day" key={day.id}>
         <div className="ybe-day-header">
           {formatDayLabel(trip.startDate, day.dayIndex)}
           {stopName && <span className="ybe-day-stop">📍 {stopName}</span>}
         </div>
-        {/* 每日开头段落：本期放当晚住宿；每日概要/天气/强度（issue #5/#6/#9）落地后插在这里 */}
+        {/* 每日开头段落（M102 填满原 ybe-day-intro 预留位）：当晚住宿 + 每日概要（#9）
+            + 强度标签与一句话说明（#6）+ 天气（#5，仅预报可用时） */}
         <div className="ybe-day-intro">
-          {nightHotel ? `当晚住宿：${nightHotel}` : day.dayIndex === sortedDays.length ? "行程最后一天" : "当晚住宿：未定"}
+          <div>
+            {nightHotel ? `当晚住宿：${nightHotel}` : day.dayIndex === sortedDays.length ? "行程最后一天" : "当晚住宿：未定"}
+          </div>
+          {day.summary && <div>{day.summary}</div>}
+          {timeline.length > 0 && (
+            <div>
+              强度：{intensity.label}（{intensity.detail}）
+              {intensity.warning ? ` ⚠${intensity.warning}` : ""}
+            </div>
+          )}
+          {forecast && (
+            <div>
+              天气：{forecast.weatherLabel} {Math.round(forecast.tempMinC)}–{Math.round(forecast.tempMaxC)}°C
+              · 降水 {forecast.precipitationMm}mm · 风速 {Math.round(forecast.windMaxKmh)}km/h
+            </div>
+          )}
         </div>
         {timeline.length === 0 ? (
           <p className="ybe-empty">这一天还没有安排</p>
@@ -289,6 +333,23 @@ export function ExportPrintSheet({ bundle }: { bundle: TripBundle }) {
           sortedDays.map((day) => renderDay(day, null))
         )}
       </section>
+
+      {/* 行程级注意事项（M102，issue #11）：按 7 类分组独立章节，仅展示有内容的分类 */}
+      {bundle.notes.length > 0 && (
+        <section className="ybe-section">
+          <h2 className="ybe-section-title">注意事项</h2>
+          {TRIP_NOTE_CATEGORIES.filter((cat) => notesByCategory.has(cat)).map((cat) => (
+            <div className="ybe-note-group" key={cat}>
+              <div className="ybe-note-cat">{TRIP_NOTE_CATEGORY_LABELS[cat]}</div>
+              <ul>
+                {notesByCategory.get(cat)!.map((note) => (
+                  <li key={note.id}>{note.content}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </section>
+      )}
 
       {/* 大交通信息（值机/过关口径：方式 + 时刻 + 起讫点） */}
       {transitEntries.length > 0 && (

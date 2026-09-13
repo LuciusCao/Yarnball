@@ -8,6 +8,8 @@ import {
   type CreateAgentInput,
   type CreatePlaceInput,
   type CreateTripInput,
+  type CreateTripNoteInput,
+  type DayDto,
   type EntryDto,
   type PlaceDto,
   type PlaceStatus,
@@ -17,11 +19,14 @@ import {
   type SuggestDayClustersResult,
   type TransportMode,
   type TripDto,
+  type TripNoteDto,
+  type TripWeather,
   type UpdateAgentInput,
   type UpdateEntryInput,
   type UpdatePlaceInput,
   type UpdateSettingsInput,
   type UpdateTripInput,
+  type UpdateTripNoteInput,
 } from "@yarnball/shared";
 
 /**
@@ -111,7 +116,7 @@ export const api = {
     return (await res.json()) as { place: PlaceDto };
   },
 
-  /** 锁定/解锁地点（PATCH /api/places/:id/status） */
+  /** 地点加入/移出行程（PATCH /api/places/:id/status，locked=已加入、必排进日程） */
   setPlaceStatus: (placeId: string, status: PlaceStatus) =>
     request<{ place: PlaceDto }>(`/places/${placeId}/status`, {
       method: "PATCH",
@@ -165,6 +170,40 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ mode } satisfies SetLegModeInput),
     }),
+
+  // ---------- 行程信息（M102：#5 天气 / #9 每日概要 / #11 注意事项） ----------
+
+  /**
+   * 按天天气预报（GET /api/trips/:tripId/weather）。动态数据：调用方用 react-query
+   * 缓存/刷新，不进 zustand bundle；超预报窗的天 available=false 并带 reason。
+   */
+  getTripWeather: (tripId: string) =>
+    request<{ weather: TripWeather }>(`/trips/${tripId}/weather`),
+
+  /** 撰写/更新每日概要（PATCH /api/days/:dayId/summary）；summary 传 null = 清除撰写值，恢复服务端自动兜底 */
+  setDaySummary: (dayId: string, summary: string | null) =>
+    request<{ day: DayDto }>(`/days/${dayId}/summary`, {
+      method: "PATCH",
+      body: JSON.stringify({ summary }),
+    }),
+
+  /** 新增行程级注意事项（POST /api/trips/:tripId/notes）；position 缺省排末尾 */
+  createTripNote: (tripId: string, input: CreateTripNoteInput) =>
+    request<{ note: TripNoteDto }>(`/trips/${tripId}/notes`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  /** 更新注意事项（PATCH /api/notes/:noteId）：category/content/position 按需传 */
+  updateTripNote: (noteId: string, input: UpdateTripNoteInput) =>
+    request<{ note: TripNoteDto }>(`/notes/${noteId}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+
+  /** 删除注意事项（DELETE /api/notes/:noteId） */
+  removeTripNote: (noteId: string) =>
+    request<{ ok: true }>(`/notes/${noteId}`, { method: "DELETE" }),
 
   // ---------- 多酒店选定 ----------
 

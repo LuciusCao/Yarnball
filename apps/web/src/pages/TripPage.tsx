@@ -17,6 +17,7 @@ import {
   MapPin,
   Maximize2,
   Minimize2,
+  NotebookText,
   PanelRightClose,
   PanelRightOpen,
   Phone,
@@ -49,17 +50,20 @@ import {
 import { SearchAddPanel } from "../features/map/SearchAddPanel";
 import { BudgetStrip } from "../features/budget/BudgetStrip";
 import { ExportPrintDialog } from "../features/export/ExportPrintDialog";
+import { TripNotesPanel } from "../features/notes/TripNotesPanel";
 
 /**
  * 行程页 —— macOS Tahoe（Liquid Glass）布局：地图全屏打底，一切 UI 都是玻璃浮层。
  */
 
-type ToolPanel = "itinerary" | "candidates" | "search";
+type ToolPanel = "itinerary" | "candidates" | "search" | "notes";
 
 const TOOL_PANEL_META: Record<ToolPanel, { label: string; Icon: LucideIcon }> = {
   itinerary: { label: "行程", Icon: CalendarDays },
   candidates: { label: "候选", Icon: Star },
   search: { label: "添加", Icon: Search },
+  // M102（issue #11）：行程级注意事项（7 类结构化展示 + 增删改）
+  notes: { label: "须知", Icon: NotebookText },
 };
 
 /** 工具面板展开状态持久化（M61）：记住用户收起的偏好；无记录时默认展开「行程」tab */
@@ -936,6 +940,9 @@ export function TripPage() {
               )}
               {toolPanel === "search" && (
                 <SearchAddPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
+              )}
+              {toolPanel === "notes" && (
+                <TripNotesPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
               )}
             </div>
           </div>
