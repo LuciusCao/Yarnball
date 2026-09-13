@@ -1,9 +1,8 @@
 import maplibregl from "maplibre-gl";
-import type { GeoJSONSource, Map as MlMap, Marker as MlMarker } from "maplibre-gl";
+import type { Map as MlMap, Marker as MlMarker } from "maplibre-gl";
 import type { LngLat } from "@yarnball/shared";
 import {
   categoryIconEmoji,
-  circleSignature,
   lineSignature,
   markerSignature,
   RAIL_LINE_COLOR,
@@ -50,7 +49,6 @@ export class MapLibreRenderer implements MapRenderer {
   private stopMarkers = new Map<string, MarkerEntry>();
   /** 已挂载路线：lineId -> 内容签名（layer/source id 由 lineId 派生） */
   private lineSigs = new Map<string, string>();
-  private circleSig: string | null = null;
 
   constructor(private onSelectPlace: (placeId: string) => void) {}
 
@@ -103,7 +101,6 @@ export class MapLibreRenderer implements MapRenderer {
     const map = this.map;
     if (!map) return;
     this.syncLines(map, specs);
-    this.syncCircle(map, specs);
     this.syncMarkers(
       this.stopMarkers,
       specs.stops.map((stop) => ({
@@ -196,55 +193,6 @@ export class MapLibreRenderer implements MapRenderer {
     this.lineSigs.delete(lineId);
   }
 
-  /** 推荐住宿区域圆（用 GeoJSON polygon 近似，64 段足够圆）；圆心/半径变化时 setData 原位更新 */
-  private syncCircle(map: MlMap, specs: OverlaySpecs): void {
-    if (!specs.circle) {
-      if (this.circleSig != null) {
-        for (const id of ["hotel-area", "hotel-area-outline"]) {
-          if (map.getLayer(id)) map.removeLayer(id);
-        }
-        if (map.getSource("hotel-area-src")) map.removeSource("hotel-area-src");
-        this.circleSig = null;
-      }
-      return;
-    }
-    const sig = circleSignature(specs.circle);
-    if (sig === this.circleSig) return;
-    const { center, radiusM } = specs.circle;
-    const ring: [number, number][] = [];
-    const latRad = (Math.PI / 180) * center.lat;
-    const dx = (radiusM / 111320) / Math.cos(latRad);
-    const dy = radiusM / 110540;
-    for (let i = 0; i <= 64; i++) {
-      const theta = (i / 64) * Math.PI * 2;
-      ring.push([center.lng + dx * Math.cos(theta), center.lat + dy * Math.sin(theta)]);
-    }
-    const data: Parameters<GeoJSONSource["setData"]>[0] = {
-      type: "Feature",
-      geometry: { type: "Polygon", coordinates: [ring] },
-      properties: {},
-    };
-    const src = map.getSource("hotel-area-src") as GeoJSONSource | undefined;
-    if (src) {
-      src.setData(data);
-    } else {
-      map.addSource("hotel-area-src", { type: "geojson", data });
-      map.addLayer({
-        id: "hotel-area",
-        type: "fill",
-        source: "hotel-area-src",
-        paint: { "fill-color": "#dc2626", "fill-opacity": 0.06 },
-      });
-      map.addLayer({
-        id: "hotel-area-outline",
-        type: "line",
-        source: "hotel-area-src",
-        paint: { "line-color": "#dc2626", "line-width": 1, "line-opacity": 0.6 },
-      });
-    }
-    this.circleSig = sig;
-  }
-
   /** 途经地标记（M39 多城市）：白底深色描边胶囊 + 序号，先渲染使其被地点标记自然压在下面，不可点击 */
   private createStopMarker(map: MlMap, stop: OverlaySpecs["stops"][number]): MlMarker {
     const el = document.createElement("div");
@@ -312,7 +260,6 @@ export class MapLibreRenderer implements MapRenderer {
     this.markers.clear();
     this.stopMarkers.clear();
     this.lineSigs.clear();
-    this.circleSig = null;
     if (map) {
       this.clearDebugRef(map);
       map.remove();

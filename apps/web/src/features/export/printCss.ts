@@ -79,6 +79,11 @@ export const EXPORT_PRINT_CSS = `
   border-bottom: 1px solid #e2e8f0;
   vertical-align: top;
 }
+/* 短字段列（日期/时刻/类别/状态/电话）不折行：auto 布局下折行会把整行撑高、
+   其余列留白（M104 排版反馈「行很高很空」）；nowrap 后短列占自然宽，长文本列分得剩余宽度 */
+.ybe-table .ybe-nowrap {
+  white-space: nowrap;
+}
 .ybe-table .ybe-url {
   word-break: break-all;
   font-size: 11.5px;

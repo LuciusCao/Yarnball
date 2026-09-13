@@ -34,7 +34,6 @@ interface MapCanvasProps {
   amapJsKey: string;
   amapJsSecret: string;
   visibleDayIndex: number | null;
-  hotelArea: { center: LngLat; radiusM: number } | null;
   selectedPlaceId: string | null;
   /** 按需显示的交通段（M47）：非空时地图只画该段路线并 fit 到起讫点 */
   selectedLegId?: string | null;
@@ -51,7 +50,6 @@ export function MapCanvas({
   amapJsKey,
   amapJsSecret,
   visibleDayIndex,
-  hotelArea,
   selectedPlaceId,
   selectedLegId = null,
   placeFocus = null,
@@ -73,11 +71,10 @@ export function MapCanvas({
   const latestRef = useRef<{
     bundle: TripBundle | null;
     visibleDayIndex: number | null;
-    hotelArea: { center: LngLat; radiusM: number } | null;
     selectedPlaceId: string | null;
     selectedLegId: string | null;
-  }>({ bundle: null, visibleDayIndex: null, hotelArea: null, selectedPlaceId: null, selectedLegId: null });
-  latestRef.current = { bundle, visibleDayIndex, hotelArea, selectedPlaceId, selectedLegId };
+  }>({ bundle: null, visibleDayIndex: null, selectedPlaceId: null, selectedLegId: null });
+  latestRef.current = { bundle, visibleDayIndex, selectedPlaceId, selectedLegId };
 
   const provider = bundle?.trip.geoProvider ?? "osm";
   const center = bundle?.trip.location ?? null;
@@ -116,7 +113,7 @@ export function MapCanvas({
         // 否则 specs effect 已跑过、地图会空转（竞态修复）
         const latest = latestRef.current;
         if (latest.bundle) {
-          const specs = buildOverlaySpecs(latest.bundle, latest.visibleDayIndex, latest.hotelArea, latest.selectedLegId);
+          const specs = buildOverlaySpecs(latest.bundle, latest.visibleDayIndex, latest.selectedLegId);
           renderer.render(specs, latest.selectedPlaceId);
           if (latest.bundle.places.length > 0) {
             renderer.fit(specs);
@@ -155,7 +152,7 @@ export function MapCanvas({
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer || !bundle) return;
-    const specs = buildOverlaySpecs(bundle, visibleDayIndex, hotelArea, selectedLegId);
+    const specs = buildOverlaySpecs(bundle, visibleDayIndex, selectedLegId);
     renderer.render(specs, selectedPlaceId);
 
     // 选中交通段（M47）：视野 fit 到该段起讫；段选中变化才触发，清除选中后不回拉视野
@@ -183,7 +180,7 @@ export function MapCanvas({
       fittedRef.current = fitKey;
       renderer.fit(specs);
     }
-  }, [bundle, visibleDayIndex, hotelArea, selectedPlaceId, selectedLegId]);
+  }, [bundle, visibleDayIndex, selectedPlaceId, selectedLegId]);
 
   // 地点聚焦（M83）：行程面板地点行点击 → flyTo 到该 place 坐标；按 nonce 去重，
   // 清除选中/切换天不回拉视野；place 暂查不到（聚焦请求早于 bundle 到达）时不消费 nonce，

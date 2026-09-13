@@ -84,9 +84,9 @@ function HotelRows({ bundle, stays }: { bundle: TripBundle; stays: HotelStay[] }
                   </div>
                 )}
               </td>
-              <td>{dayLabelOf(bundle.trip, stay.checkInDay)}</td>
+              <td className="ybe-nowrap">{dayLabelOf(bundle.trip, stay.checkInDay)}</td>
               {/* 闭开区间 [checkInDay, checkOutDay)：checkOutDay 当天退房 */}
-              <td>{dayLabelOf(bundle.trip, stay.checkOutDay)}</td>
+              <td className="ybe-nowrap">{dayLabelOf(bundle.trip, stay.checkOutDay)}</td>
               <td>{stayNights(stay)}</td>
               <td>
                 {place?.address && <div>{place.address}</div>}
@@ -372,12 +372,12 @@ export function ExportPrintSheet({ bundle, weather = null }: { bundle: TripBundl
                 const kind = transitKindOf(entry, dayOrder.get(entry.dayId) ?? 0, sortedDays.length);
                 return (
                   <tr key={entry.id}>
-                    <td>{formatDayLabel(trip.startDate, dayOrder.get(entry.dayId) ?? 0)}</td>
-                    <td>{kind ? TRANSIT_KIND_META[kind].label : ""}</td>
-                    <td>{entry.transitMode ? TRANSIT_MODE_META[entry.transitMode].label : "—"}</td>
+                    <td className="ybe-nowrap">{formatDayLabel(trip.startDate, dayOrder.get(entry.dayId) ?? 0)}</td>
+                    <td className="ybe-nowrap">{kind ? TRANSIT_KIND_META[kind].label : ""}</td>
+                    <td className="ybe-nowrap">{entry.transitMode ? TRANSIT_MODE_META[entry.transitMode].label : "—"}</td>
                     <td>{transitRouteText(entry, placeById) ?? "—"}</td>
-                    <td>{entry.departTime ?? "—"}</td>
-                    <td>{entry.arriveTime ?? "—"}</td>
+                    <td className="ybe-nowrap">{entry.departTime ?? "—"}</td>
+                    <td className="ybe-nowrap">{entry.arriveTime ?? "—"}</td>
                     <td>{entry.note ?? ""}</td>
                   </tr>
                 );
@@ -405,9 +405,9 @@ export function ExportPrintSheet({ bundle, weather = null }: { bundle: TripBundl
               {bookingPlaces.map((place) => (
                 <tr key={place.id}>
                   <td className="ybe-entry-name">{place.name}</td>
-                  <td>{PLACE_CATEGORY_LABEL[place.category]}</td>
-                  <td>{BOOKING_STATUS_META[bookingStatusOf(place)].label}</td>
-                  <td>{place.phone ?? ""}</td>
+                  <td className="ybe-nowrap">{PLACE_CATEGORY_LABEL[place.category]}</td>
+                  <td className="ybe-nowrap">{BOOKING_STATUS_META[bookingStatusOf(place)].label}</td>
+                  <td className="ybe-nowrap">{place.phone ?? ""}</td>
                   <td>
                     {place.bookingInfo && <div>{place.bookingInfo}</div>}
                     {place.bookingUrl && <div className="ybe-url">{place.bookingUrl}</div>}

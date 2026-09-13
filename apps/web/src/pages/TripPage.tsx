@@ -142,7 +142,6 @@ export function TripPage() {
   /** 地点聚焦请求（M83）：仅行程面板地点行点击触发；nonce 递增保证重复点同一地点也重新 flyTo，
       与 selectedPlaceId 解耦——候选池/搜索面板/地图 marker 的选中不移动相机 */
   const [placeFocus, setPlaceFocus] = useState<{ placeId: string; nonce: number } | null>(null);
-  const [hotelArea, setHotelArea] = useState<{ center: { lng: number; lat: number }; radiusM: number } | null>(null);
   const [budgetSummary, setBudgetSummary] = useState<BudgetSummary | null>(null);
   /** 面板形态：expanded（完整）/ hidden（收起到右上角的呼出钮） */
   const [panelMode, setPanelMode] = useState<"expanded" | "hidden">("expanded");
@@ -171,12 +170,6 @@ export function TripPage() {
       setAmapJsSecret(c.amapJsSecret);
     });
   }, []);
-
-  // 推荐住宿区域：地点数变化时重拉
-  useEffect(() => {
-    if (!tripId || !bundle) return;
-    void api.hotelArea(tripId).then(({ area }) => setHotelArea(area));
-  }, [tripId, bundle?.places.length]);
 
   // 预算汇总：bundle 被替换（load/SSE 全量快照）即意味着数据变了，跟着重拉
   useEffect(() => {
@@ -461,7 +454,6 @@ export function TripPage() {
           amapJsKey={amapJsKey}
           amapJsSecret={amapJsSecret}
           visibleDayIndex={visibleDay}
-          hotelArea={hotelArea}
           selectedPlaceId={selectedPlaceId}
           selectedLegId={selectedLegId}
           placeFocus={placeFocus}
@@ -598,7 +590,7 @@ export function TripPage() {
         {/* 导出入口（M97，issue #7）：打印预览弹层，浏览器打印对话框另存为 PDF */}
         <button
           onClick={() => setExportOpen(true)}
-          title="导出打印版行程（可另存为 PDF，便于打印/离线查看）"
+          title="导出行程为 PDF（便于打印/离线查看）"
           className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
         >
           <Printer className="size-3" />
@@ -932,7 +924,6 @@ export function TripPage() {
                 <CandidatesPanel
                   tripId={trip.id}
                   bundle={bundle}
-                  hotelArea={hotelArea}
                   selectedPlaceId={selectedPlaceId}
                   onSelectPlace={selectPlace}
                   onDataChanged={() => void load(trip.id)}
