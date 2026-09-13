@@ -33,6 +33,7 @@ import type {
   UpdateTripInput,
   UpdateTripNoteInput,
 } from "@yarnball/shared";
+import { isDomesticOsmTrip } from "@yarnball/shared";
 import { TRIPS_CHANNEL, tripChannel, type EventBus } from "../events.js";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
@@ -280,7 +281,9 @@ export class TripService {
 
   /**
    * 目的地解析 + provider 判定（创建与自愈共用）：
-   * 1. 高德可用（配齐 key，或显式 forced=amap）时优先（country=中国 → amap，GCJ-02）
+   * 1. 高德可用（配齐 key，或显式 forced=amap）时优先（country=中国 → amap，GCJ-02）；
+   *    forced=osm 显式钉住开源引擎（国内 osm 行程自愈重解析用——配 key 后也不许翻面，
+   *    否则存量 WGS84 坐标与新 GCJ-02 数据混系）
    * 2. 否则走 OSM 栈（Nominatim 优先），按返回的国家判定：
    *    中国目的地 → 配齐 key 判 amap（数据模型必须正确，否则中文 POI 搜索会错到别的城市）；
    *    未配 key 判 osm（M113 零配置回退：全链 WGS84，与海外同代码路径——Photon 搜索 /
@@ -315,9 +318,10 @@ export class TripService {
       const geo = await osm.resolveCity(city);
       if (geo) {
         if (isChinaCountry(geo.country)) {
-          // 国内：key 齐备 → amap（高德 resolve 失败时 center 暂用 OSM 结果，自愈可重解析）；
+          // 国内：forced=osm 钉住开源引擎（国内 osm 行程自愈，坐标系全程 WGS84）；
+          // key 齐备 → amap（高德 resolve 失败时 center 暂用 OSM 结果，自愈可重解析）；
           // 未配 key → osm 零配置回退（存量 amap 行程的翻面防护在 reResolveCity）
-          if (amapConfigured()) {
+          if (forced !== "osm" && amapConfigured()) {
             return { provider: "amap", adcode: null, center: geo.center, currency: "CNY", country: "中国", domestic: true };
           }
           return { provider: "osm", adcode: null, center: geo.center, currency: "CNY", country: "中国", domestic: true };
@@ -426,13 +430,24 @@ export class TripService {
    * 重新解析目的城市（自愈：创建时网络失败 / 引擎误判——如国内行程被标成海外）。
    * 允许纠正 provider：错引擎的中文 POI 搜索会错到别的城市（如「西湖」→福建），
    * 危害远大于两坐标系 ~500m 的偏移；切换后用新引擎重算全部天的交通段。
-   * 翻面防护（M113）：存量 amap 行程在缺 key 环境下重解析会判出 osm——不允许翻面，
-   * 已有地点坐标全是 GCJ-02，单行程不混坐标系（纠偏只开放 osm → amap 方向）。
+   * 翻面防护（M113，双向）：单行程不混坐标系，已有地点坐标系由建行程时的引擎定死——
+   * ① 存量 amap 行程（GCJ-02）在缺 key 环境重解析会判出 osm → 回写防护保持 amap；
+   * ② 国内 osm 行程（WGS84，isDomesticOsmTrip）在配 key 后重解析会判出 amap →
+   *    forced=osm 钉住引擎，center/stops 重解析也全程走 OSM 栈（WGS84 同系）。
+   * 纠偏通道（osm → amap）只对 country=null 的存量误判行程开放——M113 前不存在
+   * osm + country=中国 的存量行程，不会误伤。
    */
   async reResolveCity(tripId: string) {
     const trip = await this.getTrip(tripId);
     // 重解析全部途经地（stops[0] 即原 destinationCity，单城市行为不变）；镜像列同步 stops[0]
-    const resolved = await this.resolveStops(this.stopsOfTrip(trip).map((s) => s.name));
+    const keepOsm = isDomesticOsmTrip({
+      geoProvider: trip.geoProvider as GeoProviderName,
+      country: trip.country ?? null,
+    });
+    const resolved = await this.resolveStops(
+      this.stopsOfTrip(trip).map((s) => s.name),
+      keepOsm ? "osm" : undefined,
+    );
     if (trip.geoProvider === "amap" && resolved.provider === "osm" && resolved.domestic) {
       resolved.provider = "amap";
     }
@@ -1245,13 +1260,14 @@ export class TripService {
     mode: TransportMode,
     city?: string,
     date?: string,
+    domestic?: boolean,
   ) {
     try {
-      return await routeLimit(() => geo.route(a, b, mode, city, date));
+      return await routeLimit(() => geo.route(a, b, mode, city, date, { domestic }));
     } catch {
       try {
         await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
-        return await routeLimit(() => geo.route(a, b, mode, city, date));
+        return await routeLimit(() => geo.route(a, b, mode, city, date, { domestic }));
       } catch (err) {
         console.warn(`[routing] route(${mode}) 重试仍失败，降级直线估算:`, (err as Error).message);
         return fallbackRoute(a, b, mode);
@@ -1283,6 +1299,8 @@ export class TripService {
       trip?.startDate ?? new Date().toISOString().slice(0, 10),
       day?.dayIndex ?? 0,
     );
+    // 国内 osm 行程（M113）：公交族跳过 transitous（国内 GTFS 零覆盖必 miss，2-4s/条纯浪费），直接 OSRM 估算
+    const domesticOsm = geo.name === "osm" && trip?.country === "中国";
     const entries = await this.db
       .select()
       .from(schema.entries)
@@ -1443,7 +1461,7 @@ export class TripService {
           // amap 保持原子类型请求（高德公交换乘不区分子类型选型）。
           const requestMode: TransportMode =
             !override && geo.name === "osm" && mode !== "walk" ? "transit" : mode;
-          const result = await this.routeWithRetry(routeLimit, geo, a, b, requestMode, trip?.destinationCity, dayDate);
+          const result = await this.routeWithRetry(routeLimit, geo, a, b, requestMode, trip?.destinationCity, dayDate, domesticOsm);
           // 真实公交命中（transitDetail 非空）时用真实首段方式定 mode；
           // 未命中（估算/降级）保持 autoLegMode 的分档结果（osm 估算 result.mode == requestMode，不可信）
           mode = override ?? (result.transitDetail ? result.mode : mode);

@@ -684,14 +684,16 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
         // osm 公交族传今天日期走 transitous 真实换乘（无日上下文，拿的是今天的班次形态）；
         // 命中时 route.transitDetail 非空、mode 为真实首段方式
         const queryDate = new Date().toISOString().slice(0, 10);
+        // 国内 osm 行程（M113）：公交族跳过 transitous（国内 GTFS 零覆盖必 miss），直接 OSRM 估算
+        const domestic = provider.name === "osm" && trip?.country === "中国";
         let estimated = false;
         let route;
         try {
-          route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity, queryDate);
+          route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity, queryDate, { domestic });
         } catch {
           try {
             await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
-            route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity, queryDate);
+            route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity, queryDate, { domestic });
           } catch (err) {
             console.warn(`[get_route] route(${mode}) 重试仍失败，降级直线估算:`, (err as Error).message);
             route = fallbackRoute(fromCoord, toCoord, mode);

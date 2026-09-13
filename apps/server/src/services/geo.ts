@@ -45,8 +45,10 @@ export interface GeoProvider {
   /**
    * 两点路线。osm 的公交族优先走 transitous（MOTIS 2）真实换乘（需传 date = 行程日
    * YYYY-MM-DD，查询时刻取当地约 09:00；不传则跳过真实路由），未命中降级 OSRM 估算。
+   * opts.domestic：国内 osm 行程（M113）传 true——transitous 国内 GTFS 零覆盖必 miss，
+   * 公交族直接走 OSRM 估算，省下每条 leg 2-4s 的必败请求。
    */
-  route(from: LngLat, to: LngLat, mode: TransportMode, city?: string, date?: string): Promise<RouteResult>;
+  route(from: LngLat, to: LngLat, mode: TransportMode, city?: string, date?: string, opts?: { domestic?: boolean }): Promise<RouteResult>;
   /**
    * 驾车时长矩阵（顺路度/重排优化用）：sources × destinations 的矩形时长表（秒）。
    * 点数超上限时返回 null，由 drivingMatrixBatched 分批拼接或调用方降级直线估算。
@@ -830,7 +832,7 @@ export const osm: GeoProvider = {
       }));
   },
 
-  async route(from, to, mode, _city, date) {
+  async route(from, to, mode, _city, date, opts) {
     // 渡轮：上游无轮渡路由，直线水域航线估算（两 provider 同口径）
     if (mode === "ferry") return ferryRouteEstimate(from, to);
     // 公交族走 transitous 时按行程日查班次，cache key 须含日期（跨天不同时刻方案可能不同）
@@ -842,8 +844,9 @@ export const osm: GeoProvider = {
     if (isTransitLikeMode(mode)) {
       // 先试 transitous（MOTIS 2）真实公交换乘：命中返回真实方式（首段 transit leg 映射）/
       // 线路名/分段详情/真实里程；无覆盖（空 itineraries）、超时、错误一律降级到下面的
-      // OSRM 估算（空结果不重试——无覆盖/无解的区域每次都返回空 itineraries，重试纯浪费 2-4s）
-      if (date) {
+      // OSRM 估算（空结果不重试——无覆盖/无解的区域每次都返回空 itineraries，重试纯浪费 2-4s）。
+      // 国内 osm 行程（opts.domestic）直接跳过：transitous 国内 GTFS 零覆盖，必然 miss
+      if (date && !opts?.domestic) {
         try {
           const real = await transitousPlan(from, to, date);
           if (real) {
