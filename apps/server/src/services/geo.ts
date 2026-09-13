@@ -462,8 +462,11 @@ function overseasDispatcher(url: string | URL): Dispatcher | undefined {
   return overseasProxyAgent;
 }
 
-/** 海外上游统一入口：带识别性 UA、超时，并按需挂代理 dispatcher */
-function overseasFetch(url: string | URL, timeoutMs = 15_000): Promise<Response> {
+/**
+ * 海外上游统一入口：带识别性 UA、超时，并按需挂代理 dispatcher。
+ * 供全部零 key 海外上游共用（Photon / Nominatim / OSRM / Open-Meteo 天气）。
+ */
+export function overseasFetch(url: string | URL, timeoutMs = 15_000): Promise<Response> {
   // Node fetch 的 RequestInit 类型来自 undici-types，其 Dispatcher 与 undici 包自带的
   // Dispatcher 声明不完全相容（运行时同一套实现），这里显式断言。
   const init: RequestInit = {

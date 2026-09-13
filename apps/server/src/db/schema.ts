@@ -94,8 +94,32 @@ export const days = sqliteTable(
       .references(() => trips.id, { onDelete: "cascade" }),
     dayIndex: integer("day_index").notNull(),
     date: text("date"),
+    /** 每日概要（一句话：当日区域/主线 + 主景点）；null = 未撰写，bundle 层自动生成兜底（不落库） */
+    summary: text("summary"),
   },
   (t) => [uniqueIndex("days_trip_index_uq").on(t.tripId, t.dayIndex)],
+);
+
+/**
+ * 行程级注意事项（通讯/气候/用电/签证/货币/交通/其他，见 shared TRIP_NOTE_CATEGORIES）。
+ * 独立表而非 trips json 列：逐条 CRUD 有稳定 id（REST/MCP 直接按 id 改删），
+ * 与 places/entries 等实体同构，SSE 全量 bundle 直接带上，无需额外的合并逻辑。
+ */
+export const tripNotes = sqliteTable(
+  "trip_notes",
+  {
+    id: text("id").primaryKey(),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    category: text("category").notNull(), // TripNoteCategory
+    content: text("content").notNull(),
+    /** 展示顺序（同类内按 position 再按创建时间排序） */
+    position: integer("position").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
+  },
+  (t) => [index("trip_notes_trip_idx").on(t.tripId)],
 );
 
 export const entries = sqliteTable(
