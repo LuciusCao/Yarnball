@@ -82,7 +82,7 @@ just setup            # 首次初始化：install + .env + migrate（SQLite 文�
 just up / just down   # 后台起/停 server + web；日志在 .logs/
 just status / just logs [svc]
 just tauri-dev        # Tauri 桌面壳 dev（前置 just up 已跑）
-just package          # Tauri 打 dmg，产物复制到仓库根 dist/（深路径 apps/tauri/src-tauri/target/release/bundle/dmg/）
+just package          # Tauri 打 dmg（含签名校验），产物复制到仓库根 dist/（深路径 apps/tauri/src-tauri/target/release/bundle/dmg/）
 just icon             # 从 apps/web/public/icon-1024.png 重生成图标种子
 
 # 首次启动
@@ -109,6 +109,14 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 # 发布：没有 pnpm 命令，push tag v* 触发 .github/workflows/release.yml——
 # 复用 ci.yml 质量门（workflow_call）后在 macOS arm64 runner 打 dmg 附 GitHub Release；
 # tag（去 v 前缀）须与 tauri.conf.json 的 version 一致（v0.1.0 ↔ 0.1.0），带 - 后缀自动 prerelease
+#
+# 签名约定（v0.2.x 起）：tauri.conf.json 的 bundle.macOS.signingIdentity="-"（ad-hoc）。
+# 不配 identity 时 tauri-bundler 完全跳过签名，主可执行只剩链接期 ad-hoc 签名
+# （Sealed Resources=none），带 quarantine 的下载产物会被 Gatekeeper 报「已损坏」；
+# "-" 让 bundler 在打 dmg 前 codesign 封印整个 .app（含 sidecar 嵌套二进制）。
+# 打包链路的 verify:sign（apps/tauri/scripts/verify-sign.mjs）对 bundle/macos 与 dmg 内的
+# .app 跑 codesign --verify --deep --strict，不过则 fail（本地 just package 与 CI 同一脚本）；
+# spctl 对 ad-hoc 必拒（无 Developer ID），只作信息项不卡门槛。
 ```
 
 ## 代码约定

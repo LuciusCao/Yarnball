@@ -119,7 +119,7 @@ verify:
 tauri-dev:
     pnpm tauri:dev
 
-# Tauri 打 dmg（sidecar + web 产物），完成后自动复制到仓库根 dist/
+# Tauri 打 dmg（sidecar + web 产物 + ad-hoc 封印 + codesign 校验），完成后自动复制到仓库根 dist/
 package:
     pnpm tauri:package
     @echo "dmg 产物：dist/（原始深路径：apps/tauri/src-tauri/target/release/bundle/dmg/）"
