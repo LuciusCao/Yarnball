@@ -66,7 +66,7 @@ agent 接入后经 MCP 自动发现全部工具，无需人工配置。每个会
 |---|---|
 | 行程全貌 | `get_trip_context`（会话开始先调这个） |
 | POI 搜索 | `search_poi`（建任何地点前的必经步骤） |
-| 地点库 | `add_place` / `update_place` / `remove_place` / `lock_place` / `unlock_place` |
+| 地点库 | `add_place` / `update_place` / `remove_place` / `add_to_trip` / `remove_from_trip`（加入/移出行程） |
 | 每日编排 | `add_place_to_day` / `move_entry` / `remove_entry` / `reorder_day` / `unschedule_place` |
 | 顺路分析 | `analyze_detour` / `suggest_day_order` / `suggest_day_clusters` |
 | 大交通 | `add_transit_entry` / `update_entry`（flight / train / drive / bus） |
