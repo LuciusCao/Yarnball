@@ -216,7 +216,7 @@ export function ExportPrintSheet({ bundle, weather = null }: { bundle: TripBundl
   /** 关键预订信息：已加入行程的非酒店地点中，有待办/已办预订、预订链接/方式或电话的 */
   const bookingPlaces = bundle.places.filter(
     (p) =>
-      p.status === "locked" &&
+      p.status === "joined" &&
       p.category !== "hotel" &&
       (bookingStatusOf(p) !== "none" || p.bookingUrl || p.bookingInfo || p.phone),
   );

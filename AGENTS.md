@@ -63,7 +63,7 @@ apps/web
   src/features/   map（amapRenderer + maplibreRenderer 双渲染器 + 途经地标记层）、chat、
                   itinerary（时间轴；stops.ts 多城市 day→stop 推导/环线闭合；
                   intensity.ts 每日强度标签推导；weather.tsx 天气徽章 + useTripWeather）、
-                  candidates（候选池：candidate/locked 状态机；多城市按 cityName 分桶）、
+                  candidates（候选池：candidate/joined 状态机；多城市按 cityName 分桶）、
                   settings（设置抽屉：密钥 + agent CLI）、
                   notes（行程级注意事项面板，7 类结构化增删改）、
                   budget —— 按领域划分
@@ -175,4 +175,3 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - 海外公交路线为估算（真实驾车路由时长 × 1.25 + 换乘惩罚）；国内公交走高德真实数据；渡轮无上游路由，统一按直线水域航线估算（含候船缓冲）
 - Photon / OSRM 是社区免费服务，高频使用应自托管（代码里换 base URL 即可）
 - ACP `session/load` 直连与 `session/cancel` 通知通道待 SDK（ActiveSession 封装）暴露后补
-- 数据层地点状态枚举 `locked` 为历史命名（界面与 agent 话术均为「加入行程/已加入行程」，M105 已清扫 agent 可见面）；枚举改名涉及 web 候选状态机，留作后续技术债

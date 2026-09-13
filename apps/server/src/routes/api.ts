@@ -211,7 +211,7 @@ export function createApi(
     return c.json({ place: await tripService.updatePlace(c.req.param("placeId"), input) });
   });
 
-  /** 加入/移出行程（地点状态机：candidate ↔ locked，UI 与 agent 话术「加入行程/移出行程」） */
+  /** 加入/移出行程（地点状态机：candidate ↔ joined，UI 与 agent 话术「加入行程/移出行程」） */
   api.patch("/places/:placeId/status", async (c) => {
     const input = SetPlaceStatusInputSchema.parse(await c.req.json());
     return c.json({ place: await tripService.setPlaceStatus(c.req.param("placeId"), input.status) });

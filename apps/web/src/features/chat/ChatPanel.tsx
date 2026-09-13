@@ -220,7 +220,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   /**
    * 「规划每日行程」引导：把已加入行程/候选地点摘要 + 区域聚类建议（M11）+
    * 大交通锚点组装成预制指令，走现有发送链路发给 agent，提示按区域成片分天。
-   * place.status 来自 shared 契约：locked=必排，candidate=按顺路取舍。
+   * place.status 来自 shared 契约：joined=必排，candidate=按顺路取舍。
    * bundle 直接读 SSE 维护的全量快照（tripStore），不再为组 prompt 重复拉一遍；
    * 快照缺失或属于上一个行程（切换途中）时回退拉取。
    */
@@ -231,9 +231,9 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
       // store 快照可能还是上一个行程的（切换行程后 load 未完成），id 对不上时回退拉取
       const snapshot = useTripStore.getState().bundle;
       const bundle = snapshot && snapshot.trip.id === trip.id ? snapshot : (await api.getBundle(trip.id)).bundle;
-      const locked = bundle.places.filter((p) => p.status === "locked");
-      const candidates = bundle.places.filter((p) => p.status !== "locked");
-      if (locked.length === 0 && candidates.length === 0) {
+      const joined = bundle.places.filter((p) => p.status === "joined");
+      const candidates = bundle.places.filter((p) => p.status !== "joined");
+      if (joined.length === 0 && candidates.length === 0) {
         toast.info("还没有地点。先让 agent 解析攻略，或在「添加」里手动加几个。");
         return;
       }
@@ -273,7 +273,7 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
 
       const lines = [
         `请帮我规划这次「${bundle.trip.destinationCity}」之行的每日行程，按区域成片分天：同一片区的地点尽量排在同一天，减少跨区折返。`,
-        `已加入行程（必须排入）：${fmt(locked)}`,
+        `已加入行程（必须排入）：${fmt(joined)}`,
         `候选地点（按顺路和体验取舍）：${fmt(candidates)}`,
       ];
       if (clusterLines.length > 0) {

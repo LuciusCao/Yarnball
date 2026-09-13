@@ -213,8 +213,8 @@ function SharePlaceCard({
         </button>
       </div>
       <div className="mt-1.5 flex flex-wrap gap-1">
-        {scheduled || place.status === "locked" ? (
-          <Badge variant="locked">已加入</Badge>
+        {scheduled || place.status === "joined" ? (
+          <Badge variant="joined">已加入</Badge>
         ) : (
           <Badge variant="candidate">候选</Badge>
         )}

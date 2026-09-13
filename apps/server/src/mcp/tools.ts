@@ -321,7 +321,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
       // agent 可见面去「锁定」：为每个地点附中文状态话术，对话统一用 statusText 口径
       const places = bundle.places.map((p) => ({
         ...p,
-        statusText: p.status === "locked" ? "已加入行程" : "候选池",
+        statusText: p.status === "joined" ? "已加入行程" : "候选池",
       }));
       let uiContext: unknown = null;
       const [session] = await ctx.db
@@ -348,7 +348,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
           ` notes[] 为行程级注意事项（category：communication 通讯/climate 气候/power 用电/visa 签证/currency 货币/transport 交通/other 其他），用 add_trip_note 按目的地预填、update_trip_note/remove_trip_note 维护。` +
           ` entries[].entryType：place=地点节点，transit=大交通节点（航班/高铁/城际移动，带 departTime/arriveTime 与 fromName/toName 或 fromPlaceId/toPlaceId 起讫点；transitMode：flight|train|drive|bus，drive=自驾走真实公路路线）。` +
           ` places[].cityName 为归属途经地/城市名（多城市分组依据）。` +
-          ` places[].statusText 为中文状态话术：候选池=待用户确认；已加入行程=用户确认要去（只有已加入行程的地点才排进每日行程，其信息字段你随时可补全/修改）。与用户对话一律用 statusText 的说法，不要说「锁定」。status 是数据层枚举（candidate/locked，locked 即已加入行程，属历史命名）。` +
+          ` places[].statusText 为中文状态话术：候选池=待用户确认；已加入行程=用户确认要去（只有已加入行程的地点才排进每日行程，其信息字段你随时可补全/修改）。与用户对话一律用 statusText 的说法，不要说「锁定」。status 是数据层枚举（candidate/joined，joined 即已加入行程）。` +
           ` places[].openingHours 为营业时间（排天硬约束），visitDurationMin 为预计游览/用餐分钟数（排天参考），bookingStatus 为预订状态（none|pending|booked）；website 官网、bookingUrl 预订链接、phone 电话、address 地址会展示在地点信息卡上。` +
           ` legs[] 为每天的市内交通段：seq 为天内顺序；端点二选一（entryId 或 placeId，酒店往返段用 placeId）；mode 为交通方式（walk|taxi|drive|transit|bus|metro|light_rail|train|ferry，自动判定只会产出 walk/transit/drive/train/ferry，其余子类型靠 set_leg_mode 指定），modeOverride 非空表示被人工/agent 用 set_leg_mode 手动覆盖（重算交通段不会冲掉覆盖）；distanceM/durationS 为真实路由结果，polyline 为路径坐标。` +
           (overseas
@@ -471,7 +471,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
       ctx.markMcpObserved();
       try {
         await assertPlaceInSessionTrip(ctx, placeId);
-        const place = await tripService.setPlaceStatus(placeId, "locked");
+        const place = await tripService.setPlaceStatus(placeId, "joined");
         return json({ ok: true, place });
       } catch (err) {
         return toolError(err);

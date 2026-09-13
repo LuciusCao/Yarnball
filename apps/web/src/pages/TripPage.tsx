@@ -302,9 +302,9 @@ export function TripPage() {
     if (!bundle.legs.some((l) => l.id === selectedLegId)) setSelectedLegId(null);
   }, [selectedLegId, bundle]);
 
-  /** 加入/移出地点（底层 locked 状态切换，M20 UI 话术统一为「加入行程」）：写后依赖 SSE bundle 全量刷新，再主动 load 兜底 */
-  async function togglePlaceLock(place: PlaceDto) {
-    const next = place.status === "locked" ? "candidate" : "locked";
+  /** 加入/移出地点（底层 joined 状态切换，M20 UI 话术统一为「加入行程」）：写后依赖 SSE bundle 全量刷新，再主动 load 兜底 */
+  async function togglePlaceJoined(place: PlaceDto) {
+    const next = place.status === "joined" ? "candidate" : "joined";
     setPlaceBusy(true);
     try {
       await uxApi.setPlaceStatus(place.id, next);
@@ -331,7 +331,7 @@ export function TripPage() {
     }
   }
 
-  /** 预订状态点选流转（M11：PATCH /api/places/:id 带 bookingStatus）：所有 locked 地点可切换（含已排期）；写后靠 SSE 全量刷新 + 主动 load 兜底 */
+  /** 预订状态点选流转（M11：PATCH /api/places/:id 带 bookingStatus）：所有 joined 地点可切换（含已排期）；写后靠 SSE 全量刷新 + 主动 load 兜底 */
   async function cyclePlaceBooking(place: PlaceDto) {
     setPlaceBusy(true);
     try {
@@ -638,14 +638,14 @@ export function TripPage() {
               ✕
             </button>
           </div>
-          {/* 状态徽章：已排期（scheduled 蓝）> 已加入（locked 金）> 候选；酒店 locked 降级不展示 locked 徽章（!isHotel 守卫，口径对齐候选），已选定住宿的酒店凭住宿块说明「已加入」；agent 建的地点带推荐标记 */}
+          {/* 状态徽章：已排期（scheduled 蓝）> 已加入（joined 金）> 候选；酒店 joined 降级不展示 joined 徽章（!isHotel 守卫，口径对齐候选），已选定住宿的酒店凭住宿块说明「已加入」；agent 建的地点带推荐标记 */}
           <div className="mt-1.5 flex flex-wrap gap-1">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
               <Badge variant="scheduled">已排期</Badge>
-            ) : selectedPlace.status === "locked" && selectedHotelCand == null ? (
-              <Badge variant="locked">已加入</Badge>
+            ) : selectedPlace.status === "joined" && selectedHotelCand == null ? (
+              <Badge variant="joined">已加入</Badge>
             ) : selectedStay ? (
-              <Badge variant="locked">已加入</Badge>
+              <Badge variant="joined">已加入</Badge>
             ) : (
               <Badge variant="candidate">候选</Badge>
             )}
@@ -655,8 +655,8 @@ export function TripPage() {
                 agent 推荐
               </Badge>
             )}
-            {/* 预订状态徽章（M11）：所有 locked 地点可点选流转（含已排期，与候选一致） */}
-            {selectedPlace.status === "locked" ? (
+            {/* 预订状态徽章（M11）：所有 joined 地点可点选流转（含已排期，与候选一致） */}
+            {selectedPlace.status === "joined" ? (
               <button
                 title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
                 disabled={placeBusy}
@@ -802,8 +802,8 @@ export function TripPage() {
           )}
           {/* 操作行（口径对齐候选）：酒店的住宿维度加入/移出已拆到上方住宿块（M59：「加入住宿/移出住宿」）；
               已排期地点给「移出」出口（unschedule 撤销日程）——酒店信息卡上为与住宿按钮区分改名「移出日程」，非酒店仍叫「移出行程」；
-              未排期非酒店 POI 走 locked 开关。
-              图标与候选一致：locked 态显示 CalendarMinus（点击移出），候选态显示 CalendarPlus（点击加入） */}
+              未排期非酒店 POI 走 joined 开关。
+              图标与候选一致：joined 态显示 CalendarMinus（点击移出），候选态显示 CalendarPlus（点击加入） */}
           <div className="mt-2.5 flex items-center gap-1.5 border-t border-slate-900/8 pt-2.5">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
               <button
@@ -822,19 +822,19 @@ export function TripPage() {
               !selectedHotelCand && (
                 <button
                   title={
-                    selectedPlace.status === "locked"
+                    selectedPlace.status === "joined"
                       ? "移出行程（退回候选，不再必排进日程）"
                       : "加入行程（确认要去，排日程时必排）"
                   }
                   disabled={placeBusy}
-                  onClick={() => void togglePlaceLock(selectedPlace)}
+                  onClick={() => void togglePlaceJoined(selectedPlace)}
                   className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
-                    selectedPlace.status === "locked"
-                      ? "bg-locked/10 text-locked hover:bg-locked/20"
+                    selectedPlace.status === "joined"
+                      ? "bg-joined/10 text-joined hover:bg-joined/20"
                       : "bg-slate-900/8 text-slate-600 hover:bg-slate-900/15"
                   }`}
                 >
-                  {selectedPlace.status === "locked" ? (
+                  {selectedPlace.status === "joined" ? (
                     <>
                       <CalendarMinus className="size-3" /> 移出行程
                     </>

@@ -88,12 +88,12 @@ export type Actor = (typeof ACTORS)[number];
 
 /**
  * 地点状态机：candidate（候选池，agent 解析攻略/推荐的默认值）
- * → locked（已加入行程 = 用户确认要去；locked 为历史枚举名，界面与 agent 话术均为「加入行程/已加入行程」）。
+ * → joined（已加入行程 = 用户确认要去；界面与 agent 话术均为「加入行程/已加入行程」）。
  * 纪律：agent 只建候选；已加入行程地点的信息字段 agent 可随时补全/修改（update_place），
  * 仅「已排进行程（有 entry 引用）的地点」agent 不可直接删除（须先移出行程）；
  * 只有已加入行程的地点才应排入某天行程。
  */
-export const PLACE_STATUSES = ["candidate", "locked"] as const;
+export const PLACE_STATUSES = ["candidate", "joined"] as const;
 export type PlaceStatus = (typeof PLACE_STATUSES)[number];
 
 /**
@@ -288,7 +288,7 @@ export const PlaceDtoSchema = z.object({
   openingHours: z.string().nullable(),
   /** 预订状态流转，见 BOOKING_STATUSES */
   bookingStatus: z.enum(BOOKING_STATUSES),
-  /** 候选（candidate）或已加入行程（locked），见 PLACE_STATUSES */
+  /** 候选（candidate）或已加入行程（joined），见 PLACE_STATUSES */
   status: z.enum(PLACE_STATUSES),
   createdBy: z.enum(ACTORS),
   createdAt: z.string(),
@@ -514,7 +514,7 @@ export const CreatePlaceInputSchema = z.object({
   openingHours: z.string().max(200).nullable().optional(),
   /** 预订状态；agent 可填（如已核实可订），但以用户在界面上的标记为准 */
   bookingStatus: z.enum(BOOKING_STATUSES).optional(),
-  /** 显式指定初始状态；缺省由服务端按创建者决定（human→locked，agent→candidate） */
+  /** 显式指定初始状态；缺省由服务端按创建者决定（human→joined，agent→candidate） */
   status: z.enum(PLACE_STATUSES).optional(),
   /** 跳过模糊判重强制新建（默认 false：规范化名称相同/互为前缀 + 坐标 ≤200m 时返回 409 疑似重复信号，不创建新行） */
   allowDuplicate: z.boolean().optional(),
@@ -524,7 +524,7 @@ export type CreatePlaceInput = z.infer<typeof CreatePlaceInputSchema>;
 export const UpdatePlaceInputSchema = CreatePlaceInputSchema.partial();
 export type UpdatePlaceInput = z.infer<typeof UpdatePlaceInputSchema>;
 
-/** 加入/移出行程（PATCH /api/places/:id/status 与 MCP add_to_trip/remove_from_trip；locked 为历史枚举名） */
+/** 加入/移出行程（PATCH /api/places/:id/status 与 MCP add_to_trip/remove_from_trip） */
 export const SetPlaceStatusInputSchema = z.object({
   status: z.enum(PLACE_STATUSES),
 });

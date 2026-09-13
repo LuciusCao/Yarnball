@@ -16,7 +16,7 @@ const badgeVariants = cva(
         destructive: "border-red-200 bg-red-100/70 text-red-700",
         // 状态变体：消费 index.css 的 M13 设计令牌，与地图 overlay 颜色一一对应
         candidate: "border-candidate/40 bg-candidate/15 text-slate-500",
-        locked: "border-locked/30 bg-locked/10 text-locked",
+        joined: "border-joined/30 bg-joined/10 text-joined",
         scheduled: "border-scheduled/30 bg-scheduled/10 text-scheduled",
       },
     },

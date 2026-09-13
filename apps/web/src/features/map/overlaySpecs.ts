@@ -111,7 +111,7 @@ export const DAY_COLORS = [
 ];
 
 export const HOTEL_COLOR = "#dc2626";
-/** 未排期地点统一候选灰半透明（M98/issue #3：不再按 locked 状态做金色/不透明的视觉区分——
+/** 未排期地点统一候选灰半透明（M98/issue #3：不再按 joined 状态做金色/不透明的视觉区分——
  *  交互上已无「锁定」概念，同一状态地点的地图钉视觉必须一致） */
 export const CANDIDATE_COLOR = "#94a3b8"; // slate-400
 export const CANDIDATE_OPACITY = 0.55;
@@ -239,7 +239,7 @@ export function buildOverlaySpecs(
         placeId: place.id,
       });
     }
-    // 未编排散点（agent 刚建的 / 用户收藏的）：统一候选灰半透明，不再区分 locked（issue #3）
+    // 未编排散点（agent 刚建的 / 用户收藏的）：统一候选灰半透明，不再区分 joined（issue #3）
     for (const place of bundle.places) {
       if (scheduledPlaceIds.has(place.id) || hotelPlaceIds.has(place.id)) continue;
       markers.push({
