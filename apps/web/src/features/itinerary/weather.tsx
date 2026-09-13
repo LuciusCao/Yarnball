@@ -17,16 +17,20 @@ import { api as libApi } from "../../lib/api";
 /**
  * 天气（M102，issue #5）：GET /api/trips/:tripId/weather 的前端消费层。
  * 数据是动态的（Open-Meteo 预报随时间变），不进 zustand bundle——react-query 按 tripId
- * 缓存，打开行程页/分享页挂载行程面板时自动拉取并定期刷新；服务端另有 30min 内存缓存兜底。
- * 行程面板（TripPage/SharePage）与导出弹层（ExportPrintDialog）共用同一 queryKey，只发一次请求。
+ * 缓存，打开行程页挂载行程面板时自动拉取并定期刷新；服务端另有 30min 内存缓存兜底。
+ * 行程面板（TripPage）与导出弹层（ExportPrintDialog）共用同一 queryKey，只发一次请求。
+ * 分享页（SharePage）不出天气：分享包脱敏把 trip.id 置空串（server aliasShareBundleIds），
+ * 行程面板以空 tripId 调用本 hook 时查询被禁用、徽章不渲染（如需分享页天气，
+ * 需另开 share token 天气端点，目前明确不支持）。
  */
 
-/** 行程天气查询：staleTime 10min（预报粒度是天，高频刷新无意义）；失败重试 1 次后按「不可用」降级 */
+/** 行程天气查询：staleTime 10min（预报粒度是天，高频刷新无意义）；失败重试 1 次后按「不可用」降级。
+ *  enabled 门含 tripId 非空串校验——分享页 trip.id 为空，空 id 会打出注定 404 的 /trips//weather */
 export function useTripWeather(tripId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: ["trip-weather", tripId],
     queryFn: () => libApi.getTripWeather(tripId!).then((r) => r.weather),
-    enabled: enabled && tripId != null,
+    enabled: enabled && tripId != null && tripId !== "",
     staleTime: 10 * 60 * 1000,
     retry: 1,
   });

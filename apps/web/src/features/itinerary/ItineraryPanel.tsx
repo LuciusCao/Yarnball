@@ -127,7 +127,8 @@ export function ItineraryPanel({
   const [busy, setBusy] = useState(false);
   const placeById = new Map(bundle.places.map((p) => [p.id, p]));
 
-  /** 天气（M102，#5）：react-query 按 tripId 缓存，面板挂载即拉取/刷新；动态数据不进 bundle */
+  /** 天气（M102，#5）：react-query 按 tripId 缓存，面板挂载即拉取/刷新；动态数据不进 bundle。
+      分享页 trip.id 被脱敏置空，useTripWeather 禁用查询，徽章不渲染（分享页不出天气，见 weather.tsx） */
   const weatherQuery = useTripWeather(tripId);
   /** dayIndex（1-based）→ 当天天气；查询中/失败/无数据的天拿不到条目，徽章不渲染 */
   const weatherByDay = new Map<number, DayWeather>();

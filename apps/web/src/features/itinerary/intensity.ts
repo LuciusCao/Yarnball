@@ -5,7 +5,7 @@ import type { TimelineItem } from "./timeline";
  * 每日强度标签推导（M102，issue #6）：纯前端从 bundle 时间轴/交通段推导，不落库。
  * 信号：当天时间跨度（首个 entry 开始 → 末个 entry 结束，含推算值）、地点数、
  * legs 交通总时长与步行距离、大交通移动日减负。
- * 档位：轻松 < 5h ≤ 休闲 < 7h ≤ 适中 < 9h ≤ 紧凑 ≤ 10.5h < 暴走；
+ * 档位：轻松 < 5h ≤ 休闲 < 7h ≤ 适中 < 9h ≤ 紧凑 < 10.5h ≤ 暴走（边界值归高一档）；
  * 修正：地点 ≥8 个升一档，含大交通 entry（城际/抵离移动日）降一档。
  * 跨度 >10h 另给超标提示（warning），与档位相互独立。
  * 单点推导风格同 stops.ts：面板（ItineraryPanel）与导出（ExportPrintSheet）共用本函数。
@@ -37,7 +37,7 @@ export interface DayIntensity {
   walkM: number;
 }
 
-/** 档位阈值上限（分钟）：span ≤ 阈值即落入该档；超过最后一档阈值 = 暴走 */
+/** 档位阈值上限（分钟）：span < 阈值即落入该档（边界值归高一档，与头注释口径一致）；超过最后一档阈值 = 暴走 */
 const LEVEL_CAP_MIN: Record<Exclude<IntensityLevel, "rush">, number> = {
   relaxed: 5 * 60,
   leisure: 7 * 60,
@@ -73,10 +73,10 @@ export function deriveDayIntensity({
   const movingDay = timeline.some((t) => t.transit);
 
   let idx: number;
-  if (timeline.length === 0 || spanMin <= LEVEL_CAP_MIN.relaxed) idx = 0;
-  else if (spanMin <= LEVEL_CAP_MIN.leisure) idx = 1;
-  else if (spanMin <= LEVEL_CAP_MIN.moderate) idx = 2;
-  else if (spanMin <= LEVEL_CAP_MIN.tight) idx = 3;
+  if (timeline.length === 0 || spanMin < LEVEL_CAP_MIN.relaxed) idx = 0;
+  else if (spanMin < LEVEL_CAP_MIN.leisure) idx = 1;
+  else if (spanMin < LEVEL_CAP_MIN.moderate) idx = 2;
+  else if (spanMin < LEVEL_CAP_MIN.tight) idx = 3;
   else idx = 4;
   // 修正：地点特别多升一档；移动日（含大交通抵离/城际）降一档减负
   if (placeCount >= MANY_PLACES) idx = Math.min(idx + 1, INTENSITY_LEVELS.length - 1);

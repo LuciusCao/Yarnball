@@ -60,9 +60,11 @@ apps/server
   scripts/        fake-acp-agent.mjs（可脚本化假 agent）、smoke.ts（端到端冒烟）
 apps/web
   src/features/   map（amapRenderer + maplibreRenderer 双渲染器 + 途经地标记层）、chat、
-                  itinerary（时间轴；stops.ts 多城市 day→stop 推导/环线闭合）、
+                  itinerary（时间轴；stops.ts 多城市 day→stop 推导/环线闭合；
+                  intensity.ts 每日强度标签推导；weather.tsx 天气徽章 + useTripWeather）、
                   candidates（候选池：candidate/locked 状态机；多城市按 cityName 分桶）、
                   settings（设置抽屉：密钥 + agent CLI）、
+                  notes（行程级注意事项面板，7 类结构化增删改）、
                   budget —— 按领域划分
   src/pages/      TripListPage / TripPage / SharePage（/share/:token 只读分享）
   src/components/ui/  Radix + CVA 的 shadcn 风格基础组件
@@ -117,6 +119,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - 服务端 tsconfig 为 `module: NodeNext`，相对 import 必须带 `.js` 后缀（如 `./db/client.js`）
 - 服务端 `strict: true`、`noEmit`（dev 靠 tsx，生产目前也主要靠 tsx/直跑）
 - 前端组件用函数组件 + hooks；状态走 zustand store，服务端数据用 react-query / SSE 订阅
+- 动态接口数据（如天气，会随时间变化、非行程事实）走 react-query 缓存/刷新，**不进 zustand bundle**；bundle 只承载行程数据快照
 - SSE 的 bundle 事件是**服务端全量快照，前端直接替换**（单机数据量小，全量最可靠），不要在前端做增量合并优化
 
 ## Agent 集成关键点（改这块前先读 README 和对应源码）

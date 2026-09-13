@@ -9,6 +9,7 @@ import {
   type TripNoteDto,
 } from "@yarnball/shared";
 import { api as libApi } from "../../lib/api";
+import { useImeEnterGuard } from "../../lib/ime";
 
 /**
  * 行程级注意事项面板（M102，issue #11）：按 7 类（通讯/气候/用电/签证/货币/交通/其他）
@@ -31,6 +32,7 @@ export function TripNotesPanel({
   /** 新增表单：分类 + 内容 */
   const [newCategory, setNewCategory] = useState<TripNoteCategory>("other");
   const [newContent, setNewContent] = useState("");
+  const ime = useImeEnterGuard();
 
   /** 分类 → 注意事项（同类内按 position 再按创建时间，与服务端排序口径一致） */
   const byCategory = new Map<TripNoteCategory, TripNoteDto[]>();
@@ -118,9 +120,10 @@ export function TripNotesPanel({
             maxLength={2000}
             placeholder="添加一条注意事项…"
             onChange={(e) => setNewContent(e.target.value)}
+            {...ime.compositionProps}
             onKeyDown={(e) => {
-              // IME 组合输入中的 Enter 是确认候选，不触发提交（issue #4/#12 同款守卫）
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) void addNote();
+              // IME 组合输入中的 Enter 是确认候选，不触发提交（issue #4 同款三重守卫，lib/ime）
+              if (e.key === "Enter" && !ime.isComposingEnter(e)) void addNote();
             }}
             className="min-w-0 flex-1 rounded-lg border border-slate-300/60 bg-white/70 px-2 py-1 text-xs text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
           />
@@ -154,6 +157,7 @@ function NoteRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note.content);
+  const ime = useImeEnterGuard();
 
   function commit() {
     setEditing(false);
@@ -172,8 +176,9 @@ function NoteRow({
           maxLength={2000}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
+          {...ime.compositionProps}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) e.currentTarget.blur();
+            if (e.key === "Enter" && !ime.isComposingEnter(e)) e.currentTarget.blur();
             if (e.key === "Escape") setEditing(false);
           }}
           className="w-full rounded-lg border border-slate-300/60 bg-white/80 px-2 py-1 text-[11px] text-slate-700 outline-none focus:border-blue-400 disabled:opacity-50"
