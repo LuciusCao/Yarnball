@@ -834,7 +834,7 @@ export const osm: GeoProvider = {
     if (isTransitLikeMode(mode)) {
       // 先试 transitous（MOTIS 2）真实公交换乘：命中返回真实方式（首段 transit leg 映射）/
       // 线路名/分段详情/真实里程；无覆盖（空 itineraries）、超时、错误一律降级到下面的
-      // OSRM 估算（空结果不重试——雷克雅未克这类无覆盖城市每次都会空，重试纯浪费 2-4s）
+      // OSRM 估算（空结果不重试——无覆盖/无解的区域每次都返回空 itineraries，重试纯浪费 2-4s）
       if (date) {
         try {
           const real = await transitousPlan(from, to, date);

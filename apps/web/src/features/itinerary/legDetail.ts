@@ -86,7 +86,8 @@ export function lineSegmentText(seg: TransitSegment): string {
   const parts = [seg.lineName ?? "公交线路"];
   if (seg.boardStop && seg.alightStop) parts.push(`${seg.boardStop} → ${seg.alightStop}`);
   else if (seg.boardStop ?? seg.alightStop) parts.push((seg.boardStop ?? seg.alightStop)!);
-  if (seg.viaStops != null) parts.push(`${seg.viaStops} 站`);
+  // viaStops=0 是直达（上车站→下车站无中间站），不渲染「0 站」
+  if (seg.viaStops != null && seg.viaStops > 0) parts.push(`${seg.viaStops} 站`);
   if (seg.durationS != null) parts.push(formatDuration(seg.durationS));
   return parts.join(" ");
 }
