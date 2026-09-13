@@ -1,11 +1,14 @@
 import { useState } from "react";
-import { formatDayLabel, formatDistance, formatDuration, isTransitLikeMode, TRANSPORT_MODE_LABELS, type PlaceCategory, type TransportMode, type TripBundle, type TransportLegDto } from "@yarnball/shared";
+import { formatDayLabel, formatDistance, formatDuration, isTransitLikeMode, TRANSPORT_MODE_LABELS, type DayWeather, type PlaceCategory, type TransportMode, type TripBundle, type TransportLegDto } from "@yarnball/shared";
 import { toast } from "sonner";
-import { BedDouble, Bus, Car, CarTaxiFront, ChevronDown, Clock, Footprints, Landmark, MapPin, Package, PlaneLanding, PlaneTakeoff, Repeat, Ship, TrainFront, TrainFrontTunnel, TramFront, UtensilsCrossed, Zap, type LucideIcon } from "lucide-react";
+import { BedDouble, Bus, Car, CarTaxiFront, ChevronDown, Clock, Footprints, Landmark, MapPin, Package, PlaneLanding, PlaneTakeoff, Repeat, Ship, TrainFront, TrainFrontTunnel, TramFront, TriangleAlert, UtensilsCrossed, Zap, type LucideIcon } from "lucide-react";
 import { api } from "../../api/client";
 import { api as libApi } from "../../lib/api";
 import { DAY_COLORS } from "../map/MapCanvas";
 import { buildDayTimeline, formatHHMM, type TimelineItem } from "./timeline";
+import { DayWeatherBadge, useTripWeather } from "./weather";
+import { deriveDayIntensity, INTENSITY_META } from "./intensity";
+import { DaySummaryRow } from "./DaySummaryRow";
 import {
   TRANSIT_KIND_META,
   TRANSIT_MODE_META,
@@ -68,6 +71,10 @@ import { getSelectedStays, stayCoveringNight, type HotelStay } from "../candidat
  *   连续分组，组头「📍 途经地 · Dn-Dm」（day→stop 推导见 stops.ts）；
  *   大交通卡按 transitMode 区分图标/徽标（drive=🚗 自驾，卡片带真实里程/时长，数据取该
  *   transit 的 ride leg：legs 中 fromEntryId==toEntryId==entry.id 的那条）
+ * - 天标题栏信息增强（M102，issue #5/#6/#9）：天气徽章（icon+温度区间，点开详情；
+ *   超预报窗显示「暂无预报」，数据走 react-query 不进 bundle）、强度标签
+ *   （轻松/休闲/适中/紧凑/暴走，纯前端推导见 intensity.ts，附一句话说明与 >10h 超标提示）、
+ *   每日概要行（summaryAuto 带「自动」标记，点击编辑走 PATCH /days/:id/summary，清空恢复自动兜底）
  * - readOnly（分享页）：隐藏一切编辑操作
  */
 
@@ -119,6 +126,15 @@ export function ItineraryPanel({
 }: ItineraryPanelProps) {
   const [busy, setBusy] = useState(false);
   const placeById = new Map(bundle.places.map((p) => [p.id, p]));
+
+  /** 天气（M102，#5）：react-query 按 tripId 缓存，面板挂载即拉取/刷新；动态数据不进 bundle。
+      分享页 trip.id 被脱敏置空，useTripWeather 禁用查询，徽章不渲染（分享页不出天气，见 weather.tsx） */
+  const weatherQuery = useTripWeather(tripId);
+  /** dayIndex（1-based）→ 当天天气；查询中/失败/无数据的天拿不到条目，徽章不渲染 */
+  const weatherByDay = new Map<number, DayWeather>();
+  for (const d of weatherQuery.data?.days ?? []) {
+    if (d.dayIndex != null) weatherByDay.set(d.dayIndex, d);
+  }
 
   /** 地点行点击（M83）：选中 + 请求地图聚焦；onFocusPlace 未传（分享页）时仅选中，保持现有行为 */
   const selectAndFocus = (placeId: string) => {
@@ -183,6 +199,19 @@ export function ItineraryPanel({
     setBusy(true);
     try {
       await libApi.updateEntry(entryId, { departTime, arriveTime });
+      onDataChanged();
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 每日概要保存（M102，#9：PATCH /api/days/:id/summary，null=恢复自动兜底）；成功后靠 SSE 全量快照刷新 + 主动拉一次兜底 */
+  async function saveDaySummary(dayId: string, summary: string | null) {
+    setBusy(true);
+    try {
+      await libApi.setDaySummary(dayId, summary);
       onDataChanged();
     } catch (err) {
       toast.error((err as Error).message);
@@ -354,11 +383,14 @@ export function ItineraryPanel({
           endLeg == null && timeline.length > 1 && timeline[timeline.length - 1]?.transit
             ? timeline[timeline.length - 1]
             : null;
+        // 强度标签（M102，#6）：纯前端从时间轴/交通段推导（跨度/地点数/步行/移动日减负）
+        const intensity = deriveDayIntensity({ timeline, dayLegs });
         return (
           <section key={day.id} className="border-b border-slate-900/8 p-3">
             {/* 明细区头部：日期+星期只在这里展示（M75 从上方筛选胶囊撤下）；
-                无 startDate 时徽章退化为「Day N」，日期由右侧灰字 day.date 兜底 */}
-            <header className="mb-2 flex items-center gap-2">
+                无 startDate 时徽章退化为「Day N」，日期由右侧灰字 day.date 兜底；
+                M102：天气徽章（#5，点开详情）+ 强度标签（#6，附一句话说明与超标提示） */}
+            <header className="mb-2 flex flex-wrap items-center gap-2">
               <span
                 className="rounded px-2 py-0.5 text-xs font-semibold text-white"
                 style={{ background: color }}
@@ -371,6 +403,19 @@ export function ItineraryPanel({
                 {timeline.length > 0 &&
                   ` · ${timeline[0].estimated ? "~" : ""}${formatHHMM(timeline[0].startMin)} 起`}
               </span>
+              <DayWeatherBadge dayWeather={weatherByDay.get(day.dayIndex)} />
+              {timeline.length > 0 && (
+                <span
+                  className={`inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium ${INTENSITY_META[intensity.level].chipClass}`}
+                  title={`${intensity.detail}${intensity.warning ? `\n⚠ ${intensity.warning}` : ""}`}
+                >
+                  {intensity.label}
+                  {intensity.warning && <TriangleAlert className="size-3" aria-label={intensity.warning} />}
+                </span>
+              )}
+              {timeline.length > 0 && (
+                <span className="text-[11px] text-slate-400">{intensity.detail}</span>
+              )}
               {!readOnly && entries.length >= 3 && (
                 <button
                   onClick={() => suggestOrder(day.dayIndex)}
@@ -382,6 +427,15 @@ export function ItineraryPanel({
                 </button>
               )}
             </header>
+
+            {/* 每日概要（M102，#9）：summaryAuto=服务端兜底（带「自动」标记）；点击编辑，清空恢复自动 */}
+            <DaySummaryRow
+              key={`${day.id}:${day.summaryAuto}:${day.summary ?? ""}`}
+              day={day}
+              readOnly={readOnly}
+              busy={busy}
+              onSave={(s) => saveDaySummary(day.id, s)}
+            />
 
             {/* 住宿行（M50）：只看当晚覆盖——有则「当晚住宿：X」，无则「当晚未安排住宿」+引导；
                 换酒店日的「离店 旧酒店 / 入住 新酒店」已拆进时间轴首尾的酒店节点行，不在此行合并展示。

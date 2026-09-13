@@ -100,11 +100,33 @@ export const EXPORT_PRINT_CSS = `
   font-weight: 600;
   color: #0369a1;
 }
-/* 每日开头段落：本期放「当晚住宿」一行；后续每日概要/天气/强度（issue #5/#6/#9）落在这里 */
+/* 每日开头段落（M102，issue #5/#6/#9）：当晚住宿 + 每日概要 + 强度 + 天气（逐行一个 div） */
 .ybe-day-intro {
   margin-top: 2px;
   font-size: 12px;
   color: #64748b;
+}
+.ybe-day-intro > div + div {
+  margin-top: 1px;
+}
+/* 注意事项章节（M102，issue #11）：分类小标题 + 列表 */
+.ybe-note-group {
+  margin-top: 6px;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.ybe-note-cat {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #0f172a;
+}
+.ybe-note-group ul {
+  margin: 2px 0 0;
+  padding-left: 18px;
+}
+.ybe-note-group li {
+  font-size: 12.5px;
+  color: #334155;
 }
 .ybe-entry {
   display: flex;

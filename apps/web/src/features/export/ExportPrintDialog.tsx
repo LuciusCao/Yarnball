@@ -4,12 +4,15 @@ import { Printer, X } from "lucide-react";
 import type { TripBundle } from "@yarnball/shared";
 import { ExportPrintSheet } from "./ExportPrintSheet";
 import { EXPORT_BODY_CLASS, EXPORT_OVERLAY_CLASS, EXPORT_PRINT_CSS } from "./printCss";
+import { useTripWeather } from "../itinerary/weather";
 
 /**
  * 导出弹层（M97，issue #7）：全屏打印预览 + 「打印 / 存为 PDF」按钮（window.print，
  * 浏览器打印对话框里选「另存为 PDF」即导出文件，零新增依赖）。
  * 经 createPortal 挂到 body 下：打印时 CSS 按 body 直接子节点隐藏应用本体（#root），
  * 只留本浮层参与打印分页。
+ * M102：打开时复用行程页的天气查询缓存（react-query 同 queryKey，已在行程面板拉过则零额外请求），
+ * 天气随打印稿每日开头段落一并输出。
  */
 export function ExportPrintDialog({
   bundle,
@@ -33,6 +36,9 @@ export function ExportPrintDialog({
       window.removeEventListener("keydown", onKey);
     };
   }, [open, onClose]);
+
+  // 天气（M102，#5）：仅弹层打开时启用；行程面板已拉过则直接命中缓存
+  const weatherQuery = useTripWeather(bundle.trip.id, open);
 
   if (!open) return null;
 
@@ -60,7 +66,7 @@ export function ExportPrintDialog({
           <X className="size-4" />
         </button>
       </div>
-      <ExportPrintSheet bundle={bundle} />
+      <ExportPrintSheet bundle={bundle} weather={weatherQuery.data ?? null} />
     </div>,
     document.body,
   );
