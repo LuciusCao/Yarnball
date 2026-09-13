@@ -11,12 +11,14 @@ import {
   SelectHotelInputSchema,
   TRANSIT_MODES,
   TRANSPORT_MODES,
+  TRIP_NOTE_CATEGORIES,
   UpdatePlaceInputSchema,
 } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
 import { amap, fallbackRoute, getProvider } from "../services/geo.js";
+import { getTripWeather } from "../services/weather.js";
 
 /**
  * MCP 工具面：暴露毛线团（Yarnball）行程数据结构给用户 agent。
@@ -205,6 +207,26 @@ const UnselectHotelInput = z.object({ candidateId: z.string() });
 
 const UnschedulePlaceInput = z.object({ placeId: z.string() });
 
+/** 撰写每日概要（排天时一句话：当日区域/主线 + 主景点）；null = 清除恢复服务端自动兜底 */
+const SetDaySummaryInput = z.object({
+  dayIndex: z.number().int().min(1),
+  summary: z.string().trim().min(1).max(500).nullable(),
+});
+
+const AddTripNoteInput = z.object({
+  category: z.enum(TRIP_NOTE_CATEGORIES),
+  content: z.string().trim().min(1).max(2000),
+});
+
+const UpdateTripNoteInput = z.object({
+  noteId: z.string(),
+  category: z.enum(TRIP_NOTE_CATEGORIES).optional(),
+  content: z.string().trim().min(1).max(2000).optional(),
+  position: z.number().int().min(0).optional(),
+});
+
+const RemoveTripNoteInput = z.object({ noteId: z.string() });
+
 // ---------- 注册 ----------
 
 export interface ToolContext {
@@ -247,6 +269,16 @@ async function assertLegInSessionTrip(ctx: ToolContext, legId: string) {
     .select({ tripId: schema.transportLegs.tripId })
     .from(schema.transportLegs)
     .where(eq(schema.transportLegs.id, legId));
+  if (!row || row.tripId !== ctx.tripId) {
+    throw new ServiceError(403, "无权操作该资源：不属于当前会话的行程");
+  }
+}
+
+async function assertNoteInSessionTrip(ctx: ToolContext, noteId: string) {
+  const [row] = await ctx.db
+    .select({ tripId: schema.tripNotes.tripId })
+    .from(schema.tripNotes)
+    .where(eq(schema.tripNotes.id, noteId));
   if (!row || row.tripId !== ctx.tripId) {
     throw new ServiceError(403, "无权操作该资源：不属于当前会话的行程");
   }
@@ -300,12 +332,15 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
         entries: bundle.entries,
         legs: bundle.legs,
         hotelCandidates: bundle.hotelCandidates,
+        notes: bundle.notes,
         budget: await tripService.getBudgetSummary(tripId),
         userUiContext: uiContext,
         hint:
           `字段含义：entries[].position 为天内顺序（0 起）；dayIndex 从 1 开始。` +
           ` trip.stops 为有序途经地节点（多城市/环线，stops[0] 是主目的地；单城市行程只有 1 个元素）。` +
           ` trip.startDate 为出发日期（YYYY-MM-DD，null=未设置，用户说「X 月 X 日出发」时用 set_start_date 写回）。` +
+          ` days[].summary 为每日概要（一句话：区域/主线 + 主景点）；summaryAuto=true 表示是服务端自动兜底而非人工撰写——排天时应用 set_day_summary 撰写更好的概要覆盖它。` +
+          ` notes[] 为行程级注意事项（category：communication 通讯/climate 气候/power 用电/visa 签证/currency 货币/transport 交通/other 其他），用 add_trip_note 按目的地预填、update_trip_note/remove_trip_note 维护。` +
           ` entries[].entryType：place=地点节点，transit=大交通节点（航班/高铁/城际移动，带 departTime/arriveTime 与 fromName/toName 或 fromPlaceId/toPlaceId 起讫点；transitMode：flight|train|drive|bus，drive=自驾走真实公路路线）。` +
           ` places[].cityName 为归属途经地/城市名（多城市分组依据）。` +
           ` places[].status：candidate=候选池（待用户确认），locked=用户已加入行程（确认要去；agent 可照常补全/修改信息字段，只排 locked 的地点进每日行程）。` +
@@ -853,6 +888,103 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
         const patch: { startDate?: string | null; endDate?: string | null } = { endDate };
         const trip = await tripService.updateTrip(tripId, patch);
         return json({ ok: true, endDate: trip.endDate });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "set_day_summary",
+    {
+      description:
+        "撰写/更新某天的每日概要（一句话：当日区域/主线 + 主景点 3-4 个，如「市区环线：灵隐寺、苏堤春晓、楼外楼」）。**排天时每排完一天就顺手写一句**——未撰写的天前端展示服务端自动兜底概要（summaryAuto=true，纯地点罗列），你写的应该包含区域主线与节奏信息，比兜底好。summary 传 null 清除撰写值、恢复自动兜底。dayIndex 从 1 开始，目标天必须已有条目（先 add_place_to_day / add_transit_entry 建天）。",
+      inputSchema: SetDaySummaryInput.shape,
+    },
+    async ({ dayIndex, summary }) => {
+      ctx.markMcpObserved();
+      try {
+        const [day] = await ctx.db
+          .select()
+          .from(schema.days)
+          .where(and(eq(schema.days.tripId, tripId), eq(schema.days.dayIndex, dayIndex)));
+        if (!day) throw new ServiceError(404, `第 ${dayIndex} 天还不存在（尚无条目），请先排入条目再撰写概要`);
+        const updated = await tripService.updateDaySummary(day.id, summary);
+        return json({ ok: true, day: updated });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "add_trip_note",
+    {
+      description:
+        "添加行程级注意事项（按分类：communication 通讯（电话卡/漫游/网络）/ climate 气候（着装/防晒/雨季）/ power 用电（电压/插座/转换头）/ visa 签证（入境证件/免签）/ currency 货币（汇率/支付/小费）/ transport 交通（驾照/靠左行/交通卡）/ other 其他）。**行程目的地与日期确定后就应主动预填**：按目的地国家/地区与出行月份，把旅客出发前必须知道的事项逐条写入（一条一个要点，content 写具体内容，如「签证：中国公民需提前申请电子签 eVisa，约 3 个工作日出签」）。信息可能过时要在 content 里注明并提醒用户核实。同分类可多条；查看现有注意事项用 get_trip_context 的 notes 字段。",
+      inputSchema: AddTripNoteInput.shape,
+    },
+    async (input) => {
+      ctx.markMcpObserved();
+      try {
+        const note = await tripService.createTripNote(tripId, input);
+        return json({ ok: true, note });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "update_trip_note",
+    {
+      description:
+        "更新某条行程级注意事项的分类/内容/排序（noteId 从 get_trip_context 的 notes[] 拿）。政策/信息核实后有变化时用，只传要改的字段。",
+      inputSchema: UpdateTripNoteInput.shape,
+    },
+    async ({ noteId, ...patch }) => {
+      ctx.markMcpObserved();
+      try {
+        await assertNoteInSessionTrip(ctx, noteId);
+        const note = await tripService.updateTripNote(noteId, patch);
+        return json({ ok: true, note });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "remove_trip_note",
+    {
+      description: "删除某条行程级注意事项（noteId 从 get_trip_context 的 notes[] 拿）。过时/写错的注意事项用它清理。",
+      inputSchema: RemoveTripNoteInput.shape,
+    },
+    async ({ noteId }) => {
+      ctx.markMcpObserved();
+      try {
+        await assertNoteInSessionTrip(ctx, noteId);
+        await tripService.removeTripNote(noteId);
+        return json({ ok: true });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_weather",
+    {
+      description:
+        "按天查行程天气预报（Open-Meteo）：返回行程日期范围内每天的温度区间（°C）、晴雨标签、降水量（mm）、最大风速（km/h），以及预报锚点（当天活动重心城市）。仅未来约 16 天可信——available=false 的天看 reason（超出 16 天预报期/日期已过/服务暂不可用），不要给这些天编造天气。需要 startDate 才能按天对齐（未设置时先 set_start_date 或提示用户）。用户问「那几天天气怎么样」「要不要带伞/厚衣服」时调这个；预填气候类注意事项（add_trip_note climate）前也可参考。",
+      inputSchema: {},
+    },
+    async () => {
+      ctx.markMcpObserved();
+      try {
+        const bundle = await tripService.getBundle(tripId);
+        const weather = await getTripWeather(bundle);
+        return json({ ok: true, weather });
       } catch (err) {
         return toolError(err);
       }

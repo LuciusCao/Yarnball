@@ -112,6 +112,34 @@ export type BookingStatus = (typeof BOOKING_STATUSES)[number];
 export const GEO_PROVIDERS = ["amap", "osm"] as const;
 export type GeoProviderName = (typeof GEO_PROVIDERS)[number];
 
+/**
+ * 行程级注意事项分类（trip_notes.category）：agent 按目的地/出行日期预填与更新。
+ * communication=通讯（电话卡/漫游/网络）、climate=气候（着装/防晒/雨季）、power=用电（电压/插座/转换头）、
+ * visa=签证（入境证件/免签政策）、currency=货币（汇率/支付习惯/小费）、transport=交通（驾照/靠左行/交通卡）、
+ * other=其他（安全/习俗/健康等兜底）。
+ */
+export const TRIP_NOTE_CATEGORIES = [
+  "communication",
+  "climate",
+  "power",
+  "visa",
+  "currency",
+  "transport",
+  "other",
+] as const;
+export type TripNoteCategory = (typeof TRIP_NOTE_CATEGORIES)[number];
+
+/** 注意事项分类中文文案（单一定义点，三端共用） */
+export const TRIP_NOTE_CATEGORY_LABELS: Record<TripNoteCategory, string> = {
+  communication: "通讯",
+  climate: "气候",
+  power: "用电",
+  visa: "签证",
+  currency: "货币",
+  transport: "交通",
+  other: "其他",
+};
+
 export const CHAT_SESSION_STATUSES = [
   "starting",
   "idle",
@@ -374,8 +402,28 @@ export const DayDtoSchema = z.object({
   tripId: z.string(),
   dayIndex: z.number(),
   date: z.string().nullable(),
+  /**
+   * 每日概要（一句话：当日区域/主线 + 主景点）。持久化值为 agent（set_day_summary）或用户撰写；
+   * 未撰写时服务端在 bundle 里自动生成兜底（summaryAuto=true，不落库，随行程变化实时重算）。
+   */
+  summary: z.string().nullable(),
+  /** true = summary 为服务端自动兜底生成（非人工/agent 撰写），前端可据此区分展示 */
+  summaryAuto: z.boolean(),
 });
 export type DayDto = z.infer<typeof DayDtoSchema>;
+
+/** 行程级注意事项（trip_notes）：按分类预填的目的地出行提示（签证/货币/用电等，见 TRIP_NOTE_CATEGORIES） */
+export const TripNoteDtoSchema = z.object({
+  id: z.string(),
+  tripId: z.string(),
+  category: z.enum(TRIP_NOTE_CATEGORIES),
+  content: z.string(),
+  /** 展示顺序（同类内按 position 再按创建时间） */
+  position: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type TripNoteDto = z.infer<typeof TripNoteDtoSchema>;
 
 /** 行程全量快照：前端一次拉齐 + SSE 增量 upsert */
 export const TripBundleSchema = z.object({
@@ -385,6 +433,8 @@ export const TripBundleSchema = z.object({
   entries: z.array(EntryDtoSchema),
   legs: z.array(TransportLegDtoSchema),
   hotelCandidates: z.array(HotelCandidateDtoSchema),
+  /** 行程级注意事项（按分类，见 TRIP_NOTE_CATEGORIES） */
+  notes: z.array(TripNoteDtoSchema),
 });
 export type TripBundle = z.infer<typeof TripBundleSchema>;
 
@@ -414,11 +464,14 @@ export type CreateTripInput = z.infer<typeof CreateTripInputSchema>;
 
 /**
  * 更新行程（PATCH /api/trips/:tripId 与 MCP set_start_date / set_end_date）。
+ * title 行程标题（约束与 CreateTripInputSchema.title 一致；M101 起收敛进通用更新端点，
+ * 独立 PATCH /trips/:tripId/title 保留兼容）。
  * startDate 出发日期 / endDate 结束日期：YYYY-MM-DD；传 null 清除。
  * 两者同时非空且区间为正时，行程天数按日期区间计（天数口径、select_hotel 上界、聚类分天都依赖它）；
  * 只设一个时天数回退已建天兜底。清掉 startDate 天标签退化为「Day N」（见 formatDayLabel）。
  */
 export const UpdateTripInputSchema = z.object({
+  title: z.string().trim().min(1).max(120).optional(),
   startDate: CalendarDateSchema.nullable().optional(),
   endDate: CalendarDateSchema.nullable().optional(),
 });
@@ -570,6 +623,68 @@ export const ReorderDayInputSchema = z.object({
   entryIds: z.array(z.string()).min(1),
 });
 export type ReorderDayInput = z.infer<typeof ReorderDayInputSchema>;
+
+// ---------- 每日概要（PATCH /api/days/:dayId/summary 与 MCP set_day_summary） ----------
+
+/** 撰写/更新每日概要；传 null = 清除撰写值，恢复服务端自动兜底（summaryAuto） */
+export const UpdateDaySummaryInputSchema = z.object({
+  summary: z.string().trim().min(1).max(500).nullable(),
+});
+export type UpdateDaySummaryInput = z.infer<typeof UpdateDaySummaryInputSchema>;
+
+// ---------- 行程级注意事项（REST CRUD 与 MCP add/update/remove_trip_note） ----------
+
+export const CreateTripNoteInputSchema = z.object({
+  category: z.enum(TRIP_NOTE_CATEGORIES),
+  content: z.string().trim().min(1).max(2000),
+  /** 展示顺序；缺省排到末尾 */
+  position: z.number().int().min(0).optional(),
+});
+export type CreateTripNoteInput = z.infer<typeof CreateTripNoteInputSchema>;
+
+export const UpdateTripNoteInputSchema = z.object({
+  category: z.enum(TRIP_NOTE_CATEGORIES).optional(),
+  content: z.string().trim().min(1).max(2000).optional(),
+  position: z.number().int().min(0).optional(),
+});
+export type UpdateTripNoteInput = z.infer<typeof UpdateTripNoteInputSchema>;
+
+// ---------- 天气（GET /api/trips/:tripId/weather 与 MCP get_weather） ----------
+
+/** 单日天气预报（Open-Meteo daily）：温度区间（°C）、降水（mm）、最大风速（km/h）、WMO 天气码与中文标签 */
+export const WeatherForecastSchema = z.object({
+  tempMinC: z.number(),
+  tempMaxC: z.number(),
+  precipitationMm: z.number(),
+  windMaxKmh: z.number(),
+  /** WMO Weather interpretation code（Open-Meteo weather_code 原值） */
+  weatherCode: z.number(),
+  /** 中文标签（如「晴」「多云」「小雨」），由 weatherCode 映射 */
+  weatherLabel: z.string(),
+});
+export type WeatherForecast = z.infer<typeof WeatherForecastSchema>;
+
+/** 某行程日的天气：available=false 时 reason 说明原因（超出 16 天预报期 / 日期已过 / 上游无数据） */
+export const DayWeatherSchema = z.object({
+  date: CalendarDateSchema,
+  /** 对应行程第几天（1-based）；日期不在已建天范围内时为 null */
+  dayIndex: z.number().nullable(),
+  /** 预报坐标取自哪个途经地/当日活动重心（展示用） */
+  anchorName: z.string().nullable(),
+  available: z.boolean(),
+  reason: z.string().optional(),
+  forecast: WeatherForecastSchema.nullable(),
+});
+export type DayWeather = z.infer<typeof DayWeatherSchema>;
+
+/** 行程天气预报（GET /api/trips/:tripId/weather 响应）：按天一条，仅未来约 16 天可信 */
+export const TripWeatherSchema = z.object({
+  generatedAt: z.string(),
+  days: z.array(DayWeatherSchema),
+  /** 行程未设置出发日期等场景的整体说明 */
+  note: z.string().optional(),
+});
+export type TripWeather = z.infer<typeof TripWeatherSchema>;
 
 // ---------- 区域聚类（suggest_day_clusters / GET /api/trips/:tripId/suggest-clusters） ----------
 

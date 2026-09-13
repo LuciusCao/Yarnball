@@ -26,6 +26,11 @@ Hono Server (apps/server, :18788)               │
 - **顺路引擎**（`src/services/tripService.ts`）：provider 距离矩阵 + 最近邻 + 2-opt 重排；交通段自动计算（基础分档 <2km 步行 / 2-6km 公交 / >6km 驾车 + 两条场景化启发式：端点含机场的长距段判 train 机场线、路由里程÷直线 ≥1.8 的跨水段判 ferry 轮渡；方式枚举 9 值 walk/taxi/drive/transit/bus/metro/light_rail/train/ferry，见 `packages/shared/src/domain.ts` TRANSPORT_MODES；地图上渡轮画水蓝点划水上航线、轨道类画深灰划线铁路样式）
 - **多城市模型**（M37 地基 + M39 界面层）：`trips.stops` 为有序途经地节点（stops[0] = 主目的地，`destinationCity`/`location` 是其兼容镜像）；`places.cityName` 为归属途经地（建点时自动填充）；`entries.transitMode`（flight/train/drive/bus）区分大交通方式，drive=自驾城际段走真实公路路由拿里程/时长。环线闭合不落库——末段 transit 讫点 == stops[0] 即闭合。前端：行程面板按 stop 分组 + 🚗 自驾卡、地图途经地标记层、候选池按城市分桶（`apps/web/src/features/itinerary/stops.ts` 是 day→stop / 环线闭合的推导单点）
 - **防编造校验**：agent 建点时坐标必须落在途经地附近——单城市行程退化为 stops[0] 单中心（国内 150km / 海外 300km），多城市行程为距任一 stop.center ≤200km（osm 保持 300km）；越界拒绝并引导先 `search_poi`
+- **行程信息增强**（M101，issue #5/#9/#11）：
+  - 天气（#5）：`GET /api/trips/:tripId/weather`（MCP `get_weather`），`src/services/weather.ts` 走 Open-Meteo（零 key 全球覆盖，走 `overseasFetch` 代理约定），按 startDate+dayIndex 对齐真实日期逐天预报（温度区间/晴雨/降水/风速）；仅未来 16 天可信，超窗日期显式 `available=false + reason`；内存短缓存 30min。国内行程 GCJ-02 坐标直接查（偏移 ≪ 11km 预报网格）
+  - 每日概要（#9）：`days.summary` 列 + `PATCH /api/days/:dayId/summary` + MCP `set_day_summary`；未撰写时 bundle 层自动生成兜底（`summaryAuto=true`，当日区域/多数派城市 + 主景点 3-4 个，不落库实时重算）
+  - 行程级注意事项（#11）：`trip_notes` 表（独立表不挂 trips json 列——逐条 CRUD 有稳定 id，与 places/entries 同构），分类 7 值 communication/climate/power/visa/currency/transport/other（`TRIP_NOTE_CATEGORIES`），REST CRUD `/api/trips/:tripId/notes` + `/api/notes/:noteId` + MCP `add_trip_note/update_trip_note/remove_trip_note`，随 bundle 全量下发
+  - title 收敛：`UpdateTripInputSchema` 加 `title`（通用 PATCH 端点），独立 `PATCH /trips/:tripId/title` 保留兼容（前端 renameTrip 未动），内部同走 `tripService.updateTrip`
 
 ## 代码组织
 
@@ -33,16 +38,20 @@ Hono Server (apps/server, :18788)               │
 apps/server
   src/acp/        ACP 会话管理（sessionManager.ts ~750 行；permissions.ts 四层权限策略；
                   prompts.ts bootstrap prompt；terminal 协议支持）
-  src/mcp/        MCP 工具面：tools.ts（26 个工具 + scoped token 鉴权，含 lock_place/unlock_place、
+  src/mcp/        MCP 工具面：tools.ts（31 个工具 + scoped token 鉴权，含 lock_place/unlock_place、
                   add_transit_entry/update_entry（大交通 entry，transitMode=flight/train/drive/bus，
                   drive 走真实路由）、suggest_day_clusters（区域聚类分天建议）、
                   set_start_date/set_end_date（出发/结束日期，对话中说「9/23 出发」「玩到 9/28」时写回
                   trip.startDate/endDate）、set_leg_mode（手动覆盖市内交通段方式，9 值含 ferry/metro/light_rail/train/bus 子类型，modeOverride）、
                   recommend_hotel_area（多信号加权推荐住宿区域：每日首末锚点+大交通到发节点加权，
                   segments 按未被酒店覆盖的天段/途经地分段给建议）、unselect_hotel（取消单个
-                  已选定酒店）、unschedule_place（按 placeId 撤销其全部日程并退回候选））、
+                  已选定酒店）、unschedule_place（按 placeId 撤销其全部日程并退回候选）、
+                  set_day_summary（排天时撰写每日概要）、add_trip_note/update_trip_note/remove_trip_note
+                  （行程级注意事项，按目的地/日期预填与维护）、get_weather（按天天气预报））、
                   app.ts（HTTP 端点）
-  src/services/   tripService.ts（编排/顺路算法核心）、geo.ts（provider 抽象）、settings.ts（全局设置：
+  src/services/   tripService.ts（编排/顺路算法核心；含每日概要兜底生成、trip_notes CRUD）、
+                  geo.ts（provider 抽象；overseasFetch 为全部零 key 海外上游的统一出口）、
+                  weather.ts（Open-Meteo 按天预报，内存短缓存 30min）、settings.ts（全局设置：
                   高德 key 的 DB 覆盖 + env 兜底，/api/settings 响应掩码 amapServerKey）、
                   routing.ts、mappers.ts（DB 行 → DTO）、chatStore.ts
   src/routes/     api.ts（REST + SSE 全部端点）
@@ -114,7 +123,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 
 - **MCP 鉴权**：每个 chat session 一个 token（随机 32 字节，DB 存 sha256）；`/mcp` 每请求从 `Authorization: Bearer` + `x-yarnball-session-id` header 重解析并绑定到该会话的 trip —— agent 永远只能操作当前会话的行程（`src/mcp/tools.ts`）
 - **ACP 权限四层策略**（`src/acp/permissions.ts`）：Yarnball MCP 工具自动批准 → 只读 kind 自动批准 → 会话级 allow-all → 停靠到 UI 等用户 120s
-- **bootstrap prompt**（`src/acp/prompts.ts`）钉死「坐标必须来自 search_poi」纪律 + 海外英文搜索提示 + 多城市纪律（search_poi 传 city、add_place 带 cityName、城际移动走 add_transit_entry、自驾段 transitMode=drive）；恢复会话走 `session/new` + 压缩转录回放（ACP `session/load` 待 SDK 封装）
+- **bootstrap prompt**（`src/acp/prompts.ts`）钉死「坐标必须来自 search_poi」纪律 + 海外英文搜索提示 + 多城市纪律（search_poi 传 city、add_place 带 cityName、城际移动走 add_transit_entry、自驾段 transitMode=drive）+ 行程信息引导（目的地/日期确定后 add_trip_note 预填注意事项、排天时 set_day_summary 写每日概要）；恢复会话走 `session/new` + 压缩转录回放（ACP `session/load` 待 SDK 封装）
 - **大交通与预订状态**：`add_transit_entry` / `update_entry` 管理大交通 entry（🛬抵达 / 🛫离开 / 🚄城市间，departTime/arriveTime 是排程硬锚点）；地点带 `openingHours`（营业时间，排期完全无交叠时前端告警）与 `bookingStatus`（无需预订/待预订/已预订，UI 可点选流转）；`suggest_day_clusters`（对应 REST `GET /api/trips/:id/suggest-clusters`）多城市先按途经地分组、组内按地理位置聚类（k 按点数自适应 1-4，不被已建天数截断），同城天优先分配给出分天建议
 - 验证 agent 链路改动**不依赖真 agent**：用 `pnpm smoke`（fake-acp-agent.mjs 是可脚本化的假 ACP agent）
 

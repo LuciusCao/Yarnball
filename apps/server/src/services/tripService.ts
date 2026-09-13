@@ -13,6 +13,7 @@ import type {
   CreateHotelCandidateInput,
   CreatePlaceInput,
   CreateTripInput,
+  CreateTripNoteInput,
   DayCluster,
   GeoProviderName,
   HotelAreaRecommendation,
@@ -25,10 +26,12 @@ import type {
   TransitSegment,
   TransportMode,
   TripBundle,
+  TripNoteDto,
   TripStop,
   UpdateEntryInput,
   UpdatePlaceInput,
   UpdateTripInput,
+  UpdateTripNoteInput,
 } from "@yarnball/shared";
 import { TRIPS_CHANNEL, tripChannel, type EventBus } from "../events.js";
 import type { Db } from "../db/client.js";
@@ -40,6 +43,7 @@ import {
   toLegDto,
   toPlaceDto,
   toTripDto,
+  toTripNoteDto,
 } from "./mappers.js";
 import { amap, currencyForCountry, drivingMatrixBatched, fallbackRoute, ferryRouteEstimate, getProvider, haversineM, osm } from "./geo.js";
 import { insertionIncrements, kMedoids, optimizeLoopOrder, optimizeOrder, optimizePathOrder, orderTotalDuration } from "./routing.js";
@@ -429,6 +433,7 @@ export class TripService {
 
   /**
    * 更新行程字段（PATCH /api/trips/:tripId 与 MCP set_start_date / set_end_date）。
+   * title 行程标题（M101 收敛进通用更新端点；独立 PATCH /trips/:tripId/title 保留兼容）。
    * startDate（出发日期）/ endDate（结束日期）：null = 清除。天标签由 startDate 驱动（清除退化为「Day N」）。
    * 已知行为（低成本方案，刻意不做联动校验）：startDate 与 endDate 互不联动——不强制 endDate ≥ startDate；
    * 天数口径（getTripDayCount / getBudgetSummary / selectHotel 上界）要求两者同时非空且区间为正才按日期区间计，
@@ -437,6 +442,7 @@ export class TripService {
   async updateTrip(tripId: string, input: UpdateTripInput) {
     await this.getTrip(tripId);
     const patch: Partial<typeof schema.trips.$inferInsert> = {};
+    if (input.title !== undefined) patch.title = input.title;
     if (input.startDate !== undefined) patch.startDate = input.startDate ?? null;
     if (input.endDate !== undefined) patch.endDate = input.endDate ?? null;
     if (Object.keys(patch).length > 0) {
@@ -469,21 +475,60 @@ export class TripService {
 
   async getBundle(tripId: string): Promise<TripBundle> {
     const trip = await this.getTrip(tripId);
-    const [days, places, entries, legs, hotels] = await Promise.all([
+    const [days, places, entries, legs, hotels, notes] = await Promise.all([
       this.db.select().from(schema.days).where(eq(schema.days.tripId, tripId)).orderBy(asc(schema.days.dayIndex)),
       this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId)),
       this.db.select().from(schema.entries).where(eq(schema.entries.tripId, tripId)).orderBy(asc(schema.entries.position)),
       this.db.select().from(schema.transportLegs).where(eq(schema.transportLegs.tripId, tripId)),
       this.db.select().from(schema.hotelCandidates).where(eq(schema.hotelCandidates.tripId, tripId)),
+      this.db.select().from(schema.tripNotes).where(eq(schema.tripNotes.tripId, tripId)).orderBy(asc(schema.tripNotes.position), asc(schema.tripNotes.createdAt)),
     ]);
+    const dayDtos = days.map((dayRow) => {
+      const dto = toDayDto(dayRow);
+      // 未撰写概要时自动生成兜底（不落库，随 bundle 实时重算）：当日区域/主线 + 主景点一句话
+      if (dto.summary == null) {
+        const auto = this.autoDaySummary(dayRow, entries, places);
+        if (auto) return { ...dto, summary: auto, summaryAuto: true };
+      }
+      return dto;
+    });
     return {
       trip: toTripDto(trip),
-      days: days.map(toDayDto),
+      days: dayDtos,
       places: places.map(toPlaceDto),
       entries: entries.map(toEntryDto),
       legs: legs.map(toLegDto),
       hotelCandidates: hotels.map(toHotelDto),
+      notes: notes.map(toTripNoteDto),
     };
+  }
+
+  /**
+   * 每日概要兜底生成（agent/用户未撰写时）：「城市/区域：主景点 1、2、3、4」。
+   * 只取 place entry（大交通节点不进概要）；景点/体验类优先，其余按排程顺序补足至 4 个；
+   * 区域取当日地点的多数派归属城市（cityName）。当天无排程地点时返回 null（前端不显示概要）。
+   */
+  private autoDaySummary(
+    day: typeof schema.days.$inferSelect,
+    allEntries: (typeof schema.entries.$inferSelect)[],
+    allPlaces: (typeof schema.places.$inferSelect)[],
+  ): string | null {
+    const placeById = new Map(allPlaces.map((p) => [p.id, p]));
+    const dayPlaces = allEntries
+      .filter((e) => e.dayId === day.id && e.entryType === "place" && e.placeId)
+      .sort((a, b) => a.position - b.position)
+      .map((e) => placeById.get(e.placeId!))
+      .filter((p): p is NonNullable<typeof p> => p != null);
+    if (dayPlaces.length === 0) return null;
+    const mains = dayPlaces.filter((p) => p.category === "attraction" || p.category === "activity");
+    const ordered = [...mains, ...dayPlaces.filter((p) => !mains.includes(p))];
+    const names = [...new Set(ordered.map((p) => p.name))].slice(0, 4);
+    const counts = new Map<string, number>();
+    for (const p of dayPlaces) {
+      if (p.cityName) counts.set(p.cityName, (counts.get(p.cityName) ?? 0) + 1);
+    }
+    const area = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    return `${area ? `${area}：` : ""}${names.join("、")}`;
   }
 
   /** 变更后广播全量 bundle（单机行程数据量小，全量最简单可靠） */
@@ -783,6 +828,63 @@ export class TripService {
       .from(schema.days)
       .where(and(eq(schema.days.tripId, tripId), eq(schema.days.dayIndex, dayIndex)));
     return race;
+  }
+
+  /** 撰写/更新每日概要（REST 与 MCP set_day_summary 共用）；null = 清除撰写值，恢复 bundle 层自动兜底 */
+  async updateDaySummary(dayId: string, summary: string | null) {
+    const [day] = await this.db.select().from(schema.days).where(eq(schema.days.id, dayId));
+    if (!day) throw new ServiceError(404, `day ${dayId} not found`);
+    await this.db.update(schema.days).set({ summary }).where(eq(schema.days.id, dayId));
+    await this.touchTrip(day.tripId);
+    await this.publishBundle(day.tripId);
+    const [updated] = await this.db.select().from(schema.days).where(eq(schema.days.id, dayId));
+    return toDayDto(updated);
+  }
+
+  // ---------- 行程级注意事项（trip_notes） ----------
+
+  async createTripNote(tripId: string, input: CreateTripNoteInput): Promise<TripNoteDto> {
+    await this.getTrip(tripId);
+    let position = input.position;
+    if (position == null) {
+      const rows = await this.db
+        .select({ position: schema.tripNotes.position })
+        .from(schema.tripNotes)
+        .where(eq(schema.tripNotes.tripId, tripId));
+      position = rows.reduce((m, r) => Math.max(m, r.position), -1) + 1;
+    }
+    const [row] = await this.db
+      .insert(schema.tripNotes)
+      .values({ id: uuid(), tripId, category: input.category, content: input.content, position })
+      .returning();
+    await this.touchTrip(tripId);
+    await this.publishBundle(tripId);
+    return toTripNoteDto(row);
+  }
+
+  async updateTripNote(noteId: string, input: UpdateTripNoteInput): Promise<TripNoteDto> {
+    const [existing] = await this.db.select().from(schema.tripNotes).where(eq(schema.tripNotes.id, noteId));
+    if (!existing) throw new ServiceError(404, `note ${noteId} not found`);
+    const patch: Partial<typeof schema.tripNotes.$inferInsert> = {};
+    if (input.category !== undefined) patch.category = input.category;
+    if (input.content !== undefined) patch.content = input.content;
+    if (input.position !== undefined) patch.position = input.position;
+    if (Object.keys(patch).length > 0) {
+      patch.updatedAt = new Date();
+      await this.db.update(schema.tripNotes).set(patch).where(eq(schema.tripNotes.id, noteId));
+      await this.touchTrip(existing.tripId);
+      await this.publishBundle(existing.tripId);
+    }
+    const [updated] = await this.db.select().from(schema.tripNotes).where(eq(schema.tripNotes.id, noteId));
+    return toTripNoteDto(updated);
+  }
+
+  async removeTripNote(noteId: string) {
+    const [existing] = await this.db.select().from(schema.tripNotes).where(eq(schema.tripNotes.id, noteId));
+    if (!existing) throw new ServiceError(404, `note ${noteId} not found`);
+    await this.db.delete(schema.tripNotes).where(eq(schema.tripNotes.id, noteId));
+    await this.touchTrip(existing.tripId);
+    await this.publishBundle(existing.tripId);
   }
 
   /**

@@ -10,6 +10,7 @@ import {
   CreateHotelCandidateInputSchema,
   CreatePlaceInputSchema,
   CreateTripInputSchema,
+  CreateTripNoteInputSchema,
   POSSIBLE_DUPLICATE_CODE,
   ReorderDayInputSchema,
   SelectHotelInputSchema,
@@ -17,10 +18,12 @@ import {
   SetPlaceStatusInputSchema,
   UnselectHotelInputSchema,
   UpdateAgentInputSchema,
+  UpdateDaySummaryInputSchema,
   UpdateEntryInputSchema,
   UpdatePlaceInputSchema,
   UpdateSettingsInputSchema,
   UpdateTripInputSchema,
+  UpdateTripNoteInputSchema,
   type AgentAvailability,
   type SharePayload,
   type TripBundle,
@@ -31,8 +34,9 @@ import { chatChannel, tripChannel, TRIPS_CHANNEL, type EventBus } from "../event
 import type { AcpSessionManager } from "../acp/sessionManager.js";
 import { PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
 import { getProvider } from "../services/geo.js";
+import { getTripWeather } from "../services/weather.js";
 import { amapConfigured, getSettings, updateSettings } from "../services/settings.js";
-import { toAgentDto, toChatSessionDto, toTripDto } from "../services/mappers.js";
+import { toAgentDto, toChatSessionDto } from "../services/mappers.js";
 import { listChatMessages } from "../services/chatStore.js";
 import { findExecutable } from "../services/processEnv.js";
 
@@ -80,6 +84,7 @@ function aliasShareBundleIds(bundle: TripBundle, token: string): SharePayload["b
       tripId: alias(h.tripId),
       placeId: alias(h.placeId),
     })),
+    notes: bundle.notes.map((n) => ({ ...n, id: alias(n.id), tripId: alias(n.tripId) })),
   };
 }
 
@@ -165,7 +170,7 @@ export function createApi(
 
   api.get("/trips/:tripId", async (c) => c.json({ bundle: await tripService.getBundle(c.req.param("tripId")) }));
 
-  /** 更新行程字段：当前仅 startDate（出发日期，null = 清除，天标签退化为 Day N） */
+  /** 更新行程字段：title 标题 / startDate 出发日期 / endDate 结束日期（日期传 null = 清除，天标签退化为 Day N） */
   api.patch("/trips/:tripId", async (c) => {
     const input = UpdateTripInputSchema.parse(await c.req.json());
     return c.json({ trip: await tripService.updateTrip(c.req.param("tripId"), input) });
@@ -173,24 +178,12 @@ export function createApi(
 
   /**
    * 修改行程标题（issue #12，PATCH /api/trips/:tripId/title）。
-   * 本应并入上面 PATCH /trips/:tripId 的 UpdateTripInputSchema 加 title 字段，但 shared 包
-   * 被并行 mission 占用，这里用独立小端点 + 路由内联 zod（约束对齐 CreateTripInputSchema.title：
-   * trim 后 1-120 字）；后续 shared 空闲时可收敛进 UpdateTripInputSchema。
-   * tripService 同样不在改动范围，故落库与 SSE bundle 全量推送在路由内直接完成
-   * （等价于 tripService.updateTrip 的私有 publishBundle 路径）。
+   * M101 起 title 已收敛进 UpdateTripInputSchema（上面的通用 PATCH 端点）；
+   * 本端点保留兼容（前端 renameTrip 仍在用），内部委托同一条 updateTrip 路径，行为完全一致。
    */
   api.patch("/trips/:tripId/title", async (c) => {
-    const tripId = c.req.param("tripId");
     const { title } = z.object({ title: z.string().trim().min(1).max(120) }).parse(await c.req.json());
-    await tripService.getTrip(tripId); // 不存在抛 404
-    await db
-      .update(schema.trips)
-      .set({ title, updatedAt: new Date() })
-      .where(eq(schema.trips.id, tripId));
-    // SSE 全量快照推送：打开的行程页（tripChannel 订阅）实时刷新标题；
-    // 分享页无 SSE 订阅（只一次性 fetch），新标题在下次加载分享页时生效
-    bus.publish(tripChannel(tripId), { type: "bundle", bundle: await tripService.getBundle(tripId) });
-    return c.json({ trip: toTripDto(await tripService.getTrip(tripId)) });
+    return c.json({ trip: await tripService.updateTrip(c.req.param("tripId"), { title }) });
   });
 
   api.delete("/trips/:tripId", async (c) => {
@@ -293,6 +286,44 @@ export function createApi(
     const input = ReorderDayInputSchema.parse(await c.req.json());
     await tripService.reorderDay(c.req.param("tripId"), Number(c.req.param("dayIndex")), input.entryIds);
     return c.json({ ok: true });
+  });
+
+  // ---------- 每日概要（issue #9） ----------
+
+  /** 撰写/更新每日概要（summary 传 null = 清除撰写值，恢复服务端自动兜底） */
+  api.patch("/days/:dayId/summary", async (c) => {
+    const input = UpdateDaySummaryInputSchema.parse(await c.req.json());
+    return c.json({ day: await tripService.updateDaySummary(c.req.param("dayId"), input.summary) });
+  });
+
+  // ---------- 行程级注意事项（issue #11） ----------
+
+  api.post("/trips/:tripId/notes", async (c) => {
+    const input = CreateTripNoteInputSchema.parse(await c.req.json());
+    return c.json({ note: await tripService.createTripNote(c.req.param("tripId"), input) }, 201);
+  });
+
+  api.patch("/notes/:noteId", async (c) => {
+    const input = UpdateTripNoteInputSchema.parse(await c.req.json());
+    return c.json({ note: await tripService.updateTripNote(c.req.param("noteId"), input) });
+  });
+
+  api.delete("/notes/:noteId", async (c) => {
+    await tripService.removeTripNote(c.req.param("noteId"));
+    return c.json({ ok: true });
+  });
+
+  // ---------- 天气（issue #5） ----------
+
+  /** 按天天气预报（Open-Meteo，零 key）：仅未来约 16 天可信，超窗日期 available=false + reason */
+  api.get("/trips/:tripId/weather", async (c) => {
+    const bundle = await tripService.getBundle(c.req.param("tripId"));
+    try {
+      return c.json({ weather: await getTripWeather(bundle) });
+    } catch (err) {
+      // 上游整体故障不拖垮行程页：502 + 明确文案，前端按「天气暂不可用」展示
+      return c.json({ error: `天气服务暂不可用：${(err as Error).message}` }, 502);
+    }
   });
 
   // ---------- 交通段 ----------

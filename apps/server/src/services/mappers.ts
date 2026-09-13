@@ -7,6 +7,7 @@ import type {
   PlaceDto,
   TransportLegDto,
   TripDto,
+  TripNoteDto,
   TripStop,
 } from "@yarnball/shared";
 import type * as t from "../db/schema.js";
@@ -19,6 +20,7 @@ type LegRow = typeof t.transportLegs.$inferSelect;
 type HotelRow = typeof t.hotelCandidates.$inferSelect;
 type ChatSessionRow = typeof t.chatSessions.$inferSelect;
 type AgentRow = typeof t.agentRegistry.$inferSelect;
+type TripNoteRow = typeof t.tripNotes.$inferSelect;
 
 const iso = (d: Date | string): string =>
   d instanceof Date ? d.toISOString() : new Date(d).toISOString();
@@ -87,7 +89,27 @@ export function toPlaceDto(row: PlaceRow): PlaceDto {
 }
 
 export function toDayDto(row: DayRow): DayDto {
-  return { id: row.id, tripId: row.tripId, dayIndex: row.dayIndex, date: row.date };
+  return {
+    id: row.id,
+    tripId: row.tripId,
+    dayIndex: row.dayIndex,
+    date: row.date,
+    summary: row.summary,
+    // 兜底生成由 getBundle 负责：row.summary 为 null 时现场重算并置 summaryAuto=true
+    summaryAuto: false,
+  };
+}
+
+export function toTripNoteDto(row: TripNoteRow): TripNoteDto {
+  return {
+    id: row.id,
+    tripId: row.tripId,
+    category: row.category as TripNoteDto["category"],
+    content: row.content,
+    position: row.position,
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt),
+  };
 }
 
 export function toEntryDto(row: EntryRow): EntryDto {
