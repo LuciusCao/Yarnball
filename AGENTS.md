@@ -84,6 +84,7 @@ just up / just down   # 后台起/停 server + web；日志在 .logs/
 just status / just logs [svc]
 just tauri-dev        # Tauri 桌面壳 dev（前置 just up 已跑）
 just package          # Tauri 打 dmg（含签名校验），产物复制到仓库根 dist/（深路径 apps/tauri/src-tauri/target/release/bundle/dmg/）
+just smoke-sidecar    # sidecar 启动烟：从 dmg 拷出 .app 注入壳同款 env 直跑 sidecar，断言 /healthz ok（M106，CI release 同款）
 just icon             # 从 apps/web/public/icon-1024.png 重生成图标种子
 
 # 首次启动
@@ -109,15 +110,31 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 
 # 发布：没有 pnpm 命令，push tag v* 触发 .github/workflows/release.yml——
 # 复用 ci.yml 质量门（workflow_call）后在 macOS arm64 runner 打 dmg 附 GitHub Release；
-# tag（去 v 前缀）须与 tauri.conf.json 的 version 一致（v0.1.0 ↔ 0.1.0），带 - 后缀自动 prerelease
+# tag（去 v 前缀）须与 tauri.conf.json 的 version 一致（v0.1.0 ↔ 0.1.0），带 - 后缀自动 prerelease。
+# 版本号两处同步（release.yml 的 tag 校验会同时核对，不一致直接红）：
+#   - apps/tauri/src-tauri/tauri.conf.json 的 version（dmg 文件名 / 壳版本）
+#   - apps/server/package.json 的 version（/healthz 下发的 version，排障与壳探测看它）
 #
 # 签名约定（v0.2.x 起）：tauri.conf.json 的 bundle.macOS.signingIdentity="-"（ad-hoc）。
 # 不配 identity 时 tauri-bundler 完全跳过签名，主可执行只剩链接期 ad-hoc 签名
 # （Sealed Resources=none），带 quarantine 的下载产物会被 Gatekeeper 报「已损坏」；
 # "-" 让 bundler 在打 dmg 前 codesign 封印整个 .app（含 sidecar 嵌套二进制）。
 # 打包链路的 verify:sign（apps/tauri/scripts/verify-sign.mjs）对 bundle/macos 与 dmg 内的
-# .app 跑 codesign --verify --deep --strict，不过则 fail（本地 just package 与 CI 同一脚本）；
+# .app 跑 codesign --verify --deep --strict，并断言 sidecar 不带未配 entitlements 的
+# hardened runtime flag，不过则 fail（本地 just package 与 CI 同一脚本）；
 # spctl 对 ad-hoc 必拒（无 Developer ID），只作信息项不卡门槛。
+#
+# hardened runtime 约定（M106）：tauri.conf.json 配 "hardenedRuntime": false。
+# tauri-bundler 默认 hardenedRuntime=true，会给 sidecar（Node SEA）也带上 runtime flag
+# 且无 entitlements——V8 需要可写可执行内存，硬化运行时下 sidecar 启动即
+# EXC_BREAKPOINT(SIGTRAP)，用户看到的是首启卡 splash（壳等 healthz 超时）。
+# ad-hoc 无公证场景下 hardened runtime 本就零收益（Gatekeeper 不评估 ad-hoc 产物），
+# 故直接关掉。若未来上 Developer ID + 公证，改走 entitlements 路线（恢复 hardenedRuntime，
+# 为 sidecar 配 com.apple.security.cs.allow-jit / allow-unsigned-executable-memory；
+# 注意 tauri 的 entitlements 配置对主 app 与 sidecar 统一生效，主 app 是 wry 不需要 JIT）。
+# CI 另有 sidecar 启动烟兜底（release.yml 的 smoke:sidecar 步）：从 dmg 拷出 .app 注入壳同款
+# env 直跑 sidecar，断言 /healthz ok——签名再对也查不出运行时崩溃，只有真跑能拦住；
+# 本地对应 pnpm -C apps/tauri smoke:sidecar（just smoke-sidecar）。
 ```
 
 ## 代码约定

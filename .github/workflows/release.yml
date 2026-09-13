@@ -36,12 +36,16 @@ jobs:
         with:
           workspaces: apps/tauri/src-tauri
 
+      # 两处版本号必须同时与 tag 对齐：tauri.conf.json（dmg 文件名/壳版本）与
+      # apps/server/package.json（/healthz 下发的 version，壳靠它核对 sidecar 身份之外
+      # 的版本信息，用户排障也看它）。改一处漏另一处时在此红灯拦下。
       - name: 校验 tag 与应用版本一致
         run: |
           tag="${GITHUB_REF_NAME#v}"
           conf="$(jq -r .version apps/tauri/src-tauri/tauri.conf.json)"
-          if [ "$tag" != "$conf" ]; then
-            echo "tag ($tag) 与 tauri.conf.json version ($conf) 不一致；请先对齐再打 tag" >&2
+          srv="$(jq -r .version apps/server/package.json)"
+          if [ "$tag" != "$conf" ] || [ "$srv" != "$conf" ]; then
+            echo "版本号不一致：tag=$tag tauri.conf.json=$conf apps/server/package.json=$srv；请先对齐再打 tag" >&2
             exit 1
           fi
 
@@ -55,9 +59,18 @@ jobs:
 
       # 防回归门槛：对 bundle/macos 与 dmg 内的 .app 跑 codesign --verify --deep --strict，
       # 封印断裂（如历史上 linker-signed 导致的「已损坏」误报）直接 fail 整个 release。
+      # 同时断言 sidecar 不带未配 entitlements 的 hardened runtime flag（M106 根因，
+      # 见 scripts/verify-sign.mjs）。
       # ad-hoc 签名本就会被 spctl 拒绝（无 Developer ID），故 spctl 只作信息项、不卡门槛。
       - name: 校验签名封印
         run: pnpm -C apps/tauri verify:sign
+
+      # sidecar 启动烟（M106）：签名再对也查不出「运行时崩溃」——hardened runtime 杀
+      # Node SEA sidecar 时用户看到的是首启卡 splash（壳等 healthz 超时）。这里从 dmg
+      # 拷出 .app，注入壳同款 env 直跑 sidecar，断言 /healthz 返回 ok+app:yarnball
+      # +webStatic:true，不过则 fail 整个 release（scripts/smoke-sidecar.mjs）。
+      - name: sidecar 启动烟
+        run: pnpm -C apps/tauri smoke:sidecar
 
       - name: 列出产物
         run: ls -lh dist/
@@ -79,7 +92,7 @@ jobs:
           body: |
             macOS（Apple Silicon / aarch64）桌面版。
 
-            未做 Developer ID 签名与公证（ad-hoc 封印，已通过 codesign --verify --deep --strict 校验）：
+            未做 Developer ID 签名与公证（ad-hoc 封印，已通过 codesign --verify --deep --strict 校验与 sidecar 启动烟）：
             首次打开若被 Gatekeeper 拦截，请右键 App →「打开」，或在「系统设置 → 隐私与安全性」点「仍要打开」。
 
             环境变量与 agent CLI 配置见仓库 README。

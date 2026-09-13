@@ -10,6 +10,7 @@
     "build:sidecar": "node scripts/build-sidecar.mjs",
     "inject:splash": "node scripts/inject-splash.mjs",
     "verify:sign": "node scripts/verify-sign.mjs",
+    "smoke:sidecar": "node scripts/smoke-sidecar.mjs",
     "copy:dmg": "node scripts/copy-dmg.mjs",
     "gen:icon": "node scripts/gen-icon.mjs"
   },
