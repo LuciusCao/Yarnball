@@ -65,6 +65,10 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   /** 「加载更早」点击后待恢复的滚动位置（距容器底部的像素差） */
   const pendingScrollRestoreRef = useRef<number | null>(null);
+  /** IME 组合输入标志位：compositionstart/end 自维护，见输入框 keydown 处注释 */
+  const imeComposingRef = useRef(false);
+  /** compositionend 后延迟复位标志位的定时器 */
+  const imeResetTimerRef = useRef<number | null>(null);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.status !== "closed") ?? null,
@@ -489,8 +493,33 @@ export function ChatPanel({ trip, sessions, onSessionsChanged, selectedPlaceId }
           <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onCompositionStart={() => {
+              // 新一轮组合开始时取消尚未执行的复位，避免误清标志位
+              if (imeResetTimerRef.current !== null) {
+                clearTimeout(imeResetTimerRef.current);
+                imeResetTimerRef.current = null;
+              }
+              imeComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              // WebKit（Tauri 桌面壳 / Safari）下按 Enter 确认候选时，compositionend 先于
+              // 那次 Enter 的 keydown 派发，且 keydown 的 isComposing 已为 false、keyCode 为 13，
+              // 单靠 nativeEvent.isComposing 拦不住，消息会被误发送（issue #4）。
+              // 故延迟一个宏任务复位标志位：紧随的「确认候选」Enter 仍视为组合输入被忽略；
+              // 用户真正想发送的 Enter 是后续独立输入事件，届时标志位已复位，不受影响。
+              imeResetTimerRef.current = window.setTimeout(() => {
+                imeComposingRef.current = false;
+                imeResetTimerRef.current = null;
+              }, 0);
+            }}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229 &&
+                !imeComposingRef.current
+              ) {
                 e.preventDefault();
                 void send();
               }
