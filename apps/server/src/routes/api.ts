@@ -187,7 +187,8 @@ export function createApi(
       .update(schema.trips)
       .set({ title, updatedAt: new Date() })
       .where(eq(schema.trips.id, tripId));
-    // SSE 全量快照推送：打开的行程页/分享页实时刷新标题
+    // SSE 全量快照推送：打开的行程页（tripChannel 订阅）实时刷新标题；
+    // 分享页无 SSE 订阅（只一次性 fetch），新标题在下次加载分享页时生效
     bus.publish(tripChannel(tripId), { type: "bundle", bundle: await tripService.getBundle(tripId) });
     return c.json({ trip: toTripDto(await tripService.getTrip(tripId)) });
   });

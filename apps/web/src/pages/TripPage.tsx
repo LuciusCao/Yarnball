@@ -149,6 +149,10 @@ export function TripPage() {
   /** 标题编辑态（issue #12）：点击信息条标题进入行内编辑；editingTitle 开关 + titleDraft 草稿 */
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  /** 标题 input 的 IME 组合输入标志位（r1 修复）：WebKit 下中文输入法确认候选的 Enter 会被误判为保存，
+      模式复刻 ChatPanel（issue #4 同款修复）——compositionstart 置位、compositionend 延迟一宏任务复位 */
+  const titleImeComposingRef = useRef(false);
+  const titleImeResetTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!tripId) return;
@@ -483,8 +487,34 @@ export function TripPage() {
               autoFocus
               value={titleDraft}
               onChange={(e) => setTitleDraft(e.target.value)}
+              onCompositionStart={() => {
+                // 新一轮组合开始时取消尚未执行的复位，避免误清标志位
+                if (titleImeResetTimerRef.current !== null) {
+                  clearTimeout(titleImeResetTimerRef.current);
+                  titleImeResetTimerRef.current = null;
+                }
+                titleImeComposingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                // WebKit（Tauri 桌面壳 / Safari）下按 Enter 确认候选时，compositionend 先于
+                // 那次 Enter 的 keydown 派发，且 keydown 的 isComposing 已为 false，
+                // 单靠 nativeEvent.isComposing 拦不住，半成品标题会被误保存（issue #4 同根因）。
+                // 故延迟一个宏任务复位标志位：紧随的「确认候选」Enter 仍视为组合输入被忽略；
+                // 用户真正想保存的 Enter 是后续独立输入事件，届时标志位已复位，不受影响。
+                titleImeResetTimerRef.current = window.setTimeout(() => {
+                  titleImeComposingRef.current = false;
+                  titleImeResetTimerRef.current = null;
+                }, 0);
+              }}
               onKeyDown={(e) => {
-                if (e.key === "Enter") void saveTitle();
+                if (
+                  e.key === "Enter" &&
+                  !e.nativeEvent.isComposing &&
+                  e.keyCode !== 229 &&
+                  !titleImeComposingRef.current
+                ) {
+                  void saveTitle();
+                }
                 if (e.key === "Escape") setEditingTitle(false);
               }}
               disabled={titleBusy}
