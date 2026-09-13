@@ -22,6 +22,13 @@
       "when": 1789311954130,
       "tag": "0002_rename_locked_to_joined",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1789314086238,
+      "tag": "0003_cool_inhumans",
+      "breakpoints": true
     }
   ]
 }

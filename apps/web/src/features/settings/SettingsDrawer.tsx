@@ -236,7 +236,7 @@ export function SettingsDrawer({
                 <h2 className="text-sm font-semibold text-slate-800">高德地图密钥</h2>
               </div>
               <p className="mb-4 text-xs leading-relaxed text-slate-400">
-                仅国内行程需要；海外行程走开源地图引擎，无需配置。保存在服务端数据库，优先级高于环境变量；清除后回退环境变量。
+                国内行程的可选增强：配置后新建国内行程走高德（POI 搜索与公交数据更准）；未配置时国内行程自动使用开源地图引擎（OSM），海外行程始终零配置。保存在服务端数据库，优先级高于环境变量；清除后回退环境变量。
               </p>
               <div className="space-y-3.5">
                 {AMAP_FIELDS.map(({ key, label, hint }) => {

@@ -6,11 +6,11 @@ import { api } from "../../lib/api";
 import type { SettingsSection } from "./SettingsDrawer";
 
 const DISMISS_KEY = "yarnball:onboarding-dismissed";
-/** 密钥步骤的「跳过」标记：海外用户无需高德 key，跳过即视为完成 */
+/** 密钥步骤的「跳过」标记：高德 key 只是国内行程的可选增强（零配置走开源引擎），跳过即视为完成 */
 const AMAP_SKIP_KEY = "yarnball:onboarding-amap-skipped";
 
 /**
- * 新手两步设置引导：① 连接本地 agent → ② 配置国内地图密钥（海外可跳过）。
+ * 新手两步设置引导：① 连接本地 agent → ② 配置国内地图密钥（可选增强，可跳过）。
  * 两步都完成（或密钥步被跳过）后消失；也可手动关闭，状态存 localStorage。
  * refreshKey 变化（如关闭设置抽屉）时重新检测。
  */
@@ -122,17 +122,17 @@ export function OnboardingBanner({
               )}
             </li>
 
-            {/* 第二步：配置国内地图密钥（海外可跳过） */}
+            {/* 第二步：配置国内地图密钥（可选增强，可跳过） */}
             <li>
               <StepHeader
                 index={2}
                 done={amapDone}
                 icon={KeyRound}
                 title="配置国内地图密钥"
-                doneNote={amapSkipped && !amapReady ? "已跳过（海外）" : undefined}
+                doneNote={amapSkipped && !amapReady ? "已跳过" : undefined}
               />
               <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
-                高德三个 key（JS API Key / Web 服务 Key / 安全密钥）仅国内行程需要；海外行程走开源地图引擎，无需配置。
+                高德三个 key（JS API Key / Web 服务 Key / 安全密钥）是国内行程的可选增强：配置后 POI 搜索与公交数据更准；不配置也能用——国内行程自动走开源地图引擎，海外行程始终零配置。
               </p>
               {!amapDone && (
                 <div className="mt-2 flex items-center gap-3">
@@ -144,7 +144,7 @@ export function OnboardingBanner({
                     onClick={skipAmap}
                     className="text-xs text-slate-400 underline-offset-4 transition-colors hover:text-slate-600 hover:underline"
                   >
-                    海外使用，跳过
+                    暂不配置，跳过
                   </button>
                 </div>
               )}

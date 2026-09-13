@@ -6,10 +6,10 @@ import { getAmapServerKey } from "./settings.js";
 
 /**
  * GeoProvider —— 地理服务抽象。
- * - amap：国内。高德 Web 服务 API（需 key），POI/路径规划/距离矩阵，坐标 GCJ-02。
- * - osm：海外。Photon 搜索 + FOSSGIS OSRM 路线/矩阵 + transitous（MOTIS 2）真实公交
- *   换乘（全部零 key），坐标 WGS84。
- * 行程创建时按目的地定死 provider，之后搜索/路线/地图渲染/矩阵全部走同一 provider，
+ * - amap：国内（配齐 key 时）。高德 Web 服务 API（需 key），POI/路径规划/距离矩阵，坐标 GCJ-02。
+ * - osm：海外 + 未配 key 的国内零配置回退（M113）。Photon 搜索 + FOSSGIS OSRM 路线/矩阵 +
+ *   transitous（MOTIS 2）真实公交换乘（全部零 key；transitous 国内 GTFS 无覆盖，国内公交为估算），坐标 WGS84。
+ * 行程创建时按目的地与 key 配置定死 provider，之后搜索/路线/地图渲染/矩阵全部走同一 provider，
  * 绝不混用（GCJ-02 与 WGS84 偏移约几百米，混用会把点画进海里）。
  */
 
@@ -45,8 +45,10 @@ export interface GeoProvider {
   /**
    * 两点路线。osm 的公交族优先走 transitous（MOTIS 2）真实换乘（需传 date = 行程日
    * YYYY-MM-DD，查询时刻取当地约 09:00；不传则跳过真实路由），未命中降级 OSRM 估算。
+   * opts.domestic：国内 osm 行程（M113）传 true——transitous 国内 GTFS 零覆盖必 miss，
+   * 公交族直接走 OSRM 估算，省下每条 leg 2-4s 的必败请求。
    */
-  route(from: LngLat, to: LngLat, mode: TransportMode, city?: string, date?: string): Promise<RouteResult>;
+  route(from: LngLat, to: LngLat, mode: TransportMode, city?: string, date?: string, opts?: { domestic?: boolean }): Promise<RouteResult>;
   /**
    * 驾车时长矩阵（顺路度/重排优化用）：sources × destinations 的矩形时长表（秒）。
    * 点数超上限时返回 null，由 drivingMatrixBatched 分批拼接或调用方降级直线估算。
@@ -74,6 +76,14 @@ const COUNTRY_CURRENCIES: Record<string, string> = {
 export function currencyForCountry(countryCode: string | null | undefined): string {
   if (!countryCode) return "USD";
   return COUNTRY_CURRENCIES[countryCode.toLowerCase()] ?? "USD";
+}
+
+/**
+ * 目的地国家是否为中国：高德返回「中国」，Nominatim（accept-language=zh）也返回「中国」，
+ * Photon 后备返回英文「China」——三处来源统一在这里判。
+ */
+export function isChinaCountry(country: string | null | undefined): boolean {
+  return country === "中国" || country === "China";
 }
 
 export function getProvider(name: string): GeoProvider {
@@ -401,7 +411,7 @@ export const amap: GeoProvider = {
   },
 };
 
-// ---------- OSM 生态（海外，零 key） ----------
+// ---------- OSM 生态（海外 + 国内零配置回退，零 key） ----------
 
 /**
  * Photon（komoot，基于 OSM 数据）：地点搜索 + 地理编码，无需 key。
@@ -822,7 +832,7 @@ export const osm: GeoProvider = {
       }));
   },
 
-  async route(from, to, mode, _city, date) {
+  async route(from, to, mode, _city, date, opts) {
     // 渡轮：上游无轮渡路由，直线水域航线估算（两 provider 同口径）
     if (mode === "ferry") return ferryRouteEstimate(from, to);
     // 公交族走 transitous 时按行程日查班次，cache key 须含日期（跨天不同时刻方案可能不同）
@@ -834,8 +844,9 @@ export const osm: GeoProvider = {
     if (isTransitLikeMode(mode)) {
       // 先试 transitous（MOTIS 2）真实公交换乘：命中返回真实方式（首段 transit leg 映射）/
       // 线路名/分段详情/真实里程；无覆盖（空 itineraries）、超时、错误一律降级到下面的
-      // OSRM 估算（空结果不重试——无覆盖/无解的区域每次都返回空 itineraries，重试纯浪费 2-4s）
-      if (date) {
+      // OSRM 估算（空结果不重试——无覆盖/无解的区域每次都返回空 itineraries，重试纯浪费 2-4s）。
+      // 国内 osm 行程（opts.domestic）直接跳过：transitous 国内 GTFS 零覆盖，必然 miss
+      if (date && !opts?.domestic) {
         try {
           const real = await transitousPlan(from, to, date);
           if (real) {

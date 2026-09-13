@@ -10,9 +10,11 @@ import {
   Settings,
   Sparkles,
   Trash2,
+  TriangleAlert,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
-import type { TripDto } from "@yarnball/shared";
+import { isDomesticOsmTrip, type TripDto } from "@yarnball/shared";
 import { api } from "../api/client";
 import { api as uxApi } from "../lib/api";
 import { OnboardingBanner } from "../features/settings/OnboardingBanner";
@@ -43,6 +45,12 @@ const COVER_GRADIENTS = [
   "from-rose-400 via-pink-500 to-orange-400",
   "from-cyan-400 via-sky-500 to-blue-600",
 ];
+
+/** 城市联想/输入的「国内」判定来源：高德返回「中国」，Nominatim（zh）同为「中国」，Photon 后备为英文 */
+const CHINA_COUNTRIES = new Set(["中国", "China"]);
+
+/** 国内零配置降级提示（M113）的「不再提示」标记 */
+const DOMESTIC_OSM_HINT_KEY = "yarnball:domestic-osm-hint-dismissed";
 
 function coverGradient(tripId: string): string {
   let hash = 0;
@@ -129,6 +137,12 @@ export function TripListPage() {
   >([]);
   const [suggestOpen, setSuggestOpen] = useState(false);
   const cityDirtyRef = useRef(false); // 用户从联想里选过就不再自动触发
+  // 国内零配置降级提示（M113）：高德 key 配置态 + 用户从联想选中目的地时的国家 + 一次性关闭标记
+  const [amapConfigured, setAmapConfigured] = useState<boolean | null>(null);
+  const [pickedChina, setPickedChina] = useState<boolean | null>(null);
+  const [osmHintDismissed, setOsmHintDismissed] = useState(
+    () => localStorage.getItem(DOMESTIC_OSM_HINT_KEY) === "1",
+  );
 
   useEffect(() => {
     if (!city.trim() || cityDirtyRef.current || city.length < 1) {
@@ -148,9 +162,10 @@ export function TripListPage() {
     return () => clearTimeout(timer);
   }, [city]);
 
-  function pickSuggestion(s: { name: string }) {
+  function pickSuggestion(s: { name: string; country: string | null }) {
     cityDirtyRef.current = true;
     setCity(s.name);
+    setPickedChina(s.country != null && CHINA_COUNTRIES.has(s.country));
     setSuggestOpen(false);
   }
 
@@ -195,6 +210,26 @@ export function TripListPage() {
   useEffect(() => {
     void refresh();
   }, []);
+
+  // 高德 key 配置态（降级提示的展示条件之一；设置抽屉保存后bannerRefreshKey 递增会重挂引导条，这里随行建议输入实时判定即可）
+  useEffect(() => {
+    void api.config().then((c) => setAmapConfigured(c.amapConfigured)).catch(() => {});
+  }, [bannerRefreshKey]);
+
+  /**
+   * 国内目的地判定（降级提示用，非阻断）：优先取联想选中/匹配的国家，
+   * 无联想数据时退化为「含中文」启发式（东京这类假阳性只是多提示一句，可关闭）。
+   */
+  const cityText = city.trim();
+  const matchedSuggestion = suggestions.find((s) => s.name === cityText);
+  const domesticInput =
+    cityText.length > 0 &&
+    (pickedChina === true ||
+      (pickedChina == null &&
+        (matchedSuggestion?.country != null
+          ? CHINA_COUNTRIES.has(matchedSuggestion.country)
+          : /[一-鿿]/.test(cityText))));
+  const showOsmFallbackHint = amapConfigured === false && domesticInput && !osmHintDismissed;
 
   async function create() {
     if (!title.trim() || !city.trim()) return;
@@ -283,6 +318,7 @@ export function TripListPage() {
                 value={city}
                 onChange={(e) => {
                   cityDirtyRef.current = false;
+                  setPickedChina(null);
                   setCity(e.target.value);
                 }}
                 onKeyDown={(e) => e.key === "Enter" && void create()}
@@ -343,9 +379,42 @@ export function TripListPage() {
             />
           </div>
           <p className="mt-2.5 text-xs text-slate-400">
-            国内目的地自动走高德引擎；海外（如澳大利亚）走开源地图引擎，无需任何配置。
-            填了途经地即为多城市行程：行程面板按途经地分组，地图标记全部途经地。
+            国内目的地在配置高德 Key 后走高德引擎，未配置时自动使用开源引擎（OSM，零配置可用）；
+            海外（如澳大利亚）走开源地图引擎。填了途经地即为多城市行程：行程面板按途经地分组，地图标记全部途经地。
           </p>
+          {/* 国内零配置降级提示（M113）：选中国内目的地且未配高德 key 时提示数据质量差异；非阻断，可一次性关闭 */}
+          {showOsmFallbackHint && (
+            <div className="mt-2.5 flex items-start gap-2 rounded-lg border border-amber-200/80 bg-amber-50/80 px-3 py-2 text-xs leading-relaxed text-amber-800">
+              <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+              <p className="min-w-0 flex-1">
+                未配置高德地图 Key，这个国内行程将使用开源地图引擎（OpenStreetMap）：POI
+                搜索覆盖率与公交数据质量低于高德（市内公交为估算）。
+                <button
+                  type="button"
+                  className="mx-0.5 font-medium text-blue-700 underline-offset-2 hover:underline"
+                  onClick={() => {
+                    setSettingsSection("amap");
+                    setSettingsOpen(true);
+                  }}
+                >
+                  去设置页配置 Key
+                </button>
+                可获得完整体验（仅影响之后新建的行程）。
+              </p>
+              <button
+                type="button"
+                aria-label="不再提示"
+                title="不再提示"
+                className="shrink-0 rounded p-0.5 text-amber-400 transition-colors hover:bg-amber-100 hover:text-amber-600"
+                onClick={() => {
+                  localStorage.setItem(DOMESTIC_OSM_HINT_KEY, "1");
+                  setOsmHintDismissed(true);
+                }}
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+          )}
         </section>
 
         {/* 列表 */}
@@ -377,9 +446,15 @@ export function TripListPage() {
                           {trip.stops.length} 个途经地
                         </span>
                       )}
-                      {trip.geoProvider === "osm" && (
+                      {trip.geoProvider === "osm" && !isDomesticOsmTrip(trip) && (
                         <span className="rounded-full bg-white/25 px-2 py-0.5 text-[10px] font-medium backdrop-blur-sm">
                           海外
+                        </span>
+                      )}
+                      {/* 国内 + 开源引擎（M113 零配置回退）：与海外区分开，提示数据质量口径不同 */}
+                      {isDomesticOsmTrip(trip) && (
+                        <span className="rounded-full bg-white/25 px-2 py-0.5 text-[10px] font-medium backdrop-blur-sm">
+                          开源引擎
                         </span>
                       )}
                     </div>

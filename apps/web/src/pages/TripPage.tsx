@@ -26,10 +26,11 @@ import {
   Sparkles,
   Star,
   Trash2,
+  TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { formatMoney, formatVisitDuration, type BudgetSummary, type ChatSessionDto, type PlaceDto } from "@yarnball/shared";
+import { formatMoney, formatVisitDuration, isDomesticOsmTrip, type BudgetSummary, type ChatSessionDto, type PlaceDto } from "@yarnball/shared";
 import { api } from "../api/client";
 import { api as uxApi } from "../lib/api";
 import { useTripStore } from "../stores/tripStore";
@@ -82,6 +83,9 @@ function readStoredToolPanel(): ToolPanel | null {
 
 /** 设置抽屉由 M2（features/settings）挂载；合并前用全局事件解耦对接 */
 const OPEN_SETTINGS_EVENT = "yarnball:open-settings";
+
+/** 国内零配置降级横幅（M113）的「不再提示」标记：全局一次性，关掉后所有行程不再展示 */
+const DOMESTIC_OSM_BANNER_KEY = "yarnball:domestic-osm-banner-dismissed";
 
 /** 信息卡外链展示：取 URL 的 host，解析失败退回原文截断 */
 function urlHost(url: string): string {
@@ -149,6 +153,10 @@ export function TripPage() {
   const [panelMaximized, setPanelMaximized] = useState(false);
   /** 导出打印预览弹层（M97，issue #7） */
   const [exportOpen, setExportOpen] = useState(false);
+  /** 国内零配置降级横幅（M113）：osm 引擎国内行程的一次性提示，关闭后全局不再展示 */
+  const [osmBannerDismissed, setOsmBannerDismissed] = useState(
+    () => localStorage.getItem(DOMESTIC_OSM_BANNER_KEY) === "1",
+  );
   /** 标题编辑态（issue #12）：点击信息条标题进入行内编辑；editingTitle 开关 + titleDraft 草稿 */
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -553,9 +561,15 @@ export function TripPage() {
           {/* 多城市（M39）：信息条直接展示途经地链；单城市仍是目的地名 */}
           {trip.stops.length > 1 ? trip.stops.map((s) => s.name).join(" → ") : trip.destinationCity}
         </span>
-        {trip.geoProvider === "osm" && (
+        {trip.geoProvider === "osm" && !isDomesticOsmTrip(trip) && (
           <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
             海外
+          </span>
+        )}
+        {/* 国内 + 开源引擎（M113 零配置回退）：amber 区别于海外的 emerald，提示数据质量口径不同 */}
+        {isDomesticOsmTrip(trip) && (
+          <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+            开源引擎
           </span>
         )}
         {/* 出发日期（可选）：设置后每天标签显示真实日期（D1 · 9/23 周三）；清空退回 Day N */}
@@ -620,6 +634,35 @@ export function TripPage() {
         </div>
       </div>
       </div>
+
+      {/* 国内零配置降级横幅（M113）：osm 引擎的国内行程顶部一次性提示——数据质量低于高德，
+          可关闭并全局记住；去设置页配 key 只影响之后新建的行程（引擎建行程时定死） */}
+      {isDomesticOsmTrip(trip) && !osmBannerDismissed && (
+        <div className="glass panel-in absolute left-4 top-16 z-10 flex max-w-md items-start gap-2 rounded-2xl px-4 py-2.5 text-xs leading-relaxed text-slate-600">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+          <p className="min-w-0 flex-1">
+            本行程使用开源地图引擎（创建时未配置高德 Key）：POI 搜索覆盖率与公交数据质量低于高德，市内公交为估算。
+            <button
+              onClick={openSettings}
+              className="mx-0.5 font-medium text-blue-600 underline-offset-2 hover:underline"
+            >
+              去设置页配置 Key
+            </button>
+            后，新建的国内行程会自动走高德（本行程引擎不变）。
+          </p>
+          <button
+            aria-label="不再提示"
+            title="不再提示"
+            onClick={() => {
+              localStorage.setItem(DOMESTIC_OSM_BANNER_KEY, "1");
+              setOsmBannerDismissed(true);
+            }}
+            className="shrink-0 rounded-full p-0.5 text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-600"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* 左下：选中地点信息卡（M61 从左上信息条下方迁来；z-30 全页最高层级，可盖在顶部工具浮层之上）。可操作：加入行程/加入住宿/移出/删除。
           窄屏（<md ≈ 可用宽度 750px 以下）工具浮层与卡片必然交叠，卡片降到 z-10 让位给浮层（浮层 z-20 盖住卡片，不再被卡片拦截点击）；收起浮层后卡片照常可用 */}
