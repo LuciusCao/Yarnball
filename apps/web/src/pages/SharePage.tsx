@@ -84,7 +84,6 @@ export function SharePage() {
           amapJsKey={config.amapJsKey}
           amapJsSecret={config.amapJsSecret}
           visibleDayIndex={visibleDay}
-          hotelArea={null}
           selectedPlaceId={selectedPlaceId}
           onSelectPlace={(id) => setSelectedPlaceId(id)}
         />

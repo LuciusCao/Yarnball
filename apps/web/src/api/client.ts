@@ -96,10 +96,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ candidateId }),
     }),
-  hotelArea: (tripId: string) =>
-    request<{ area: { center: { lng: number; lat: number }; radiusM: number } | null }>(
-      `/trips/${tripId}/hotel-area`,
-    ),
 
   suggestOrder: (tripId: string, dayIndex: number) =>
     request<{ suggestion: unknown }>(`/trips/${tripId}/suggest-order?dayIndex=${dayIndex}`),

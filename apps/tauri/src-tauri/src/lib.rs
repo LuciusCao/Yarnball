@@ -3,14 +3,28 @@ mod sidecar;
 
 use std::thread;
 
-use tauri::{RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
+
+/// M104 导出 PDF：JS 的 window.print 在 WKWebView 里是 no-op（WebKit 不实现该 API），
+/// 前端导出弹层在壳内改调本命令（apps/web features/export/tauriPdf.ts）。
+/// 走 wry 的 WebView::print() → WKWebView printOperationWithPrintInfo: 弹 macOS 原生打印面板
+/// （左下 PDF 下拉「存为 PDF」），渲染管线与浏览器 window.print 一致，
+/// @media print CSS（只留导出浮层、分页保护）原样生效。
+#[tauri::command]
+fn export_pdf(app: tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "主窗口不存在".to_string())?;
+    window.print().map_err(|e| format!("唤起打印面板失败: {e}"))
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![export_pdf])
         .setup(|app| {
             let handle = app.handle().clone();
 

@@ -2,7 +2,6 @@ import AMapLoader from "@amap/amap-jsapi-loader";
 import type { LngLat } from "@yarnball/shared";
 import {
   categoryIconEmoji,
-  circleSignature,
   lineSignature,
   markerSignature,
   RAIL_LINE_COLOR,
@@ -30,7 +29,6 @@ export class AMapRenderer implements MapRenderer {
   private markerOverlays = new Map<string, OverlayEntry>();
   private stopOverlays = new Map<string, OverlayEntry>();
   private lineOverlays = new Map<string, OverlayEntry>();
-  private circleOverlay: OverlayEntry | null = null;
 
   constructor(
     private jsKey: string,
@@ -81,7 +79,6 @@ export class AMapRenderer implements MapRenderer {
         create: () => this.createPolyline(line),
       })),
     );
-    this.syncCircle(specs);
   }
 
   /** 增量同步：移除消失/签名变化的，新增新出现的；签名不变的复用不动 */
@@ -174,36 +171,6 @@ export class AMapRenderer implements MapRenderer {
     });
   }
 
-  private syncCircle(specs: OverlaySpecs): void {
-    if (!specs.circle) {
-      if (this.circleOverlay) {
-        this.map.remove(this.circleOverlay.overlay);
-        this.circleOverlay = null;
-      }
-      return;
-    }
-    const sig = circleSignature(specs.circle);
-    if (this.circleOverlay?.sig === sig) return;
-    if (this.circleOverlay) {
-      // 圆心/半径变化：原位更新，不拆除重建
-      this.circleOverlay.overlay.setCenter([specs.circle.center.lng, specs.circle.center.lat]);
-      this.circleOverlay.overlay.setRadius(specs.circle.radiusM);
-      this.circleOverlay.sig = sig;
-      return;
-    }
-    const circle = new this.AMap.Circle({
-      center: [specs.circle.center.lng, specs.circle.center.lat],
-      radius: specs.circle.radiusM,
-      strokeColor: "#dc2626",
-      strokeWeight: 1,
-      strokeOpacity: 0.6,
-      fillColor: "#dc2626",
-      fillOpacity: 0.06,
-    });
-    this.map.add(circle);
-    this.circleOverlay = { overlay: circle, sig };
-  }
-
   fit(specs: OverlaySpecs): void {
     if (!this.map) return;
     const markers = [...this.markerOverlays.values(), ...this.stopOverlays.values()].map(
@@ -232,7 +199,6 @@ export class AMapRenderer implements MapRenderer {
     this.markerOverlays.clear();
     this.stopOverlays.clear();
     this.lineOverlays.clear();
-    this.circleOverlay = null;
     this.map?.destroy?.();
     this.map = null;
   }

@@ -67,12 +67,6 @@ export interface LineSpec {
   style: LineStyle;
 }
 
-export interface CircleSpec {
-  id: string;
-  center: LngLat;
-  radiusM: number;
-}
-
 /** 途经地（stop）标记（M39 多城市）：途经地中心 + 序号；不可点击，仅作空间锚点 */
 export interface StopSpec {
   name: string;
@@ -84,7 +78,6 @@ export interface StopSpec {
 export interface OverlaySpecs {
   markers: MarkerSpec[];
   lines: LineSpec[];
-  circle: CircleSpec | null;
   /** 多城市行程的途经地标记层（stops ≤ 1 或筛选单天时为空） */
   stops: StopSpec[];
 }
@@ -104,10 +97,6 @@ export function lineSignature(l: LineSpec): string {
 
 export function stopSignature(s: StopSpec): string {
   return JSON.stringify([s.position.lng, s.position.lat, s.name, s.index]);
-}
-
-export function circleSignature(c: CircleSpec): string {
-  return JSON.stringify([c.center.lng, c.center.lat, c.radiusM]);
 }
 
 export const DAY_COLORS = [
@@ -136,7 +125,6 @@ export function dayColor(dayIndex: number): string {
 export function buildOverlaySpecs(
   bundle: TripBundle,
   visibleDayIndex: number | null,
-  hotelArea: { center: LngLat; radiusM: number } | null,
   selectedLegId: string | null = null,
 ): OverlaySpecs {
   const placeById = new Map(bundle.places.map((p) => [p.id, p]));
@@ -269,10 +257,6 @@ export function buildOverlaySpecs(
   return {
     markers,
     lines,
-    circle:
-      visibleDayIndex == null && hotelArea
-        ? { id: "hotel-area", ...hotelArea }
-        : null,
     // 途经地标记层（M39）：多城市行程在「全部天」视图显示 stop 中心 + 序号；center 解析失败的跳过
     stops:
       visibleDayIndex == null && bundle.trip.stops.length > 1
