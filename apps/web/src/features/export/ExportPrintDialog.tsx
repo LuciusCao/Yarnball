@@ -15,9 +15,10 @@ import { useTripWeather } from "../itinerary/weather";
  * M102：打开时复用行程页的天气查询缓存（react-query 同 queryKey，已在行程面板拉过则零额外请求），
  * 天气随打印稿每日开头段落一并输出。
  * M104（用户口径：app 里只做保存为 PDF，无打印面板/打印语义）：
- * Tauri 壳（WKWebView）里 JS 的 window.print 是 no-op，壳内调 export_pdf 命令——
- * 系统存储对话框选路径后 WKWebView 打印管线静默直写 PDF（见 tauriPdf.ts / src-tauri/src/pdf.rs）；
- * 浏览器环境回退 window.print（打印对话框里选「另存为 PDF」）。
+ * Tauri 壳（WKWebView）里 JS 的 window.print 是 no-op，壳内先在 JS 侧弹系统存储对话框
+ * （M107：对话框挪到 JS 侧修主线程死锁）拿路径，再调 export_pdf 命令静默直写 PDF
+ * （见 tauriPdf.ts / src-tauri/src/pdf.rs）；浏览器环境回退 window.print
+ * （打印对话框里选「另存为 PDF」）。
  */
 export function ExportPrintDialog({
   bundle,

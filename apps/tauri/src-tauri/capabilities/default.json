@@ -1,10 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "壳内 WebView 的默认能力（窗口由 Rust 侧创建，JS 仅需 core + app 自定义 command）。allow-export-pdf 由 build.rs 的 AppManifest::commands 自动生成（app 权限无前缀，见 tauri-build acl.rs 的 APP_ACL_KEY 解析）。remote 段必须存在：生产态窗口加载的是 sidecar 回源 http://127.0.0.1:<port>，tauri 的 is_local_url 只认 tauri:// 自定义协议与 devUrl/frontendDist 相对 URL，回源被归类为 remote 来源，ACL 只在能力声明了匹配的 remote.urls 时才对该来源解析权限（tauri webview/mod.rs 的 !is_local 门禁 + resolved.rs 的 ExecutionContext::Remote）；端口被占时壳会换随机端口，故端口段通配",
+  "description": "壳内 WebView 的默认能力（窗口由 Rust 侧创建，JS 仅需 core + dialog 插件 + app 自定义 command）。allow-export-pdf 由 build.rs 的 AppManifest::commands 自动生成（app 权限无前缀，见 tauri-build acl.rs 的 APP_ACL_KEY 解析）；dialog:allow-save 放行「保存为 PDF」的系统存储对话框（M107 起对话框在 JS 侧走 plugin:dialog|save 异步命令）。remote 段必须存在：生产态窗口加载的是 sidecar 回源 http://127.0.0.1:<port>，tauri 的 is_local_url 只认 tauri:// 自定义协议与 devUrl/frontendDist 相对 URL，回源被归类为 remote 来源，ACL 只在能力声明了匹配的 remote.urls 时才对该来源解析权限（tauri webview/mod.rs 的 !is_local 门禁 + resolved.rs 的 ExecutionContext::Remote）；端口被占时壳会换随机端口，故端口段通配",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:*", "http://localhost:*"]
   },
-  "permissions": ["core:default", "allow-export-pdf"]
+  "permissions": ["core:default", "dialog:allow-save", "allow-export-pdf"]
 }
