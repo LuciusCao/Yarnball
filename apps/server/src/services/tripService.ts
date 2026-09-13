@@ -136,8 +136,24 @@ const LEG_FERRY_DETOUR_RATIO = 1.8;
 const LEG_FERRY_MIN_M = 1500;
 const LEG_FERRY_MAX_M = 30_000;
 
-/** 端点名命中机场（机场线启发式用）：中英文常见写法 */
-const AIRPORT_NAME_RE = /机场|空港|airport|aéroport|flughafen|aeropuerto|aeroporto/i;
+/**
+ * 端点名命中机场（机场线启发式用）：中英文常见写法。
+ * r1 评审收紧：排除「机场路/机场街/机场新城」「空港新城」一类非机场地名
+ * （「机场/空港」后紧跟 路/街/道/城/镇/区/县 等通名时不算机场本身）；
+ * 英文同步排除 "Airport Road/Blvd/..." 路名，并要求整词边界。
+ */
+const AIRPORT_NAME_RE = new RegExp(
+  [
+    "机场(?!新?城|路|街|道|镇|区|县|新村|小区)",
+    "空港(?!新?城|镇|区|县)",
+    "\\bairport\\b(?!\\s+(road|rd\\.?|street|st\\.?|avenue|ave\\.?|boulevard|blvd\\.?|drive|dr\\.?|lane|ln\\.?|way)\\b)",
+    "aéroport",
+    "flughafen",
+    "aeropuerto",
+    "aeroporto",
+  ].join("|"),
+  "i",
+);
 
 /**
  * 自动判定市内交通段方式（无手动覆盖时）。规则刻意简单可解释，不接外部公交 routing：
@@ -1279,9 +1295,15 @@ export class TripService {
           // 跨水启发式（无覆盖时）：路由里程 ÷ 直线 ≥ 1.8 且直线 1.5~30km —— 大概率被水域隔开
           // （绕行大桥/海湾），改判渡轮。典型：悉尼环形码头→塔龙加动物园，驾车绕桥 ~12km、
           // 直线 ~4km，真实最优是 12 分钟渡轮。误判可用 set_leg_mode 覆盖回来。
+          // 适用范围（r1 评审收窄）：仅「按距离档本应判 drive 的段」（>6km，真实驾车里程）
+          // 或 osm provider（公交档估算底数同为真实 car 路由里程，绕行比可靠）启用；
+          // amap 2-6km 公交档不启用——高德公交里程含步行接驳+公交绕行，陆地上
+          // （单行网格/换乘/跨江绕桥）绕行比 ≥1.8 并不罕见，会把普通公交段误判成渡轮。
+          const ferryCheckReliable = dist > LEG_TRANSIT_MAX_M || geo.name === "osm";
           if (
             !override &&
             mode !== "walk" &&
+            ferryCheckReliable &&
             result.distanceM != null &&
             dist >= LEG_FERRY_MIN_M &&
             dist <= LEG_FERRY_MAX_M &&

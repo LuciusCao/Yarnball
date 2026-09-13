@@ -16,7 +16,7 @@ import {
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
-import { amap, getProvider } from "../services/geo.js";
+import { amap, fallbackRoute, getProvider } from "../services/geo.js";
 
 /**
  * MCP 工具面：暴露毛线团（Yarnball）行程数据结构给用户 agent。
@@ -628,16 +628,35 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
           throw new ServiceError(422, "每个端点二选一：fromPlaceId/toPlaceId（行程内地点）或 from/to 裸坐标");
         }
         const { trip, provider } = await tripGeoInfo(ctx);
-        const route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity);
+        // 与 recalcDayLegs 同口径的降级（r1 评审）：osm 公交估算改真实 OSRM 底数后，
+        // 裸调用在上游故障时会直接报错——这里失败先退避重试一次，仍失败回退直线估算
+        // 并在结果里显式标注 estimated，不把上游故障抛给 agent
+        let estimated = false;
+        let route;
+        try {
+          route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity);
+        } catch {
+          try {
+            await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
+            route = await provider.route(fromCoord, toCoord, mode, trip?.destinationCity);
+          } catch (err) {
+            console.warn(`[get_route] route(${mode}) 重试仍失败，降级直线估算:`, (err as Error).message);
+            route = fallbackRoute(fromCoord, toCoord, mode);
+            estimated = true;
+          }
+        }
         return json({
           ok: true,
           route,
+          estimated: estimated || undefined,
           note:
-            mode === "ferry"
-              ? "渡轮无上游路由，返回的是直线水域航线估算（含候船缓冲）。"
-              : provider.name === "osm" && isTransitLikeMode(mode)
-                ? "海外公交查询暂不可用，返回的是估算值（驾车时长 × 1.25 + 换乘时间）。"
-                : undefined,
+            estimated
+              ? "路由服务暂不可用，返回直线距离估算值。"
+              : mode === "ferry"
+                ? "渡轮无上游路由，返回的是直线水域航线估算（含候船缓冲）。"
+                : provider.name === "osm" && isTransitLikeMode(mode)
+                  ? "海外公交查询暂不可用，返回的是估算值（驾车时长 × 1.25 + 换乘时间）。"
+                  : undefined,
         });
       } catch (err) {
         return toolError(err);
