@@ -148,6 +148,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - 动态接口数据（如天气，会随时间变化、非行程事实）走 react-query 缓存/刷新，**不进 zustand bundle**；bundle 只承载行程数据快照
 - SSE 的 bundle 事件是**服务端全量快照，前端直接替换**（单机数据量小，全量最可靠），不要在前端做增量合并优化
 - Tauri 壳新增 `#[tauri::command]` 必须同步两处 ACL 声明（M104 export_pdf 漏配被「Command xxx not allowed by ACL」拦截的教训）：`src-tauri/build.rs` 的 `AppManifest::commands`（自动生成 `allow-<cmd>` 权限，下划线转连字符）+ `capabilities/default.json` 引用该权限；注意生产态窗口加载 sidecar 回源 `http://127.0.0.1:<port>`，tauri 归类为 remote 来源，能力必须带 `remote.urls` 段权限才对壳内生效
+- **macOS 原生面板/模态必须跑在主线程，且主线程绝不能阻塞等其结果**：Tauri 同步命令在 macOS 直接跑在主线程（wry `send_user_message` 有主线程 inline 快路径），命令体内「弹模态后 `rx.recv()` 等结果」会自锁——面板出现后全 app 冻结（M107 export_pdf 死锁：sheet 的完成回调要靠主线程事件循环驱动，而主线程已被 recv 泊死）。需要用户交互的系统对话框优先走插件的 JS 入口（如 `plugin:dialog|save` 是 async 命令，跑在 tokio 工作线程，阻塞等待不碰主线程事件循环）；确需在 Rust 侧弹面板的，只能在工作线程调用并经 `run_on_main_thread` 调度
 
 ## Agent 集成关键点（改这块前先读 README 和对应源码）
 
