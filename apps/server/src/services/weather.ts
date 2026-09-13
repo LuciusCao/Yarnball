@@ -215,16 +215,21 @@ export async function getTripWeather(bundle: TripBundle): Promise<TripWeather> {
   });
 
   const forecasts = new Map<string, OpenMeteoDaily | null>();
-  await Promise.all(
-    [...byCoord.entries()].map(async ([key, anchor]) => {
-      try {
-        forecasts.set(key, await fetchForecast(anchor.coord, startDate, endDate));
-      } catch (err) {
-        console.warn(`[weather] open-meteo 拉取失败（${key}）:`, (err as Error).message);
-        forecasts.set(key, null);
-      }
-    }),
-  );
+  // 整个日期范围都在预报窗口外（全部超窗或全部已过）时直接跳过上游调用，
+  // 逐天走下面 available=false + reason 的口径，不白打 Open-Meteo
+  const anyInWindow = dates.some((d) => d.date >= today && d.date <= horizonEnd);
+  if (anyInWindow) {
+    await Promise.all(
+      [...byCoord.entries()].map(async ([key, anchor]) => {
+        try {
+          forecasts.set(key, await fetchForecast(anchor.coord, startDate, endDate));
+        } catch (err) {
+          console.warn(`[weather] open-meteo 拉取失败（${key}）:`, (err as Error).message);
+          forecasts.set(key, null);
+        }
+      }),
+    );
+  }
 
   const days: DayWeather[] = dates.map((d, i) => {
     const anchor = anchors[i];

@@ -838,7 +838,18 @@ export class TripService {
     await this.touchTrip(day.tripId);
     await this.publishBundle(day.tripId);
     const [updated] = await this.db.select().from(schema.days).where(eq(schema.days.id, dayId));
-    return toDayDto(updated);
+    const dto = toDayDto(updated);
+    // 即时响应与 bundle 口径一致：清除撰写值（summary=null）后按兜底重算，
+    // 不能原样返回 {summary:null, summaryAuto:false}（与「清除后恢复自动兜底」矛盾）
+    if (dto.summary == null) {
+      const [entries, places] = await Promise.all([
+        this.db.select().from(schema.entries).where(eq(schema.entries.tripId, day.tripId)),
+        this.db.select().from(schema.places).where(eq(schema.places.tripId, day.tripId)),
+      ]);
+      const auto = this.autoDaySummary(updated, entries, places);
+      if (auto) return { ...dto, summary: auto, summaryAuto: true };
+    }
+    return dto;
   }
 
   // ---------- 行程级注意事项（trip_notes） ----------
