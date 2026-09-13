@@ -119,10 +119,17 @@ verify:
 tauri-dev:
     pnpm tauri:dev
 
-# Tauri 打 dmg（sidecar + web 产物 + ad-hoc 封印 + codesign 校验），完成后自动复制到仓库根 dist/
+# Tauri 打 dmg（sidecar + web 产物 + ad-hoc 封印，hardenedRuntime=false 约定见 AGENTS.md「签名约定」；
+# 含 codesign 封印 + sidecar runtime flag 校验），完成后自动复制到仓库根 dist/
 package:
     pnpm tauri:package
     @echo "dmg 产物：dist/（原始深路径：apps/tauri/src-tauri/target/release/bundle/dmg/）"
+
+# sidecar 启动烟（M106）：从 dmg 拷出 .app，注入壳同款 env 直跑 sidecar，断言 /healthz ok；
+# 签名再对也查不出 sidecar 运行时崩溃（如 hardened runtime 杀 Node SEA），只有真跑能拦住。
+# 前置：just package 已跑；CI release.yml 在发布链路上跑同一脚本
+smoke-sidecar:
+    pnpm -C apps/tauri smoke:sidecar
 
 # （之后还需 pnpm -C apps/tauri exec tauri icon icons/app-icon.png -o src-tauri/icons 产出全尺寸图标）
 # 从 apps/web/public/icon-1024.png 重生成图标种子 icons/app-icon.png
