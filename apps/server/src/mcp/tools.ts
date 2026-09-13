@@ -755,7 +755,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "recommend_hotel_area",
     {
       description:
-        "推荐住宿区域：按行程内非酒店地点的地理分布给出建议居住圆心 + 半径（米）。顺路原则的住宿版——酒店离主要活动区越近，每天往返交通越省。选酒店/补酒店候选前调这个，把 search_poi 的酒店搜索往圆心附近收敛。行程内非酒店地点不足 3 个时返回 area=null：先多攒候选地点（search_poi + add_place）再调。",
+        "推荐住宿区域（多信号加权 + 分天段）：按每日首/末活动点（动线锚点，权重最高）、大交通到发节点（航班/车站等到达离开锚点）、天内普通活动点、候选池未排期地点加权算出建议居住片区。返回 area：顶层 center/radiusM 是全域加权圆心+半径（米）；segments 是分天段建议——未被已选定酒店覆盖的连续天段各一片区域（多城市行程再按途经地拆分，不跨城混算），段的 fromDay/toDay 是闭开天区间、与 select_hotel 的 checkInDay/checkOutDay 口径一致可直接拿去选定；signals 是各类信号点计数。顺路原则的住宿版——酒店离动线锚点越近，每天往返交通越省。选酒店/补酒店候选前调这个：单酒店行程往顶层圆心附近搜，多酒店/多城市行程按 segments 逐段往各段圆心附近搜（search_poi）。行程内非酒店地点不足 3 个时返回 area=null：先多攒候选地点（search_poi + add_place）再调。",
       inputSchema: {},
     },
     async () => {

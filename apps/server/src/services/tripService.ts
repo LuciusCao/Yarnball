@@ -2134,11 +2134,12 @@ export class TripService {
       const placePoints: AreaPoint[] = [];
       for (const e of dayEntries) {
         if (e.entryType === "transit") {
-          // 大交通到发节点：起讫点引用了行程内地点时取真实坐标（纯文本起讫无坐标，跳过）
+          // 大交通到发节点：起讫点引用了行程内地点时取真实坐标（纯文本起讫无坐标，跳过）；
+          // 端点是酒店类别时跳过（与 activity 路径一致），避免已选/候选酒店自我强化推荐圆心
           for (const refId of [e.fromPlaceId, e.toPlaceId]) {
             if (!refId) continue;
             const p = placeById.get(refId);
-            if (!p) continue;
+            if (!p || p.category === "hotel") continue;
             scheduledPlaceIds.add(p.id);
             countCity(day.dayIndex, p.cityName);
             points.push({ kind: "transit", name: p.name, location: coordOf(p), weight: 1.5, dayIndex: day.dayIndex, cityName: p.cityName });

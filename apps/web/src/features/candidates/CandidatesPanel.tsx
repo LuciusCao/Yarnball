@@ -306,7 +306,7 @@ export function CandidatesPanel({
 
             {key === "hotel" && hotelArea && (
               <div className="mb-2 rounded-lg border border-red-200/60 bg-red-100/50 px-3 py-2 text-xs text-slate-600">
-                建议住宿区域：行程地点中位数中心附近（半径 {Math.round(hotelArea.radiusM / 1000)} 公里，
+                建议住宿区域：按每日动线锚点与到发节点加权的活动中心附近（半径 {Math.round(hotelArea.radiusM / 1000)} 公里，
                 地图上红圈所示）。把这条发给 agent：
                 <button
                   className="ml-1 text-blue-600 underline"
