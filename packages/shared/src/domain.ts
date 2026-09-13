@@ -555,6 +555,61 @@ export const SuggestDayClustersResultSchema = z.object({
 });
 export type SuggestDayClustersResult = z.infer<typeof SuggestDayClustersResultSchema>;
 
+// ---------- 住宿区域推荐（recommend_hotel_area / GET /api/trips/:tripId/hotel-area） ----------
+
+/** 推荐依据的一个信号点（权重高的对圆心拉力大） */
+export const HotelAreaSignalPointSchema = z.object({
+  /**
+   * 信号来源：
+   * day-anchor = 某天的首个/最后一个活动点（每天动线的起讫，住宿离它们近最省往返）；
+   * transit = 大交通节点（航班/车站等到发点，首末天到达离开锚点）；
+   * activity = 天内普通活动点；candidate = 候选池中未排期的非酒店地点。
+   */
+  kind: z.enum(["day-anchor", "transit", "activity", "candidate"]),
+  name: z.string(),
+  location: LngLatSchema,
+  weight: z.number(),
+  /** 关联天序号（1-based）；候选点等不属任何天为 null */
+  dayIndex: z.number().nullable(),
+});
+export type HotelAreaSignalPoint = z.infer<typeof HotelAreaSignalPointSchema>;
+
+/** 分天段（多酒店区间）的区域建议：一段连续未被已选定酒店覆盖的天 → 一个建议居住片区 */
+export const HotelAreaSegmentSchema = z.object({
+  /** 覆盖天范围，闭开区间 [fromDay, toDay)，口径与 select_hotel 的 checkInDay/checkOutDay 一致 */
+  fromDay: z.number(),
+  toDay: z.number(),
+  /** 该段主导城市/途经地名（无法判断为 null） */
+  cityName: z.string().nullable(),
+  center: LngLatSchema,
+  radiusM: z.number(),
+  /** 参与该段推荐的信号点（已按段过滤，多城市行程不跨城混算） */
+  points: z.array(HotelAreaSignalPointSchema),
+});
+export type HotelAreaSegment = z.infer<typeof HotelAreaSegmentSchema>;
+
+/**
+ * 住宿区域推荐结果（只建议不落库）。
+ * 多信号加权：每日首/末活动点（weight 2）> 大交通到发节点（weight 1.5）
+ * > 天内普通活动点（weight 1）> 候选池未排期点（weight 0.5）。
+ * 顶层 center/radiusM 为全域加权结果（兼容旧契约，前端画圈直用）；
+ * segments 为分天段建议（多酒店行程按未被覆盖的连续天段各给一片区域）。
+ */
+export const HotelAreaRecommendationSchema = z.object({
+  center: LngLatSchema,
+  radiusM: z.number(),
+  segments: z.array(HotelAreaSegmentSchema),
+  /** 信号统计（各类信号点数量，便于 agent 解释推荐依据） */
+  signals: z.object({
+    dayAnchor: z.number(),
+    transit: z.number(),
+    activity: z.number(),
+    candidate: z.number(),
+  }),
+  note: z.string().optional(),
+});
+export type HotelAreaRecommendation = z.infer<typeof HotelAreaRecommendationSchema>;
+
 export const CreateHotelCandidateInputSchema = CreatePlaceInputSchema.extend({
   pricePerNight: z.number().min(0).nullable().optional(),
 });
