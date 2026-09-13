@@ -667,7 +667,7 @@ export class TripService {
   }
 
   /**
-   * 删除兜底（M54 锁定简化）：locked 不再拦截 agent——信息字段随时可改；
+   * 删除兜底（M54 状态简化）：地点状态不再拦截 agent——信息字段随时可改；
    * 仅「已排进行程（有 entry 引用）的地点」agent 不可直接删除，须先移出行程
    * （remove_entry 逐条移出 / 请用户在界面上「移出行程」）。人类（REST 入口）不受限。
    */
@@ -709,7 +709,7 @@ export class TripService {
     return toPlaceDto(row);
   }
 
-  /** M54 锁定简化：agent 可改任何地点（含 locked）的信息字段——补官网/改备注/调价等，不再有锁定拦截 */
+  /** M54 状态简化：agent 可改任何地点（含已加入行程的）的信息字段——补官网/改备注/调价等，不再有状态拦截 */
   async updatePlace(placeId: string, input: UpdatePlaceInput) {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
@@ -1819,7 +1819,7 @@ export class TripService {
   }
 
   /**
-   * 区域聚类建议（只建议不落库）：把未排期的非酒店地点（候选 + 锁定、未进任何一天行程、
+   * 区域聚类建议（只建议不落库）：把未排期的非酒店地点（候选 + 已加入行程、未进任何一天行程、
    * 也不作为 transit 起讫点）按城市归属分组后，组内按驾车时长矩阵 k-medoids 聚片，建议「每天一片」。
    * 多城市防错配：同城才同簇（cityName 分组，缺失时按最近途经地 ≤150km 归属），跨城地点绝不进同一簇；
    * 簇数按点数自适应（ceil(n/4)，每组 1-4 片），不再被已建天数截断——未建天（dayCount=1）时也能给出多分片建议；

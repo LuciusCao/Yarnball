@@ -88,10 +88,10 @@ export type Actor = (typeof ACTORS)[number];
 
 /**
  * 地点状态机：candidate（候选池，agent 解析攻略/推荐的默认值）
- * → locked（用户在界面上「加入行程」= 确认要去）。
- * 纪律：agent 只建候选；locked 地点的信息字段 agent 可随时补全/修改（update_place），
+ * → locked（已加入行程 = 用户确认要去；locked 为历史枚举名，界面与 agent 话术均为「加入行程/已加入行程」）。
+ * 纪律：agent 只建候选；已加入行程地点的信息字段 agent 可随时补全/修改（update_place），
  * 仅「已排进行程（有 entry 引用）的地点」agent 不可直接删除（须先移出行程）；
- * 只有 locked 的地点才应排入某天行程。
+ * 只有已加入行程的地点才应排入某天行程。
  */
 export const PLACE_STATUSES = ["candidate", "locked"] as const;
 export type PlaceStatus = (typeof PLACE_STATUSES)[number];
@@ -524,7 +524,7 @@ export type CreatePlaceInput = z.infer<typeof CreatePlaceInputSchema>;
 export const UpdatePlaceInputSchema = CreatePlaceInputSchema.partial();
 export type UpdatePlaceInput = z.infer<typeof UpdatePlaceInputSchema>;
 
-/** 锁定/解锁地点（PATCH /api/places/:id/status 与 MCP lock_place/unlock_place） */
+/** 加入/移出行程（PATCH /api/places/:id/status 与 MCP add_to_trip/remove_from_trip；locked 为历史枚举名） */
 export const SetPlaceStatusInputSchema = z.object({
   status: z.enum(PLACE_STATUSES),
 });
