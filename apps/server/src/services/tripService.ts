@@ -41,7 +41,7 @@ import {
   toPlaceDto,
   toTripDto,
 } from "./mappers.js";
-import { amap, currencyForCountry, drivingMatrixBatched, fallbackRoute, getProvider, haversineM, osm } from "./geo.js";
+import { amap, currencyForCountry, drivingMatrixBatched, fallbackRoute, ferryRouteEstimate, getProvider, haversineM, osm } from "./geo.js";
 import { insertionIncrements, kMedoids, optimizeLoopOrder, optimizeOrder, optimizePathOrder, orderTotalDuration } from "./routing.js";
 import { amapConfigured } from "./settings.js";
 
@@ -129,6 +129,29 @@ const PLACE_DEDUP_MAX_DIST_M = 200;
 const LEG_WALK_MAX_M = 2000;
 /** 自动交通方式分档：LEG_WALK_MAX_M ~ LEG_TRANSIT_MAX_M 公交（amap 真实公交路由 / osm 估算口径），以上驾车 */
 const LEG_TRANSIT_MAX_M = 6000;
+
+/** 跨水启发式参数：路由里程 ÷ 直线距离 ≥ 该比值时，两点大概率被水域隔开（绕行大桥/海湾） */
+const LEG_FERRY_DETOUR_RATIO = 1.8;
+/** 跨水启发式适用范围（直线距离，米）：太短走桥即可，太长轮渡不现实 */
+const LEG_FERRY_MIN_M = 1500;
+const LEG_FERRY_MAX_M = 30_000;
+
+/** 端点名命中机场（机场线启发式用）：中英文常见写法 */
+const AIRPORT_NAME_RE = /机场|空港|airport|aéroport|flughafen|aeropuerto|aeroporto/i;
+
+/**
+ * 自动判定市内交通段方式（无手动覆盖时）。规则刻意简单可解释，不接外部公交 routing：
+ * 1) <2km 步行；2) 2-6km 公交（transit 兜底子类型）；3) >6km 驾车，
+ *    但端点含机场时改判 train（机场线/快轨是游客常态，如悉尼 Airport Link、香港机场快线）；
+ * 跨水场景不在此判定（需要路由里程），见 recalcDayLegs 的绕行比检查。
+ * 判不准时用户/agent 用 set_leg_mode 覆盖（modeOverride 不被重算冲掉）。
+ */
+function autoLegMode(distM: number, fromName: string | null, toName: string | null): TransportMode {
+  if (distM < LEG_WALK_MAX_M) return "walk";
+  if (distM <= LEG_TRANSIT_MAX_M) return "transit";
+  if (AIRPORT_NAME_RE.test(fromName ?? "") || AIRPORT_NAME_RE.test(toName ?? "")) return "train";
+  return "drive";
+}
 
 /**
  * 名称规范化（去重比较用）：小写 + 去除全部空白（含全角空格）+ 统一全半角括号 +
@@ -1131,6 +1154,8 @@ export class TripService {
       entryId: string | null;
       placeId: string | null;
       coord: LngLat;
+      /** 端点名（场景化自动判定的输入，如机场线启发式）；取不到为 null */
+      name: string | null;
       transitEntryId?: string;
       transitEndpoint?: "from" | "to";
     };
@@ -1138,9 +1163,25 @@ export class TripService {
       const from = coordOfPlace(e.fromPlaceId);
       const to = coordOfPlace(e.toPlaceId);
       const nodes: ChainNode[] = [];
-      if (from) nodes.push({ entryId: e.id, placeId: null, coord: from, transitEntryId: e.id, transitEndpoint: "from" });
+      if (from) {
+        nodes.push({
+          entryId: e.id,
+          placeId: null,
+          coord: from,
+          name: (e.fromPlaceId && placeById.get(e.fromPlaceId)?.name) || e.fromName || null,
+          transitEntryId: e.id,
+          transitEndpoint: "from",
+        });
+      }
       if (to && e.toPlaceId !== e.fromPlaceId) {
-        nodes.push({ entryId: e.id, placeId: null, coord: to, transitEntryId: e.id, transitEndpoint: "to" });
+        nodes.push({
+          entryId: e.id,
+          placeId: null,
+          coord: to,
+          name: (e.toPlaceId && placeById.get(e.toPlaceId)?.name) || e.toName || null,
+          transitEntryId: e.id,
+          transitEndpoint: "to",
+        });
       }
       return nodes;
     };
@@ -1152,19 +1193,19 @@ export class TripService {
     const chain: ChainNode[] = [];
     if (anchors.startPlaceId && !skipStartAnchor) {
       const c = coordOfPlace(anchors.startPlaceId);
-      if (c) chain.push({ entryId: null, placeId: anchors.startPlaceId, coord: c });
+      if (c) chain.push({ entryId: null, placeId: anchors.startPlaceId, coord: c, name: placeById.get(anchors.startPlaceId)?.name ?? null });
     }
     for (const e of entries) {
       if (e.entryType === "transit") {
         chain.push(...transitNodes(e));
       } else {
         const c = coordOfPlace(e.placeId);
-        if (c) chain.push({ entryId: e.id, placeId: null, coord: c });
+        if (c) chain.push({ entryId: e.id, placeId: null, coord: c, name: (e.placeId && placeById.get(e.placeId)?.name) || null });
       }
     }
     if (anchors.endPlaceId && !skipEndAnchor) {
       const c = coordOfPlace(anchors.endPlaceId);
-      if (c) chain.push({ entryId: null, placeId: anchors.endPlaceId, coord: c });
+      if (c) chain.push({ entryId: null, placeId: anchors.endPlaceId, coord: c, name: placeById.get(anchors.endPlaceId)?.name ?? null });
     }
 
     // 重算前收集手动覆盖：key = 端点配对（entry 或酒店 place）
@@ -1223,10 +1264,11 @@ export class TripService {
             polyline = [a, b];
           }
         } else {
-          // 自动交通方式三档：<2km 步行；2-6km 公交（amap 走真实公交路由；osm 无免费公交路由，
-          // 保持估算口径但 mode 标 transit——市区中段标驾车会与游客实际不符）；>6km 驾车
+          // 自动交通方式（规则见 autoLegMode 注释）：<2km 步行；2-6km 公交（amap 走真实公交路由；
+          // osm 无免费公交路由，保持估算口径但 mode 标 transit——市区中段标驾车会与游客实际不符）；
+          // >6km 驾车，端点含机场改判 train（机场线）
           const dist = haversineM(a, b);
-          mode = override ?? (dist < LEG_WALK_MAX_M ? "walk" : dist <= LEG_TRANSIT_MAX_M ? "transit" : "drive");
+          mode = override ?? autoLegMode(dist, from.name, to.name);
           const result = await this.routeWithRetry(routeLimit, geo, a, b, mode, trip?.destinationCity);
           mode = override ?? result.mode;
           distanceM = result.distanceM;
@@ -1234,6 +1276,24 @@ export class TripService {
           polyline = result.polyline;
           // 公交分段详情：仅 amap 真实公交路由返回（osm 估算/降级缺省为 undefined → 存 null）
           transitDetail = result.transitDetail ?? null;
+          // 跨水启发式（无覆盖时）：路由里程 ÷ 直线 ≥ 1.8 且直线 1.5~30km —— 大概率被水域隔开
+          // （绕行大桥/海湾），改判渡轮。典型：悉尼环形码头→塔龙加动物园，驾车绕桥 ~12km、
+          // 直线 ~4km，真实最优是 12 分钟渡轮。误判可用 set_leg_mode 覆盖回来。
+          if (
+            !override &&
+            mode !== "walk" &&
+            result.distanceM != null &&
+            dist >= LEG_FERRY_MIN_M &&
+            dist <= LEG_FERRY_MAX_M &&
+            result.distanceM / dist >= LEG_FERRY_DETOUR_RATIO
+          ) {
+            const ferry = ferryRouteEstimate(a, b);
+            mode = "ferry";
+            distanceM = ferry.distanceM;
+            durationS = ferry.durationS;
+            polyline = ferry.polyline;
+            transitDetail = null;
+          }
         }
         return {
           id: uuid(),

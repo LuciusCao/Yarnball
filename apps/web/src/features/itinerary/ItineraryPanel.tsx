@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { formatDayLabel, formatDistance, formatDuration, type PlaceCategory, type TripBundle, type TransportLegDto } from "@yarnball/shared";
+import { formatDayLabel, formatDistance, formatDuration, isTransitLikeMode, TRANSPORT_MODE_LABELS, type PlaceCategory, type TransportMode, type TripBundle, type TransportLegDto } from "@yarnball/shared";
 import { toast } from "sonner";
-import { BedDouble, Bus, Car, ChevronDown, Clock, Footprints, Landmark, MapPin, Package, PlaneLanding, PlaneTakeoff, Repeat, TrainFront, UtensilsCrossed, Zap, type LucideIcon } from "lucide-react";
+import { BedDouble, Bus, Car, CarTaxiFront, ChevronDown, Clock, Footprints, Landmark, MapPin, Package, PlaneLanding, PlaneTakeoff, Repeat, Ship, TrainFront, TrainFrontTunnel, TramFront, UtensilsCrossed, Zap, type LucideIcon } from "lucide-react";
 import { api } from "../../api/client";
 import { api as libApi } from "../../lib/api";
 import { DAY_COLORS } from "../map/MapCanvas";
@@ -18,6 +18,7 @@ import {
 import { groupDaysByStop, isLoopClosed, isMultiCity } from "./stops";
 import {
   isRailSegment,
+  lineNamesSummary,
   lineSegmentText,
   transitDetailOf,
   transitSegmentCountText,
@@ -849,8 +850,9 @@ function TransitRow({
  *  M58：大交通端点的市内转移段（transit→首站 / 末站→transit）不再单独渲染锚定行，
  *  端点名与出发/到达时刻以 prefix 折进本行行首（如「从 悉尼机场 出发 ~10:00 ·」）。
  *  M47：传入 onToggle 时整行可点击——点击后地图上只显示该段路线，再点一次取消；选中态用品牌色环提示。
- *  M78：公交段（mode=transit）带 M77 公交详情时，主行追加「· N 段」概要 + 展开把手，
- *  展开后按序列出步行接驳/线路乘坐分段明细；无详情（osm 估算、旧数据）回退原有展示 */
+ *  M78：公共交通族段（transit/bus/metro/light_rail/train）带 M77 公交详情时，主行追加「· N 段」概要
+ *  + 具体线路名（M98）+ 展开把手，展开后按序列出步行接驳/线路乘坐分段明细；
+ *  无详情（osm 估算、旧数据）回退原有展示 */
 function LegRow({
   leg,
   toHotel,
@@ -875,9 +877,12 @@ function LegRow({
 }) {
   // modeOverride 非空 = 人工覆盖过（M1），自动重算不会冲掉；可点击徽标恢复自动
   const overridden = leg.modeOverride != null;
-  // M78：公交详情仅对 transit 段生效；无详情（osm 估算/旧数据）时 detail=null，整行维持原样
-  const detail = leg.mode === "transit" ? transitDetailOf(leg) : null;
+  // M78：公交详情对公共交通族（transit/bus/metro/light_rail/train）段生效；
+  // 无详情（osm 估算/旧数据/ferry）时 detail=null，整行维持原样
+  const detail = isTransitLikeMode(leg.mode) ? transitDetailOf(leg) : null;
   const [detailExpanded, setDetailExpanded] = useState(false);
+  // M98：主行附具体线路名概要（如「地铁2号线 / 45路」），无线路名为 null 不展示
+  const lineNames = detail ? lineNamesSummary(detail) : null;
   return (
     <div>
       <div
@@ -899,6 +904,11 @@ function LegRow({
           {leg.distanceM != null ? ` · ${formatDistance(leg.distanceM)}` : ""}
           {detail != null ? ` ${transitSegmentCountText(detail.length)}` : ""}
         </span>
+        {lineNames != null && (
+          <span className="min-w-0 truncate text-slate-400" title={lineNames}>
+            {lineNames}
+          </span>
+        )}
         {detail != null && (
           <button
             title={detailExpanded ? "收起公交分段明细" : "展开公交分段明细"}
@@ -1122,8 +1132,24 @@ function SelectHotelGuide({ onClick }: { onClick: () => void }) {
   );
 }
 
-function TransportIcon({ mode }: { mode: string }) {
-  if (mode === "walk") return <Footprints className="size-3 shrink-0 text-slate-400" />;
-  if (mode === "transit") return <Bus className="size-3 shrink-0 text-slate-400" />;
-  return <Car className="size-3 shrink-0 text-slate-400" />;
+/** 各交通方式独立图标（M98）：transit 细分子类型各自选型，泛 transit 兜底用 Bus */
+const TRANSPORT_MODE_ICONS: Record<TransportMode, LucideIcon> = {
+  walk: Footprints,
+  taxi: CarTaxiFront,
+  drive: Car,
+  transit: Bus,
+  bus: Bus,
+  metro: TrainFrontTunnel,
+  light_rail: TramFront,
+  train: TrainFront,
+  ferry: Ship,
+};
+
+function TransportIcon({ mode }: { mode: TransportMode }) {
+  const Icon = TRANSPORT_MODE_ICONS[mode] ?? Car;
+  return (
+    <span title={TRANSPORT_MODE_LABELS[mode]} className="flex shrink-0">
+      <Icon className="size-3 text-slate-400" aria-label={TRANSPORT_MODE_LABELS[mode]} />
+    </span>
+  );
 }

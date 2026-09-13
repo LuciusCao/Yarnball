@@ -24,8 +24,55 @@ export const SOURCE_TYPES = [
 ] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
 
-export const TRANSPORT_MODES = ["walk", "taxi", "transit", "drive"] as const;
+/**
+ * 市内交通段方式（TransportLegDto.mode / set_leg_mode 的取值）。
+ * 基础四值保留兼容：walk=步行 / taxi=出租车 / transit=泛公交（旧数据与未细分场景的兜底）/ drive=驾车；
+ * transit 的细分子类型：ferry=渡轮 / metro=地铁 / light_rail=轻轨 / train=火车（市内线/机场线）/ bus=公交。
+ * 自动判定只会产出 walk/transit/drive/ferry/train（场景化启发式，见服务端 recalcDayLegs），
+ * metro/light_rail/bus 主要由用户或 agent 手动覆盖指定。
+ */
+export const TRANSPORT_MODES = [
+  "walk",
+  "taxi",
+  "transit",
+  "drive",
+  "ferry",
+  "metro",
+  "light_rail",
+  "train",
+  "bus",
+] as const;
 export type TransportMode = (typeof TRANSPORT_MODES)[number];
+
+/** 市内交通方式中文文案（行程列表 / 导出打印共用，单一定义点） */
+export const TRANSPORT_MODE_LABELS: Record<TransportMode, string> = {
+  walk: "步行",
+  taxi: "打车/网约车",
+  transit: "公交",
+  drive: "驾车",
+  ferry: "渡轮",
+  metro: "地铁",
+  light_rail: "轻轨",
+  train: "火车",
+  bus: "公交",
+};
+
+/** 是否公共交通类方式（含兜底 transit 与全部细分子类型）：路由/展示层按同一族处理 */
+export function isTransitLikeMode(mode: TransportMode): boolean {
+  return (
+    mode === "transit" ||
+    mode === "bus" ||
+    mode === "metro" ||
+    mode === "light_rail" ||
+    mode === "train" ||
+    mode === "ferry"
+  );
+}
+
+/** 是否轨道类方式（地铁/轻轨/火车）：地图上画铁路样式而非公路线 */
+export function isRailMode(mode: TransportMode): boolean {
+  return mode === "metro" || mode === "light_rail" || mode === "train";
+}
 
 /**
  * 大交通方式（transit entry 的移动方式）：flight=航班 / train=火车高铁 / drive=自驾 / bus=大巴。
@@ -254,8 +301,8 @@ export type EntryDto = z.infer<typeof EntryDtoSchema>;
  * 公交分段详情（TransportLegDto.transitDetail 的元素）：
  * 高德公交路由返回的完整分段 —— walk=步行接驳段（起点→上车站 / 下车站→终点），
  * line=公交/地铁线路段（线路名、上下车站、途经站数、分段距离/时长）。
- * 仅 mode=transit 且 amap 真实公交路由成功时填充；osm（海外无免费公交路由）与
- * 估算降级场景整条 transitDetail 为 null，前端按「估算」口径展示。
+ * 仅公共交通族（transit/bus/metro/light_rail/train）且 amap 真实公交路由成功时填充；
+ * osm（海外无免费公交路由）与估算降级场景整条 transitDetail 为 null，前端按「估算」口径展示。
  */
 export const TRANSIT_SEGMENT_KINDS = ["walk", "line"] as const;
 export type TransitSegmentKind = (typeof TRANSIT_SEGMENT_KINDS)[number];
@@ -298,8 +345,9 @@ export const TransportLegDtoSchema = z.object({
   durationS: z.number().nullable(),
   polyline: z.array(LngLatSchema).nullable(),
   /**
-   * 公交分段详情（见 TransitSegmentSchema）：仅 mode=transit 且 amap 真实公交路由成功时非空；
-   * osm 估算、路由降级、其余 mode 及旧数据均为 null —— null 即「无详情，按估算口径展示」。
+   * 公交分段详情（见 TransitSegmentSchema）：仅公共交通族（transit/bus/metro/light_rail/train）
+   * 且 amap 真实公交路由成功时非空；osm 估算、路由降级、walk/drive/taxi/ferry 段及旧数据均为
+   * null —— null 即「无详情，按估算口径展示」。
    */
   transitDetail: z.array(TransitSegmentSchema).nullable(),
   computedAt: z.string(),

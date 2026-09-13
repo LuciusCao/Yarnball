@@ -45,6 +45,22 @@ export function transitSegmentCountText(segmentCount: number): string {
 }
 
 /**
+ * 主行概要里的具体线路名（M98）：去重后取前两条，如「地铁2号线 / 45路」，更多附「 等」；
+ * 无任何线路名（纯步行接驳等）返回 null，主行不展示。
+ */
+export function lineNamesSummary(detail: TransitSegment[]): string | null {
+  const names = [
+    ...new Set(
+      detail
+        .filter((s) => s.kind === "line" && s.lineName)
+        .map((s) => s.lineName!),
+    ),
+  ];
+  if (names.length === 0) return null;
+  return names.slice(0, 2).join(" / ") + (names.length > 2 ? " 等" : "");
+}
+
+/**
  * 步行接驳段明细文案：「步行 300 米 · 至 西二旗站」。
  * 起讫名按邻接 line 段推导：后邻 line → 「至 boardStop」；否则前邻 line → 「自 alightStop」；
  * 皆无（纯步行段，理论上 mode 不会是 transit）只给距离/时长。

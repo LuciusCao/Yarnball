@@ -5,7 +5,9 @@ import {
   circleSignature,
   lineSignature,
   markerSignature,
+  RAIL_LINE_COLOR,
   stopSignature,
+  WATER_LINE_COLOR,
   type OverlaySpecs,
 } from "./overlaySpecs";
 import type { MapRenderer } from "./MapCanvas";
@@ -139,8 +141,31 @@ export class AMapRenderer implements MapRenderer {
   }
 
   private createPolyline(line: OverlaySpecs["lines"][number]): any {
+    const path = line.path.map((p) => [p.lng, p.lat]);
+    // M98：渡轮画水上航线样式（固定水蓝点划线）、轨道类画铁路样式（深灰虚线、无方向箭头），
+    // 与公路线（天色实线 + 方向箭头）区分
+    if (line.style === "water") {
+      return new this.AMap.Polyline({
+        path,
+        strokeColor: WATER_LINE_COLOR,
+        strokeWeight: 3,
+        strokeOpacity: 0.9,
+        strokeStyle: "dashed",
+        showDir: false,
+      });
+    }
+    if (line.style === "rail") {
+      return new this.AMap.Polyline({
+        path,
+        strokeColor: RAIL_LINE_COLOR,
+        strokeWeight: 4,
+        strokeOpacity: 0.9,
+        strokeStyle: "dashed",
+        showDir: false,
+      });
+    }
     return new this.AMap.Polyline({
-      path: line.path.map((p) => [p.lng, p.lat]),
+      path,
       strokeColor: line.color,
       strokeWeight: 4,
       strokeOpacity: 0.8,
