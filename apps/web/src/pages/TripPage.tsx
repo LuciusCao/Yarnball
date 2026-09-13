@@ -590,7 +590,7 @@ export function TripPage() {
         {/* 导出入口（M97，issue #7）：打印预览弹层，浏览器打印对话框另存为 PDF */}
         <button
           onClick={() => setExportOpen(true)}
-          title="导出打印版行程（可另存为 PDF，便于打印/离线查看）"
+          title="导出行程为 PDF（便于打印/离线查看）"
           className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
         >
           <Printer className="size-3" />
