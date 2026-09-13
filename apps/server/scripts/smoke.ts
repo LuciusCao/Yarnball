@@ -10,7 +10,7 @@
  *      → tool_call → 回合结束
  *   4. permission_flow：另开会话，断言 permission_request 出现、UI 应答后
  *      agent 收到决策
- *   4.8 unlock_luggage_flow：锁定简化（agent 可改 locked 地点信息字段、
+ *   4.8 unlock_luggage_flow：锁定简化（agent 可改已加入行程（joined）地点信息字段、
  *      删除已排期地点被拒）+ 换酒店日行李动线（酒店再次入队、legs 正确）
  *   5. 清理（关会话）
  */
@@ -831,23 +831,23 @@ async function main() {
     const poiPlace2 = parsePlace(poi2);
     assert(poi2.result?.isError !== true && poiPlace2?.id === poiPlace.id, "dedup: same amapPoiId matches exactly regardless of name/coords");
     assert(poiPlace2?.name === "翡翠湖观景台", "dedup: existing name not overwritten");
-    // agent 对 locked place 的模糊命中：返回疑似重复信号且不回填（模糊判重路径本就不回填，
-    // 与状态无关；M54 后 locked 地点信息字段可由 update_place 正常补全）
-    const lockedPlace = await mkPlace({ name: "锁定的小吃店", category: "restaurant", location: { lng: 95.362, lat: 37.856 } });
-    assert(lockedPlace.status === "locked", "dedup: human REST create defaults to locked");
-    const lockedDup = await mcpCall(
+    // agent 对 joined place 的模糊命中：返回疑似重复信号且不回填（模糊判重路径本就不回填，
+    // 与状态无关；M54 后已加入行程地点信息字段可由 update_place 正常补全）
+    const joinedPlace = await mkPlace({ name: "必吃的小吃店", category: "restaurant", location: { lng: 95.362, lat: 37.856 } });
+    assert(joinedPlace.status === "joined", "dedup: human REST create defaults to joined");
+    const joinedDup = await mcpCall(
       "tools/call",
-      { name: "add_place", arguments: { name: "锁定的小吃店", category: "restaurant", location: { lng: 95.362, lat: 37.856 }, openingHours: "11:00-21:00" } },
+      { name: "add_place", arguments: { name: "必吃的小吃店", category: "restaurant", location: { lng: 95.362, lat: 37.856 }, openingHours: "11:00-21:00" } },
       15,
     );
-    const lockedDupSignal = parseDupSignal(lockedDup);
-    assert(lockedDup.result?.isError === true && lockedDupSignal?.existingPlace?.id === lockedPlace.id, "dedup: agent re-add of locked place gets duplicate signal");
-    assert(lockedDupSignal?.existingPlace?.status === "locked", "dedup: signal shows existing place is locked");
-    assert(lockedDupSignal?.existingPlace?.openingHours == null, "dedup: agent duplicate signal does not backfill user-locked place");
+    const joinedDupSignal = parseDupSignal(joinedDup);
+    assert(joinedDup.result?.isError === true && joinedDupSignal?.existingPlace?.id === joinedPlace.id, "dedup: agent re-add of joined place gets duplicate signal");
+    assert(joinedDupSignal?.existingPlace?.status === "joined", "dedup: signal shows existing place is joined");
+    assert(joinedDupSignal?.existingPlace?.openingHours == null, "dedup: agent duplicate signal does not backfill user-joined place");
     {
-      const { bundle: lockedBundle } = await api(`/trips/${mcTrip.id}`);
-      const stillLocked = lockedBundle.places.find((p: any) => p.id === lockedPlace.id);
-      assert(stillLocked?.openingHours == null, "dedup: locked place in bundle still not backfilled");
+      const { bundle: joinedBundle } = await api(`/trips/${mcTrip.id}`);
+      const stillJoined = joinedBundle.places.find((p: any) => p.id === joinedPlace.id);
+      assert(stillJoined?.openingHours == null, "dedup: joined place in bundle still not backfilled");
     }
 
     // 括号后缀规范化：「Aria」 vs 「Aria（East Circular Quay）」同坐标 → 疑似重复信号（剥全角括号后缀），不创建
@@ -895,21 +895,21 @@ async function main() {
 
     // 4.8 unlock_luggage_flow（M54）：锁定简化 + 换酒店日行李动线
     console.log("-- unlock_luggage_flow --");
-    // ① agent 可 update locked 地点（信息字段补全不再被锁定拦截；lockedPlace 由 dedup flow 建好，status=locked）
+    // ① agent 可 update joined 地点（信息字段补全不再被锁定拦截；joinedPlace 由 dedup flow 建好，status=joined）
     {
       const upd = await mcpCall(
         "tools/call",
-        { name: "update_place", arguments: { placeId: lockedPlace.id, website: "https://example.com/locked-shop", notes: "agent 补全备注" } },
+        { name: "update_place", arguments: { placeId: joinedPlace.id, website: "https://example.com/joined-shop", notes: "agent 补全备注" } },
         20,
       );
       const updBody = JSON.parse(upd.result?.content?.[0]?.text ?? "{}");
       assert(
-        upd.result?.isError !== true && updBody.place?.website === "https://example.com/locked-shop",
-        "unlock: agent update_place on a locked place succeeds",
+        upd.result?.isError !== true && updBody.place?.website === "https://example.com/joined-shop",
+        "unlock: agent update_place on a joined place succeeds",
       );
       const { bundle: b1 } = await api(`/trips/${mcTrip.id}`);
-      const p = b1.places.find((x: any) => x.id === lockedPlace.id);
-      assert(p?.status === "locked" && p?.notes === "agent 补全备注", "unlock: locked place keeps status, info fields updated");
+      const p = b1.places.find((x: any) => x.id === joinedPlace.id);
+      assert(p?.status === "joined" && p?.notes === "agent 补全备注", "unlock: joined place keeps status, info fields updated");
     }
     // ② 已排进行程（有 entry 引用）的地点 agent 不可直接删除——须先移出行程；未排期的可删
     {

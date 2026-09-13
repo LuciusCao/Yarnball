@@ -78,7 +78,7 @@ export const places = sqliteTable(
     /** 预订状态流转：none | pending | booked（以用户界面标记为准） */
     bookingStatus: text("booking_status").notNull().default("none"),
     createdBy: text("created_by").notNull().default("human"), // human | agent
-    /** 候选状态机：candidate | locked；human 手动创建在 service 层置 locked */
+    /** 候选状态机：candidate | joined；human 手动创建在 service 层置 joined */
     status: text("status").notNull().default("candidate"),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
   },

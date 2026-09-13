@@ -1,6 +1,6 @@
 /**
  * 候选写操作补充 —— 契约单点在 ../../lib/api.ts：
- * 加入/移出行程（setPlaceStatus，底层 locked 状态）、多酒店加入/移出（selectHotel/unselectHotel）、
+ * 加入/移出行程（setPlaceStatus，底层 joined 状态）、多酒店加入/移出（selectHotel/unselectHotel）、
  * M11 的 updateEntry / updatePlace（bookingStatus/openingHours）/ suggestDayClusters 都在那里；
  * 这里只保留 lib/api 尚未覆盖的删除/移出端点。
  */

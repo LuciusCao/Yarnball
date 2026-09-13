@@ -116,7 +116,7 @@ export const api = {
     return (await res.json()) as { place: PlaceDto };
   },
 
-  /** 地点加入/移出行程（PATCH /api/places/:id/status，locked=已加入、必排进日程） */
+  /** 地点加入/移出行程（PATCH /api/places/:id/status，joined=已加入、必排进日程） */
   setPlaceStatus: (placeId: string, status: PlaceStatus) =>
     request<{ place: PlaceDto }>(`/places/${placeId}/status`, {
       method: "PATCH",

@@ -34,15 +34,15 @@ import {
 /**
  * 候选面板 —— 全部未删地点的大本营（整合原 HotelPanel 的候选管理 + DiningPanel 的清单）。
  * 按 酒店/景点/美食/其他 分组；每项可加入行程（=确认要去，加入后才排日程）、删除；
- * 已排期地点也进池（M20）：徽章「已排期」（与 locked 的「已加入」区分）+ agent 推荐标记，排在各组候选之前，
+ * 已排期地点也进池（M20）：徽章「已排期」（与 joined 的「已加入」区分）+ agent 推荐标记，排在各组候选之前，
  * 「移出行程」撤销其全部日程 entry（POST /api/places/:id/unschedule），place 退回候选态不删除；
  * 酒店组支持加入多家酒店（M10 多酒店）：每家已加入酒店带 入住第N天/离店第M天 选择器，
  * 区间互相冲突的选项禁用并提示（服务端同样校验，见 M9 契约）。
- * 预订状态（M11）：每项显示 无需预订/待预订/已预订 徽章，locked 地点可点选流转；
+ * 预订状态（M11）：每项显示 无需预订/待预订/已预订 徽章，joined 地点可点选流转；
  * 待预订的已加入地点卡片高亮并在顶部汇总提醒。营业时间（openingHours）有值即展示。
- * M20：UI 话术统一为「加入行程」——非酒店 POI 的加入/移出走 locked 开关（「加入行程/移出行程」）；
+ * M20：UI 话术统一为「加入行程」——非酒店 POI 的加入/移出走 joined 开关（「加入行程/移出行程」）；
  * 酒店 select 动作话术（M61 对齐信息卡 M59 口径）为「加入住宿/移出住宿」（即选定住宿区间，含入离店天），
- * 底层 locked/select 语义不变；酒店的 locked 状态在 UI 上降级（不再单独展示加入状态与开关）。
+ * 底层 joined/select 语义不变；酒店的 joined 状态在 UI 上降级（不再单独展示加入状态与开关）。
  * 数据刷新：操作后走 SSE bundle 全量快照 + 主动 load 兜底，不做本地增量。
  * M25：面板顶部 segmented 切换（全部/酒店/景点/美食，各带数量徽标=该类别候选总数含已加入；
  * 「其他」类别只在「全部」视图出现）。默认「全部」= 原分组视图；切到类别 tab = 该类别单组列表
@@ -124,8 +124,8 @@ export function CandidatesPanel({
   const placeNameById = new Map(bundle.places.map((p) => [p.id, p.name]));
   const totalDays = bundle.days.length;
 
-  async function toggleLock(place: PlaceDto) {
-    const next = place.status === "locked" ? "candidate" : "locked";
+  async function toggleJoined(place: PlaceDto) {
+    const next = place.status === "joined" ? "candidate" : "joined";
     setBusy(true);
     try {
       await uxApi.setPlaceStatus(place.id, next);
@@ -137,7 +137,7 @@ export function CandidatesPanel({
     }
   }
 
-  /** 预订状态点选流转（M11：PATCH /api/places/:id 带 bookingStatus）：无需预订 → 待预订 → 已预订 → 无需预订；仅 locked 地点可操作 */
+  /** 预订状态点选流转（M11：PATCH /api/places/:id 带 bookingStatus）：无需预订 → 待预订 → 已预订 → 无需预订；仅 joined 地点可操作 */
   async function cycleBooking(place: PlaceDto) {
     setBusy(true);
     try {
@@ -229,9 +229,9 @@ export function CandidatesPanel({
   const tabCount = (key: TabKey) => (key === "all" ? totalCount : grouped[key].length);
   /** 当前 tab 下要渲染的组：「全部」保持分组视图，类别 tab 只渲染该组 */
   const visibleGroups: GroupKey[] = tab === "all" ? GROUP_ORDER : [tab];
-  /** 待预订的已加入地点（M11，底层仍是 locked 状态）：顶部汇总提醒 + 卡片高亮 */
-  const pendingLockedCount = bundle.places.filter(
-    (p) => p.status === "locked" && bookingStatusOf(p) === "pending",
+  /** 待预订的已加入地点（M11，底层仍是 joined 状态）：顶部汇总提醒 + 卡片高亮 */
+  const pendingJoinedCount = bundle.places.filter(
+    (p) => p.status === "joined" && bookingStatusOf(p) === "pending",
   ).length;
 
   return (
@@ -260,10 +260,10 @@ export function CandidatesPanel({
           </button>
         ))}
       </div>
-      {pendingLockedCount > 0 && (
+      {pendingJoinedCount > 0 && (
         <div className="mb-3 flex items-center gap-1.5 rounded-xl border border-orange-300/70 bg-orange-100/60 px-3 py-2 text-xs text-orange-700">
           <CalendarCheck className="size-3.5 shrink-0" />
-          有 {pendingLockedCount} 个已加入行程的地点待预订，出行前记得完成预订（点徽章可标记已预订）。
+          有 {pendingJoinedCount} 个已加入行程的地点待预订，出行前记得完成预订（点徽章可标记已预订）。
         </div>
       )}
       {totalCount === 0 && (
@@ -315,26 +315,26 @@ export function CandidatesPanel({
 
             <div className="space-y-2">
               {places.map((place, placeIdx) => {
-                const locked = place.status === "locked";
+                const joined = place.status === "joined";
                 const booking = bookingStatusOf(place);
-                const pendingLocked = locked && booking === "pending";
+                const pendingJoined = joined && booking === "pending";
                 const openingHours = openingHoursOf(place);
                 const hotelCand = hotelCandByPlaceId.get(place.id);
                 const stay = hotelCand ? stayByCandidateId.get(hotelCand.id) : undefined;
                 const isSelectedHotel = stay != null;
-                /** 酒店候选（M20）：locked 状态在 UI 上降级——主按钮「加入住宿」（M61 话术，原「加入行程」）即含住宿区间，不再单独展示 locked 徽章与加入/移出开关 */
+                /** 酒店候选（M20）：joined 状态在 UI 上降级——主按钮「加入住宿」（M61 话术，原「加入行程」）即含住宿区间，不再单独展示 joined 徽章与加入/移出开关 */
                 const isHotel = key === "hotel" && hotelCand != null;
                 const price =
                   key === "hotel"
                     ? (hotelCand?.pricePerNight ?? place.priceCny)
                     : place.priceCny;
                 const selected = place.id === selectedPlaceId;
-                /** 已排期（M20：也进候选，徽章「已排期」（与 locked 的「已加入」区分）+ agent 推荐标记，可「移出行程」撤销排期） */
+                /** 已排期（M20：也进候选，徽章「已排期」（与 joined 的「已加入」区分）+ agent 推荐标记，可「移出行程」撤销排期） */
                 const scheduled = scheduledPlaceIds.has(place.id);
 
                 // 是否有徽章要展示（没有就不渲染徽章行，避免多余间距）
                 const showBadges =
-                  place.createdBy === "agent" || scheduled || (locked && !isHotel) || booking !== "none";
+                  place.createdBy === "agent" || scheduled || (joined && !isHotel) || booking !== "none";
 
                 return (
                   <Fragment key={place.id}>
@@ -355,10 +355,10 @@ export function CandidatesPanel({
                           ? "border-scheduled/30 bg-scheduled/5"
                           : isSelectedHotel
                           ? "border-hotelpin/40 bg-hotelpin/8 ring-1 ring-hotelpin/30"
-                          : pendingLocked
+                          : pendingJoined
                             ? "border-orange-400 bg-orange-50/70 ring-1 ring-orange-300"
-                            : locked
-                              ? "border-locked/30 bg-locked/5"
+                            : joined
+                              ? "border-joined/30 bg-joined/5"
                               : "border-slate-900/10 bg-white/60"
                     }`}
                   >
@@ -389,7 +389,7 @@ export function CandidatesPanel({
                               .join(" · ")}
                           </p>
                         )}
-                        {/* 徽章行（消费 M13 令牌变体）；预订状态徽章 locked 时可点选流转，候选态仅展示 */}
+                        {/* 徽章行（消费 M13 令牌变体）；预订状态徽章 joined 时可点选流转，候选态仅展示 */}
                         {showBadges && (
                           <div className="mt-1 flex flex-wrap items-center gap-1">
                             {place.createdBy === "agent" && (
@@ -401,9 +401,9 @@ export function CandidatesPanel({
                             {scheduled ? (
                               <Badge variant="scheduled">已排期</Badge>
                             ) : (
-                              locked && !isHotel && <Badge variant="locked">已加入</Badge>
+                              joined && !isHotel && <Badge variant="joined">已加入</Badge>
                             )}
-                            {locked ? (
+                            {joined ? (
                               <button
                                 title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
                                 disabled={busy}
@@ -491,22 +491,22 @@ export function CandidatesPanel({
                               title={
                                 scheduled
                                   ? "移出行程（撤销排入的日程，退回候选）"
-                                  : locked
+                                  : joined
                                     ? "移出行程（退回候选，不再必排进日程）"
                                     : "加入行程（确认要去，排日程时必排）"
                               }
                               disabled={busy}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                void (scheduled ? unschedule(place) : toggleLock(place));
+                                void (scheduled ? unschedule(place) : toggleJoined(place));
                               }}
                               className={`flex size-7 items-center justify-center rounded-lg transition-colors disabled:opacity-50 ${
-                                locked
-                                  ? "bg-locked/10 text-locked hover:bg-locked/20"
-                                  : "text-slate-400 hover:bg-slate-900/8 hover:text-locked"
+                                joined
+                                  ? "bg-joined/10 text-joined hover:bg-joined/20"
+                                  : "text-slate-400 hover:bg-slate-900/8 hover:text-joined"
                               }`}
                             >
-                              {scheduled || locked ? (
+                              {scheduled || joined ? (
                                 <CalendarMinus className="size-3.5" />
                               ) : (
                                 <CalendarPlus className="size-3.5" />

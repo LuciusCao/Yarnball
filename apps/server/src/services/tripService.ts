@@ -548,7 +548,7 @@ export class TripService {
    * 单城市退化为「距 stops[0]（= 目的城市中心）≤ 单中心阈值」，与 stops 特性前完全一致；
    * 多城市改「距任一 stop.center ≤ 多中心阈值（min 距离）」。agent 被拒时应引导其先调 search_poi 拿真实坐标。
    * cityName 自动填充：显式传 > 距最近 stop.center ≤150km 归该 stop > null（归属未知不阻断）。
-   * 状态机：agent 建的默认 candidate（候选池）；human 手动建的默认 locked（确认要去）。
+   * 状态机：agent 建的默认 candidate（候选池）；human 手动建的默认 joined（确认要去）。
    * 判重（REST / MCP 共用此入口）：
    * - amapPoiId 精确匹配 → 幂等返回已有 place，并补齐其缺失的详情字段（不覆盖已有值，不限状态）；
    * - 规范化名称匹配（完全相等 / 互为前缀，见 placeNameMatch）且坐标距离 ≤200m → 抛
@@ -619,7 +619,7 @@ export class TripService {
         openingHours: input.openingHours ?? null,
         bookingStatus: input.bookingStatus ?? "none",
         createdBy: actor,
-        status: input.status ?? (actor === "human" ? "locked" : "candidate"),
+        status: input.status ?? (actor === "human" ? "joined" : "candidate"),
       })
       .returning();
     await this.touchTrip(tripId);
@@ -629,7 +629,7 @@ export class TripService {
 
   /**
    * 幂等命中（amapPoiId 精确匹配）时复用已有 place：补齐其空字段（绝不覆盖已有值）。
-   * 不限 locked：agent 可补全任何地点的信息字段（补官网/改备注等）。
+   * 不限 joined：agent 可补全任何地点的信息字段（补官网/改备注等）。
    */
   private async backfillExistingPlace(
     tripId: string,
@@ -695,7 +695,7 @@ export class TripService {
     }
   }
 
-  /** 加入/移出行程（用户确认候选 → locked=已加入行程；退回候选池 → candidate）。UI 话术为「加入行程/移出行程」 */
+  /** 加入/移出行程（用户确认候选 → joined=已加入行程；退回候选池 → candidate）。UI 话术为「加入行程/移出行程」 */
   async setPlaceStatus(placeId: string, status: PlaceStatus) {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
@@ -2193,7 +2193,7 @@ export class TripService {
   /**
    * 预算汇总：住宿（各已选定酒店 × 各自覆盖晚数求和，每晚价 × 晚数，不按人数计）
    * + 美食（已加入餐厅人均 × 人数）+ 门票（已加入景点 × 人数）。
-   * 美食/门票只计已加入行程（locked）的地点，候选池里未加入的不计入；
+   * 美食/门票只计已加入行程（joined）的地点，候选池里未加入的不计入；
    * 交通费不自动计入（打车/公交成本因人而异，提示用户自行预留）。
    * unpricedCount = 已加入但未填价格的餐厅/景点数 + 已选定但未填每晚价的酒店数（预算低估提醒）。
    */
@@ -2244,13 +2244,13 @@ export class TripService {
     }
     const nights = hotelSelected ? coveredNightsTotal : Math.max(0, tripDays - 1);
 
-    // 美食/门票：只计已加入行程（locked）的地点——预算辅助决策「已加入项」，
+    // 美食/门票：只计已加入行程（joined）的地点——预算辅助决策「已加入项」，
     // 候选池（candidate）里未加入的地点不计入，未定价的计入 unpricedCount 提醒
     let diningCny = 0;
     let ticketsCny = 0;
     for (const p of places) {
       if (p.category === "hotel") continue;
-      if (p.status !== "locked") continue;
+      if (p.status !== "joined") continue;
       if (p.priceCny == null) {
         if (p.category === "restaurant" || p.category === "attraction" || p.category === "activity") {
           unpricedCount += 1;

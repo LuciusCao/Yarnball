@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
+import pkg from "../../package.json" with { type: "json" };
 import type { ChatMessageDto } from "@yarnball/shared";
 import { and, asc, desc, eq, gt, max, ne, sql } from "drizzle-orm";
 import type { Db } from "../db/client.js";
@@ -363,7 +364,7 @@ export class SessionHandle {
         const initResult = await ctx.request(acp.methods.agent.initialize, {
           protocolVersion: acp.PROTOCOL_VERSION,
           clientCapabilities: { terminal: true },
-          clientInfo: { name: "yarnball", title: "Yarnball", version: "0.1.0" },
+          clientInfo: { name: "yarnball", title: "Yarnball", version: pkg.version },
         });
 
         const { token } = await this.mintAndStoreToken();
