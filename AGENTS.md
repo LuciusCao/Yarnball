@@ -147,6 +147,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - 前端组件用函数组件 + hooks；状态走 zustand store，服务端数据用 react-query / SSE 订阅
 - 动态接口数据（如天气，会随时间变化、非行程事实）走 react-query 缓存/刷新，**不进 zustand bundle**；bundle 只承载行程数据快照
 - SSE 的 bundle 事件是**服务端全量快照，前端直接替换**（单机数据量小，全量最可靠），不要在前端做增量合并优化
+- Tauri 壳新增 `#[tauri::command]` 必须同步两处 ACL 声明（M104 export_pdf 漏配被「Command xxx not allowed by ACL」拦截的教训）：`src-tauri/build.rs` 的 `AppManifest::commands`（自动生成 `allow-<cmd>` 权限，下划线转连字符）+ `capabilities/default.json` 引用该权限；注意生产态窗口加载 sidecar 回源 `http://127.0.0.1:<port>`，tauri 归类为 remote 来源，能力必须带 `remote.urls` 段权限才对壳内生效
 
 ## Agent 集成关键点（改这块前先读 README 和对应源码）
 
