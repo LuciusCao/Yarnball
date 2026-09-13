@@ -12,6 +12,7 @@ import {
   formatDuration,
   formatMoney,
   formatVisitDuration,
+  isDomesticOsmTrip,
   TRANSPORT_MODE_LABELS,
   TRIP_NOTE_CATEGORIES,
   TRIP_NOTE_CATEGORY_LABELS,
@@ -289,7 +290,7 @@ export function ExportPrintSheet({ bundle, weather = null }: { bundle: TripBundl
       <h1>{trip.title}</h1>
       <p className="ybe-sub">
         {stopsText}
-        {trip.geoProvider === "osm" ? "（海外）" : ""}
+        {trip.geoProvider === "osm" ? (isDomesticOsmTrip(trip) ? "（开源引擎）" : "（海外）") : ""}
       </p>
 
       {/* 行程概览 */}

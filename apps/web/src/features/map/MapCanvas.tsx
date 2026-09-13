@@ -8,7 +8,7 @@ import { MapLibreRenderer } from "./maplibreRenderer";
 /**
  * 地图画布 —— 双引擎调度器。
  * 国内行程（geoProvider=amap）：高德 JSAPI 2.0（GCJ-02，POI 数据好）。
- * 海外行程（geoProvider=osm）：MapLibre GL + OSM 瓦片（WGS84，零 key）。
+ * 海外行程 + 未配 key 的国内零配置回退行程（geoProvider=osm）：MapLibre GL + OSM 瓦片（WGS84，零 key）。
  * 两个渲染器消费同一份 overlay specs（数据层在 overlaySpecs.ts）。
  * 坐标系不同，引擎与 provider 一一对应，绝不混用。
  */

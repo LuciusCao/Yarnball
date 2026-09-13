@@ -152,6 +152,7 @@ export class AcpSessionManager {
       trip?.title ?? "",
       trip?.destinationCity ?? "",
       (trip?.geoProvider as "amap" | "osm") ?? "osm",
+      trip?.geoProvider === "amap" || trip?.country === "中国",
     );
     this.handles.set(row.id, handle);
     try {
@@ -267,6 +268,8 @@ export class SessionHandle {
   private tripTitle = "";
   private tripCity = "";
   private tripProvider: "amap" | "osm" = "osm";
+  /** 目的地是否国内（M113）：国内 + osm 引擎的零配置回退行程，bootstrap prompt 要加全名搜索/公交估算纪律 */
+  private tripDomestic = false;
   /** 句柄自判不可自愈（滚动换进程失败）时把自己从 manager 摘除；startSession 注入 */
   private unregisterSelf: (() => void) | null = null;
 
@@ -565,7 +568,7 @@ export class SessionHandle {
 
     let prefix = "";
     if (!this.firstPromptDone) {
-      prefix = bootstrapPrompt(this.tripTitle, this.tripCity, this.tripProvider);
+      prefix = bootstrapPrompt(this.tripTitle, this.tripCity, this.tripProvider, this.tripDomestic);
       if (this.pendingReplay) {
         prefix += `\n\n${this.pendingReplay}`;
         this.pendingReplay = null;
@@ -1298,10 +1301,11 @@ export class SessionHandle {
     return listAllChatMessages(this.db, this.sessionRow.id);
   }
 
-  setTripInfo(title: string, city: string, provider: "amap" | "osm") {
+  setTripInfo(title: string, city: string, provider: "amap" | "osm", domestic = false) {
     this.tripTitle = title;
     this.tripCity = city;
     this.tripProvider = provider;
+    this.tripDomestic = domestic;
   }
 
   /** 所属行程（stopByTrip 按它匹配句柄） */

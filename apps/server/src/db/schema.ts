@@ -17,8 +17,13 @@ export const trips = sqliteTable("trips", {
   title: text("title").notNull(),
   destinationCity: text("destination_city").notNull(),
   cityAdcode: text("city_adcode"),
-  /** 地理 provider：amap（国内）| osm（海外） */
+  /** 地理 provider：amap（国内，配齐 key）| osm（海外 + 未配 key 的国内零配置回退） */
   geoProvider: text("geo_provider").notNull().default("osm"),
+  /**
+   * 目的地国家（M113）：建行程/自愈重解析时落库，中国归一为「中国」。
+   * 国内 + osm 引擎的零配置回退行程靠它识别（isDomesticOsmTrip）；存量行程为 null。
+   */
+  country: text("country"),
   cityCenterLng: real("city_center_lng"),
   cityCenterLat: real("city_center_lat"),
   /**

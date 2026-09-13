@@ -77,8 +77,8 @@ const server = serve({ fetch: app.fetch, port: env.serverPort, hostname: env.ser
   await seedAgents();
   if (!amapConfigured()) {
     console.warn(
-      "[yarnball] AMAP keys not configured — POI search / routing will use rough estimates. " +
-        "Set them in 设置页 or .env (see .env.example).",
+      "[yarnball] AMAP keys not configured — 国内行程将使用开源地图引擎（OSM），" +
+        "POI/公交数据质量低于高德。在设置页或 .env 配置 key 后，新建国内行程自动回高德（见 .env.example）。",
     );
   }
 });

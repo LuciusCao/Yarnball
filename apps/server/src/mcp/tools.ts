@@ -6,6 +6,7 @@ import {
   CalendarDateSchema,
   CreateHotelCandidateInputSchema,
   CreatePlaceInputSchema,
+  isDomesticOsmTrip,
   isTransitLikeMode,
   LngLatSchema,
   SelectHotelInputSchema,
@@ -329,7 +330,8 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
         .from(schema.chatSessions)
         .where(eq(schema.chatSessions.id, ctx.chatSessionId));
       if (session?.uiContext) uiContext = session.uiContext;
-      const overseas = bundle.trip.geoProvider === "osm";
+      const domesticOsm = isDomesticOsmTrip(bundle.trip);
+      const overseas = bundle.trip.geoProvider === "osm" && !domesticOsm;
       return json({
         trip: bundle.trip,
         days: bundle.days,
@@ -353,6 +355,9 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
           ` legs[] 为每天的市内交通段：seq 为天内顺序；端点二选一（entryId 或 placeId，酒店往返段用 placeId）；mode 为交通方式（walk|taxi|drive|transit|bus|metro|light_rail|train|ferry，自动判定只会产出 walk/transit/drive/train/ferry，其余子类型靠 set_leg_mode 指定），modeOverride 非空表示被人工/agent 用 set_leg_mode 手动覆盖（重算交通段不会冲掉覆盖）；distanceM/durationS 为真实路由结果，polyline 为路径坐标。` +
           (overseas
             ? ` 本行程是海外目的地（${bundle.trip.destinationCity}，${bundle.trip.geoProvider} provider）：search_poi 时用英文或当地语言名称（如 "Sydney Opera House"）效果最好。`
+            : "") +
+          (domesticOsm
+            ? ` 本行程是国内目的地但走开源引擎（OSM，创建时未配高德 key）：search_poi 必须用官方全名（如「北京首都国际机场」而非「首都机场」），简称常搜不到；市内公交为估算，排天留足缓冲。`
             : ""),
       });
     },
@@ -362,7 +367,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "search_poi",
     {
       description:
-        "按关键词搜索真实地点（POI），返回名称、地址、精确坐标（坐标系与行程引擎一致：国内行程=高德 GCJ-02、海外行程=WGS-84，原样传给 add_place/get_route 即可，无需也不许转换）、poiId、cityName（归属城市）。**创建任何地点前必须先调这个工具**，用返回的 location 作为坐标——绝不自行填写或编造经纬度。多城市行程（trip.stops 多个节点）：搜目标城市的地点时务必传 city 参数（如搜「莫高窟」传 city=敦煌），并把返回的 cityName 带到 add_place。",
+        "按关键词搜索真实地点（POI），返回名称、地址、精确坐标（坐标系与行程引擎一致：高德引擎（国内）=GCJ-02、开源引擎（海外 + 未配 key 的国内零配置回退行程）=WGS-84，原样传给 add_place/get_route 即可，无需也不许转换）、poiId、cityName（归属城市）。**创建任何地点前必须先调这个工具**，用返回的 location 作为坐标——绝不自行填写或编造经纬度。多城市行程（trip.stops 多个节点）：搜目标城市的地点时务必传 city 参数（如搜「莫高窟」传 city=敦煌），并把返回的 cityName 带到 add_place。",
       inputSchema: SearchPoiInput.shape,
     },
     async ({ keyword, city }) => {
@@ -387,7 +392,8 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
         }
         throw err;
       }
-      const overseas = provider.name === "osm";
+      const domesticOsm = provider.name === "osm" && trip?.country === "中国";
+      const overseas = provider.name === "osm" && !domesticOsm;
       return json({
         keyword,
         city: cityUsed,
@@ -396,10 +402,14 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
           candidates.length === 0
             ? overseas
               ? "没有找到结果。海外地点请用英文或当地语言搜索（如 'Sydney Opera House'），也可尝试更通用的关键词。"
-              : "没有找到结果，试试更通用的关键词（如去掉门店名/商场名）。"
+              : domesticOsm
+                ? "没有找到结果。请用官方全名搜索（如「北京首都国际机场」而非「首都机场」），也可尝试更通用的关键词或已知地址。"
+                : "没有找到结果，试试更通用的关键词（如去掉门店名/商场名）。"
             : overseas
               ? "海外行程：请确认候选确实在目的地城市附近再使用。"
-              : undefined,
+              : domesticOsm
+                ? "请确认候选确实在目的地城市附近再使用（OSM 数据存在同名地点）。"
+                : undefined,
       });
     },
   );
@@ -656,7 +666,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "get_route",
     {
       description:
-        "查两点间路线，返回距离、耗时和真实路径坐标。mode：walk 步行 / drive 驾车 / taxi 出租车（按驾车路由估算，费用另计）/ transit 泛公交地铁 / bus 公交 / metro 地铁 / light_rail 轻轨 / train 火车（市内线/机场线，公交族均按公交换乘路由，海外走 transitous 真实换乘、未命中降级估算）/ ferry 渡轮（无上游轮渡路由，返回直线水域航线估算）。端点二选一：**优先 fromPlaceId/toPlaceId**（行程内地点 id，从 get_trip_context 或 search_poi+add_place 拿）；或 from/to 裸坐标（坐标系必须与行程引擎一致：国内 GCJ-02、海外 WGS-84，直接复用 search_poi 返回的 location 不会错）。",
+        "查两点间路线，返回距离、耗时和真实路径坐标。mode：walk 步行 / drive 驾车 / taxi 出租车（按驾车路由估算，费用另计）/ transit 泛公交地铁 / bus 公交 / metro 地铁 / light_rail 轻轨 / train 火车（市内线/机场线，公交族均按公交换乘路由，海外走 transitous 真实换乘、未命中降级估算；国内开源引擎行程无实时公交数据，公交为估算）/ ferry 渡轮（无上游轮渡路由，返回直线水域航线估算）。端点二选一：**优先 fromPlaceId/toPlaceId**（行程内地点 id，从 get_trip_context 或 search_poi+add_place 拿）；或 from/to 裸坐标（坐标系必须与行程引擎一致：高德引擎 GCJ-02、开源引擎 WGS-84，直接复用 search_poi 返回的 location 不会错）。",
       inputSchema: GetRouteInput.shape,
     },
     async ({ from, to, fromPlaceId, toPlaceId, mode }) => {

@@ -108,9 +108,24 @@ export type EntryType = (typeof ENTRY_TYPES)[number];
 export const BOOKING_STATUSES = ["none", "pending", "booked"] as const;
 export type BookingStatus = (typeof BOOKING_STATUSES)[number];
 
-/** 地理服务 provider：amap（国内，需 key）| osm（海外，零 key） */
+/**
+ * 地理服务 provider：amap（国内，配齐 key 时启用，GCJ-02）| osm（海外，以及未配 key 的国内
+ * 零配置回退，WGS84）。引擎在建行程时定死（trips.geoProvider），单行程不混坐标系。
+ */
 export const GEO_PROVIDERS = ["amap", "osm"] as const;
 export type GeoProviderName = (typeof GEO_PROVIDERS)[number];
+
+/**
+ * 国内 + 开源引擎行程（M113 零配置回退）：目的地在中国但创建时未配齐高德 key，
+ * 全链走 OSM 栈（WGS84）。前端用它给降级提示/徽标，server 用它给 bootstrap prompt 加纪律。
+ * country 由建行程时的目的地解析落库（中国归一为「中国」）；存量行程该列为 null，不命中。
+ */
+export function isDomesticOsmTrip(trip: {
+  geoProvider: GeoProviderName;
+  country: string | null;
+}): boolean {
+  return trip.geoProvider === "osm" && trip.country === "中国";
+}
 
 /**
  * 行程级注意事项分类（trip_notes.category）：agent 按目的地/出行日期预填与更新。
@@ -240,6 +255,8 @@ export const TripDtoSchema = z.object({
   destinationCity: z.string(),
   cityAdcode: z.string().nullable(),
   geoProvider: z.enum(GEO_PROVIDERS),
+  /** 目的地国家（建行程解析落库，中国归一为「中国」）；存量行程为 null。国内 + osm 引擎判定见 isDomesticOsmTrip */
+  country: z.string().nullable(),
   location: LngLatSchema.nullable(),
   /** 有序途经地节点（多城市/环线）；单城市行程恒为 1 个元素，destinationCity/location 是 stops[0] 镜像 */
   stops: z.array(TripStopSchema),
@@ -457,7 +474,7 @@ export const CreateTripInputSchema = z.object({
    * 缺省 = [destinationCity]（单城市，完全向后兼容）；提供时首元素即主目的地（镜像到 destinationCity）。
    */
   stops: z.array(z.string().min(1).max(60)).min(1).max(20).optional(),
-  /** 显式指定地理 provider；缺省按目的地自动判定（国内→amap，海外→osm） */
+  /** 显式指定地理 provider；缺省按目的地自动判定（国内→amap，未配 key 的国内→osm 零配置回退，海外→osm） */
   geoProvider: z.enum(GEO_PROVIDERS).optional(),
   startDate: CalendarDateSchema.nullable().optional(),
   endDate: CalendarDateSchema.nullable().optional(),

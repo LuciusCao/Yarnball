@@ -6,10 +6,10 @@ import { getAmapServerKey } from "./settings.js";
 
 /**
  * GeoProvider —— 地理服务抽象。
- * - amap：国内。高德 Web 服务 API（需 key），POI/路径规划/距离矩阵，坐标 GCJ-02。
- * - osm：海外。Photon 搜索 + FOSSGIS OSRM 路线/矩阵 + transitous（MOTIS 2）真实公交
- *   换乘（全部零 key），坐标 WGS84。
- * 行程创建时按目的地定死 provider，之后搜索/路线/地图渲染/矩阵全部走同一 provider，
+ * - amap：国内（配齐 key 时）。高德 Web 服务 API（需 key），POI/路径规划/距离矩阵，坐标 GCJ-02。
+ * - osm：海外 + 未配 key 的国内零配置回退（M113）。Photon 搜索 + FOSSGIS OSRM 路线/矩阵 +
+ *   transitous（MOTIS 2）真实公交换乘（全部零 key；transitous 国内 GTFS 无覆盖，国内公交为估算），坐标 WGS84。
+ * 行程创建时按目的地与 key 配置定死 provider，之后搜索/路线/地图渲染/矩阵全部走同一 provider，
  * 绝不混用（GCJ-02 与 WGS84 偏移约几百米，混用会把点画进海里）。
  */
 
@@ -74,6 +74,14 @@ const COUNTRY_CURRENCIES: Record<string, string> = {
 export function currencyForCountry(countryCode: string | null | undefined): string {
   if (!countryCode) return "USD";
   return COUNTRY_CURRENCIES[countryCode.toLowerCase()] ?? "USD";
+}
+
+/**
+ * 目的地国家是否为中国：高德返回「中国」，Nominatim（accept-language=zh）也返回「中国」，
+ * Photon 后备返回英文「China」——三处来源统一在这里判。
+ */
+export function isChinaCountry(country: string | null | undefined): boolean {
+  return country === "中国" || country === "China";
 }
 
 export function getProvider(name: string): GeoProvider {
@@ -401,7 +409,7 @@ export const amap: GeoProvider = {
   },
 };
 
-// ---------- OSM 生态（海外，零 key） ----------
+// ---------- OSM 生态（海外 + 国内零配置回退，零 key） ----------
 
 /**
  * Photon（komoot，基于 OSM 数据）：地点搜索 + 地理编码，无需 key。

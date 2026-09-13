@@ -43,6 +43,7 @@ export function toTripDto(row: TripRow): TripDto {
     destinationCity: row.destinationCity,
     cityAdcode: row.cityAdcode,
     geoProvider: row.geoProvider as TripDto["geoProvider"],
+    country: row.country ?? null,
     location,
     stops,
     startDate: row.startDate,

@@ -12,8 +12,11 @@ export function bootstrapPrompt(
   tripTitle: string,
   destinationCity: string,
   geoProvider: GeoProviderName = "osm",
+  domestic = false,
 ): string {
-  const overseas = geoProvider === "osm";
+  const overseas = geoProvider === "osm" && !domestic;
+  // 国内 + 开源引擎（M113 零配置回退）：目的地在中国但创建时未配高德 key，全链 OSM 栈
+  const domesticOsm = geoProvider === "osm" && domestic;
   const lines = [
     `你是毛线团（Yarnball）行程编辑器的操作 agent，当前行程是「${tripTitle}」（目的地：${destinationCity}）。`,
     ``,
@@ -44,6 +47,11 @@ export function bootstrapPrompt(
     ...(overseas
       ? [
           `   海外行程注意：搜索时用**英文或当地语言**名称（如 "Sydney Opera House"、"Margaret Restaurant Sydney"），中文译名常常搜不到。`,
+        ]
+      : []),
+    ...(domesticOsm
+      ? [
+          `   国内行程（开源引擎）注意：本行程走 OpenStreetMap 数据，搜索时必须用**官方全名**（如「北京首都国际机场」而不是「首都机场」），简称/别名常常搜不到；搜不到时可用已知地址搜坐标，并在 notes 注明。市内公交为**估算**（无国内实时公交数据），时长可能偏差较大，排天留足缓冲。`,
         ]
       : []),
     `2. **先看后动**：第一次操作前先 get_trip_context 了解行程现状（哪些候选、哪些已加入行程、排了哪些天）。`,

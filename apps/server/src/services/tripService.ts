@@ -45,7 +45,7 @@ import {
   toTripDto,
   toTripNoteDto,
 } from "./mappers.js";
-import { amap, currencyForCountry, drivingMatrixBatched, fallbackRoute, ferryRouteEstimate, getProvider, haversineM, osm } from "./geo.js";
+import { amap, currencyForCountry, drivingMatrixBatched, fallbackRoute, ferryRouteEstimate, getProvider, haversineM, isChinaCountry, osm } from "./geo.js";
 import { insertionIncrements, kMedoids, optimizeLoopOrder, optimizeOrder, optimizePathOrder, orderTotalDuration } from "./routing.js";
 import { amapConfigured } from "./settings.js";
 
@@ -280,11 +280,13 @@ export class TripService {
 
   /**
    * 目的地解析 + provider 判定（创建与自愈共用）：
-   * 1. 高德可用时优先（country=中国 → amap，GCJ-02）
+   * 1. 高德可用（配齐 key，或显式 forced=amap）时优先（country=中国 → amap，GCJ-02）
    * 2. 否则走 OSM 栈（Nominatim 优先），按返回的国家判定：
-   *    中国目的地 → amap（即使未配 key——数据模型必须正确，否则中文 POI 搜索
-   *    会错到别的城市；未配 key 时搜索/路线给出明确配置提示，路线降级直线估算）
+   *    中国目的地 → 配齐 key 判 amap（数据模型必须正确，否则中文 POI 搜索会错到别的城市）；
+   *    未配 key 判 osm（M113 零配置回退：全链 WGS84，与海外同代码路径——Photon 搜索 /
+   *    OSRM 路由可用，公交为估算；配 key 后新建的国内行程自动回 amap）
    * 判定不出国家（网络失败）→ osm、center null（前端触发自愈重试）。
+   * country 落库 trips.country（中国归一为「中国」），国内 + osm 行程靠它识别（isDomesticOsmTrip）。
    */
   private async resolveDestination(
     city: string,
@@ -294,42 +296,53 @@ export class TripService {
     adcode: string | null;
     center: LngLat | null;
     currency: string;
+    country: string | null;
+    domestic: boolean;
   }> {
     if (forced === "amap" || (!forced && amapConfigured())) {
       try {
         const geo = await amap.resolveCity(city);
-        if (geo?.country === "中国") {
-          return { provider: "amap", adcode: geo.adcode, center: geo.center, currency: "CNY" };
+        if (geo && isChinaCountry(geo.country)) {
+          return { provider: "amap", adcode: geo.adcode, center: geo.center, currency: "CNY", country: "中国", domestic: true };
         }
       } catch (err) {
         console.warn("[trip] amap resolveCity failed:", (err as Error).message);
       }
-      if (forced === "amap") return { provider: "amap", adcode: null, center: null, currency: "CNY" };
+      if (forced === "amap")
+        return { provider: "amap", adcode: null, center: null, currency: "CNY", country: null, domestic: true };
     }
     try {
       const geo = await osm.resolveCity(city);
       if (geo) {
-        if (geo.country === "中国" || geo.country === "China") {
-          return { provider: "amap", adcode: null, center: geo.center, currency: "CNY" };
+        if (isChinaCountry(geo.country)) {
+          // 国内：key 齐备 → amap（高德 resolve 失败时 center 暂用 OSM 结果，自愈可重解析）；
+          // 未配 key → osm 零配置回退（存量 amap 行程的翻面防护在 reResolveCity）
+          if (amapConfigured()) {
+            return { provider: "amap", adcode: null, center: geo.center, currency: "CNY", country: "中国", domestic: true };
+          }
+          return { provider: "osm", adcode: null, center: geo.center, currency: "CNY", country: "中国", domestic: true };
         }
         return {
           provider: "osm",
           adcode: null,
           center: geo.center,
           currency: currencyForCountry(geo.countryCode),
+          country: geo.country,
+          domestic: false,
         };
       }
     } catch (err) {
       console.warn("[trip] osm resolveCity failed:", (err as Error).message);
     }
-    return { provider: "osm", adcode: null, center: null, currency: "USD" };
+    return { provider: "osm", adcode: null, center: null, currency: "USD", country: null, domestic: false };
   }
 
   /**
    * 多城市途经地解析（createTrip / reResolveCity 共用）：
    * stops[0] 走 resolveDestination 判定 provider（沿用全部现有兜底与自愈语义）；
    * 其余节点用同一 provider 逐个 resolveCity 拿中心（高德对「青海湖」「茶卡镇」这类非行政区也能解析）。
-   * 同侧校验：任一节点解析到另一侧国家 → 422 提示拆成两个行程（一个行程一个坐标系，跨国混合不支持）。
+   * 同侧校验按国内/海外归属（domestic）判定而不是 provider——M113 起国内也可以走 osm 引擎：
+   * 任一节点解析到另一侧国家 → 422 提示拆成两个行程（一个行程一个坐标系，跨国混合不支持）。
    * 解析失败（网络/未找到）的节点保留 name-only（center null）：防编造校验跳过它，自愈时重解析。
    */
   private async resolveStops(
@@ -340,6 +353,8 @@ export class TripService {
     adcode: string | null;
     center: LngLat | null;
     currency: string;
+    country: string | null;
+    domestic: boolean;
     stops: TripStop[];
   }> {
     const first = await this.resolveDestination(names[0], forced);
@@ -351,15 +366,15 @@ export class TripService {
       try {
         const geo = await provider.resolveCity(name);
         if (geo) {
-          const isChina = geo.country === "中国" || geo.country === "China";
-          if (first.provider === "amap" && !isChina) {
+          const isChina = isChinaCountry(geo.country);
+          if (first.domestic && !isChina) {
             throw new ServiceError(
               422,
               `途经地「${name}」解析到海外（${geo.country ?? "国家未知"}），与主目的地「${names[0]}」（国内）不在同一侧：` +
                 `一个行程只支持单一坐标系，请拆成两个行程。`,
             );
           }
-          if (first.provider === "osm" && isChina) {
+          if (!first.domestic && isChina) {
             throw new ServiceError(
               422,
               `途经地「${name}」解析到国内，与主目的地「${names[0]}」（海外）不在同一侧：` +
@@ -392,6 +407,7 @@ export class TripService {
         destinationCity: stopNames[0],
         cityAdcode: resolved.adcode,
         geoProvider: resolved.provider,
+        country: resolved.country,
         cityCenterLng: resolved.center ? resolved.center.lng : null,
         cityCenterLat: resolved.center ? resolved.center.lat : null,
         stops: resolved.stops,
@@ -410,16 +426,22 @@ export class TripService {
    * 重新解析目的城市（自愈：创建时网络失败 / 引擎误判——如国内行程被标成海外）。
    * 允许纠正 provider：错引擎的中文 POI 搜索会错到别的城市（如「西湖」→福建），
    * 危害远大于两坐标系 ~500m 的偏移；切换后用新引擎重算全部天的交通段。
+   * 翻面防护（M113）：存量 amap 行程在缺 key 环境下重解析会判出 osm——不允许翻面，
+   * 已有地点坐标全是 GCJ-02，单行程不混坐标系（纠偏只开放 osm → amap 方向）。
    */
   async reResolveCity(tripId: string) {
     const trip = await this.getTrip(tripId);
     // 重解析全部途经地（stops[0] 即原 destinationCity，单城市行为不变）；镜像列同步 stops[0]
     const resolved = await this.resolveStops(this.stopsOfTrip(trip).map((s) => s.name));
+    if (trip.geoProvider === "amap" && resolved.provider === "osm" && resolved.domestic) {
+      resolved.provider = "amap";
+    }
     const providerChanged = resolved.provider !== trip.geoProvider;
     await this.db
       .update(schema.trips)
       .set({
         geoProvider: resolved.provider,
+        country: resolved.country,
         cityAdcode: resolved.provider === "amap" ? resolved.adcode : null,
         cityCenterLng: resolved.center ? resolved.center.lng : null,
         cityCenterLat: resolved.center ? resolved.center.lat : null,

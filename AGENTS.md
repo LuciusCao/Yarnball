@@ -6,7 +6,7 @@
 
 - **Monorepo**：pnpm@10 workspace（`apps/*` + `packages/*`），TypeScript 5.9，ESM（`"type": "module"`）
 - **服务端** `apps/server`：Node 22+、Hono 4（`@hono/node-server`）、Drizzle ORM + SQLite（better-sqlite3 内嵌，无需 Docker）、`@agentclientprotocol/sdk`（ACP client）、`@modelcontextprotocol/sdk`（MCP server，stateless streamable HTTP）、zod 4、tsx / vitest
-- **前端** `apps/web`：React 19、Vite 7、Tailwind CSS 4（`@tailwindcss/vite`）、react-router 7、zustand、@tanstack/react-query、Radix UI、maplibre-gl（海外）+ 高德 JSAPI 2.0（国内）、marked + sanitize-html
+- **前端** `apps/web`：React 19、Vite 7、Tailwind CSS 4（`@tailwindcss/vite`）、react-router 7、zustand、@tanstack/react-query、Radix UI、maplibre-gl（海外 + 国内零配置回退）+ 高德 JSAPI 2.0（国内配 key）、marked + sanitize-html
 - **共享包** `packages/shared`：zod schema 单一定义点（REST / MCP / 前端三处共享），纯 TS 源码导出（`"main": "src/index.ts"`，无构建产物）
 
 ## 架构（三层分离）
@@ -22,7 +22,7 @@ Hono Server (apps/server, :18788)               │
 ```
 
 - 前端 Vite dev server 在 `:15173`，`/api` 代理到服务端（见 `apps/web/vite.config.ts`）
-- **地理引擎双 provider**（`src/services/geo.ts`）：创建行程时按目的地定死 `amap`（国内，高德 API，GCJ-02 坐标）或 `osm`（海外，Photon 搜索 + FOSSGIS OSRM 路线/矩阵 + Nominatim + transitous 真实公交，全部零 key，WGS84），全链路不混用坐标系
+- **地理引擎双 provider**（`src/services/geo.ts`）：创建行程时定死 `amap`（国内 + 配齐高德 key，高德 API，GCJ-02 坐标）或 `osm`（海外，以及**未配 key 的国内零配置回退**（M113）——Photon 搜索 + FOSSGIS OSRM 路线/矩阵 + Nominatim + transitous 真实公交，全部零 key，WGS84），全链路不混用坐标系。国内回退行程由 `trips.country`（建行程解析落库，中国归一为「中国」）+ `geoProvider` 识别（shared 的 `isDomesticOsmTrip`）：创建表单/行程页给一次性降级提示，bootstrap prompt 加「search_poi 用官方全名、公交为估算」纪律；transitous 国内 GTFS 无覆盖，国内公交维持估算口径。存量行程不动：`reResolveCity` 有翻面防护（amap 行程在缺 key 环境重解析不翻成 osm，纠偏只开放 osm → amap 方向）；配 key 后仅**新建**的国内行程回 amap
 - **海外真实公交**（M111，transitous = api.transitous.org，MOTIS 2 社区实例 API v6）：osm 公交族请求先走 transitous 真实换乘（`transitousPlan`），命中时 mode 取真实首段 transit 方式（SUBWAY→metro、TRAM→light_rail、BUS/COACH→bus、SUBURBAN/REGIONAL_RAIL/HIGHSPEED_RAIL→train、FERRY→ferry）、transitDetail 带真实线路名/上下车站/分段 polyline（Google polyline precision=6，自带解码器）；查询时刻为行程日（startDate+dayIndex）当地约 09:00（经度近似时区），cache key 含日期。GTFS 瑕疵过滤：纯数字 ≥5 位的内部 ID 不作线路名。降级链 transitous（空 itineraries 不重试/超时/错误）→ OSRM ×1.25 估算 → fallbackRoute；命中时绕行比渡轮启发式与机场线启发式自动退为兜底。usage policy 硬性义务：UA 带 app 名/版本/联系方式（TRANSITOUS_UA）+ 设置抽屉底部署名 transitous.org
 - **顺路引擎**（`src/services/tripService.ts`）：provider 距离矩阵 + 最近邻 + 2-opt 重排；交通段自动计算（基础分档 <2km 步行 / 2-6km 公交 / >6km 驾车 + 两条场景化启发式：端点含机场的长距段判 train 机场线、路由里程÷直线 ≥1.8 的跨水段判 ferry 轮渡——osm 侧 transitous 命中时由真实数据取代这两条启发式；方式枚举 9 值 walk/taxi/drive/transit/bus/metro/light_rail/train/ferry，见 `packages/shared/src/domain.ts` TRANSPORT_MODES；地图上渡轮画水蓝点划水上航线、轨道类画深灰划线铁路样式）
 - **多城市模型**（M37 地基 + M39 界面层）：`trips.stops` 为有序途经地节点（stops[0] = 主目的地，`destinationCity`/`location` 是其兼容镜像）；`places.cityName` 为归属途经地（建点时自动填充）；`entries.transitMode`（flight/train/drive/bus）区分大交通方式，drive=自驾城际段走真实公路路由拿里程/时长。环线闭合不落库——末段 transit 讫点 == stops[0] 即闭合。前端：行程面板按 stop 分组 + 🚗 自驾卡、地图途经地标记层、候选池按城市分桶（`apps/web/src/features/itinerary/stops.ts` 是 day→stop / 环线闭合的推导单点）
@@ -155,7 +155,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 
 - **MCP 鉴权**：每个 chat session 一个 token（随机 32 字节，DB 存 sha256）；`/mcp` 每请求从 `Authorization: Bearer` + `x-yarnball-session-id` header 重解析并绑定到该会话的 trip —— agent 永远只能操作当前会话的行程（`src/mcp/tools.ts`）
 - **ACP 权限四层策略**（`src/acp/permissions.ts`）：Yarnball MCP 工具自动批准 → 只读 kind 自动批准 → 会话级 allow-all → 停靠到 UI 等用户 120s
-- **bootstrap prompt**（`src/acp/prompts.ts`）钉死「坐标必须来自 search_poi」纪律 + 海外英文搜索提示 + 多城市纪律（search_poi 传 city、add_place 带 cityName、城际移动走 add_transit_entry、自驾段 transitMode=drive）+ 行程信息引导（目的地/日期确定后 add_trip_note 预填注意事项、排天时 set_day_summary 写每日概要）；恢复会话走 `session/new` + 压缩转录回放（ACP `session/load` 待 SDK 封装）
+- **bootstrap prompt**（`src/acp/prompts.ts`）钉死「坐标必须来自 search_poi」纪律 + 海外英文搜索提示 + 国内开源引擎行程的「search_poi 用官方全名、公交为估算」纪律（M113，按 trips.country 判定）+ 多城市纪律（search_poi 传 city、add_place 带 cityName、城际移动走 add_transit_entry、自驾段 transitMode=drive）+ 行程信息引导（目的地/日期确定后 add_trip_note 预填注意事项、排天时 set_day_summary 写每日概要）；恢复会话走 `session/new` + 压缩转录回放（ACP `session/load` 待 SDK 封装）
 - **大交通与预订状态**：`add_transit_entry` / `update_entry` 管理大交通 entry（🛬抵达 / 🛫离开 / 🚄城市间，departTime/arriveTime 是排程硬锚点）；地点带 `openingHours`（营业时间，排期完全无交叠时前端告警）与 `bookingStatus`（无需预订/待预订/已预订，UI 可点选流转）；`suggest_day_clusters`（对应 REST `GET /api/trips/:id/suggest-clusters`）多城市先按途经地分组、组内按地理位置聚类（k 按点数自适应 1-4，不被已建天数截断），同城天优先分配给出分天建议
 - 验证 agent 链路改动**不依赖真 agent**：用 `pnpm smoke`（fake-acp-agent.mjs 是可脚本化的假 ACP agent）
 
@@ -165,7 +165,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - `SERVER_HOST` 默认 `127.0.0.1`：`/api` 无鉴权（`POST /api/agents` 可 spawn agent 子进程），绑 `0.0.0.0` 会暴露 LAN 构成同网段 RCE 链路；LAN 调试需显式设置。Tauri 桌面壳场景保持默认即可
 - 生产态 server 直接托管 web 静态产物：探测到 `apps/web/dist/index.html`（或 `YARNBALL_WEB_DIST_DIR` 指定目录，Tauri 打包后由壳注入）即挂载 serve-static + SPA 回退，`/api` `/mcp` `/healthz` 优先不受影响；dev（vite :15173）无 dist 时行为不变（`apps/server/src/services/staticWeb.ts`）
 - `/healthz` 返回 `{ ok, app:"yarnball", version, webStatic }`：Tauri 壳靠 `app`/`webStatic` 判定 18788 占用者身份——同包且托管 web 产物才复用，否则换端口，避免窗口被指向旧版孤儿 sidecar 的 404（`apps/tauri/src-tauri/src/sidecar.rs`）
-- 高德三个 key（`AMAP_JS_KEY` / `AMAP_SERVER_KEY` / `AMAP_JS_SECRET`）**仅国内行程需要**；海外行程零配置。未配 key 时国内路线降级为直线距离 × 1.3 估算、POI 搜索不可用，海外不受影响
+- 高德三个 key（`AMAP_JS_KEY` / `AMAP_SERVER_KEY` / `AMAP_JS_SECRET`）是**国内行程的可选增强**（M113 起不再是国内必需）：配齐后新建国内行程走高德（POI 搜索/真实公交数据更准）；未配 key 时新建国内行程自动走 OSM 开源栈（与海外同代码路径，零配置可用，公交为估算），海外行程始终零配置。仅存的降级路径：M113 前创建的存量 amap 行程在无 key 环境仍是高德引擎——POI 搜索不可用、路线降级直线距离 × 1.3 估算（配 key 即恢复）
 - 海外上游请求（Photon / Nominatim / OSRM / Open-Meteo / transitous，见 `geo.ts` 的 `overseasFetch`）支持标准代理环境变量：`https_proxy > all_proxy > http_proxy`（大小写均认），遵守 `no_proxy`；未设置时直连。国内高德请求永远直连，不走代理。transitous 走带版本/联系方式的专用 UA（TRANSITOUS_UA），其余上游共用 OSM_UA
 - `.env` 不入库；MCP token 只存 hash；agent 经 `session/new` 注入的 URL+header 直连 `/mcp`，不经浏览器
 - 前端渲染 agent 文本用 marked + sanitize-html，不要绕过 sanitize 直接 `dangerouslySetInnerHTML`
@@ -173,6 +173,6 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 ## 已知边界（v1）
 
 - 单人编辑 + 只读分享链接（`/share/:token`）；多人实时协同（CRDT）留待 v2
-- 海外公交走 transitous（MOTIS 2）真实换乘：覆盖城市命中真实线路/方式/分段；未覆盖（如部分小城返回空 itineraries）、超时或错误时降级为估算（真实驾车路由时长 × 1.25 + 换乘惩罚），transitous 为社区 best-effort 服务无 SLA。国内公交走高德真实数据；transitous 未命中时的渡轮仍按直线水域航线估算（含候船缓冲）
+- 海外公交走 transitous（MOTIS 2）真实换乘：覆盖城市命中真实线路/方式/分段；未覆盖（如部分小城返回空 itineraries）、超时或错误时降级为估算（真实驾车路由时长 × 1.25 + 换乘惩罚），transitous 为社区 best-effort 服务无 SLA。国内公交：高德引擎行程走高德真实数据，开源引擎回退行程（M113）为估算（transitous 国内 GTFS 无覆盖）；transitous 未命中时的渡轮仍按直线水域航线估算（含候船缓冲）
 - Photon / OSRM / transitous 是社区免费服务，高频使用应自托管（代码里换 base URL 即可）；transitous usage policy 要求 UA 带联系方式 + UI 署名 transitous.org（已在设置抽屉底部，改动时不得删除）
 - ACP `session/load` 直连与 `session/cancel` 通知通道待 SDK（ActiveSession 封装）暴露后补
