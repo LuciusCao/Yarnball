@@ -15,6 +15,9 @@ import type {
   CreateTripInput,
   DayCluster,
   GeoProviderName,
+  HotelAreaRecommendation,
+  HotelAreaSegment,
+  HotelAreaSignalPoint,
   LngLat,
   PlaceDto,
   PlaceStatus,
@@ -2080,20 +2083,225 @@ export class TripService {
     };
   }
 
-  /** 推荐住宿区域：各天 POI 质心的中位数（前端画圈） */
-  async recommendHotelArea(tripId: string): Promise<{ center: LngLat; radiusM: number } | null> {    const places = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
-    const coords = places
-      .filter((p) => p.category !== "hotel")
-      .map((p) => ({ lng: Number(p.lng), lat: Number(p.lat) }));
-    if (coords.length < 3) return null;
-    const median = (arr: number[]) => {
-      const s = [...arr].sort((a, b) => a - b);
-      return s[Math.floor(s.length / 2)];
+  /**
+   * 推荐住宿区域（多信号加权，只建议不落库）。
+   * 信号与权重：每日首个/最后一个活动点 = 动线锚点（weight 2）> 大交通到发节点（weight 1.5，
+   * 首末天到达/离开锚点）> 天内普通活动点（weight 1）> 候选池未排期非酒店地点（weight 0.5）。
+   * 顶层 center/radiusM = 全域加权结果（兼容旧契约，前端画圈直用）；
+   * segments = 分天段建议：未被已选定酒店覆盖的连续天段各算一片区域（多酒店行程一段一酒店），
+   * 多城市行程段内再按途经地（换城）拆分；天区间口径与 select_hotel 的 checkInDay/checkOutDay 一致（闭开区间）。
+   * 非酒店地点总数 < 3 时返回 null（旧契约：先攒候选再调）。
+   */
+  async recommendHotelArea(tripId: string): Promise<HotelAreaRecommendation | null> {
+    const trip = await this.getTrip(tripId);
+    const dayCount = await this.getTripDayCount(trip);
+    const [places, allEntries, dayRows, selectedHotels] = await Promise.all([
+      this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId)),
+      this.db.select().from(schema.entries).where(eq(schema.entries.tripId, tripId)),
+      this.db.select().from(schema.days).where(eq(schema.days.tripId, tripId)).orderBy(asc(schema.days.dayIndex)),
+      this.db
+        .select()
+        .from(schema.hotelCandidates)
+        .where(and(eq(schema.hotelCandidates.tripId, tripId), eq(schema.hotelCandidates.selected, true))),
+    ]);
+    const nonHotel = places.filter((p) => p.category !== "hotel");
+    if (nonHotel.length < 3) return null;
+
+    // 内部信号点：比 DTO 多带 cityName（分天段按城市归属过滤候选点用，不出DTO）
+    type AreaPoint = HotelAreaSignalPoint & { cityName: string | null };
+    const coordOf = (p: (typeof places)[number]): LngLat => ({ lng: Number(p.lng), lat: Number(p.lat) });
+    const placeById = new Map(places.map((p) => [p.id, p]));
+    const entriesByDay = new Map<string, typeof allEntries>();
+    for (const e of allEntries) {
+      const list = entriesByDay.get(e.dayId) ?? [];
+      list.push(e);
+      entriesByDay.set(e.dayId, list);
+    }
+
+    // ---- 逐天采集信号点：place entry 首末为锚点、中间为普通活动点；transit entry 起讫为到发节点 ----
+    const points: AreaPoint[] = [];
+    const scheduledPlaceIds = new Set<string>();
+    // 各天主导城市统计（dayIndex → cityName → 次数），分天段归属与候选点过滤用
+    const cityCountByDay = new Map<number, Map<string, number>>();
+    const countCity = (dayIndex: number, cityName: string | null) => {
+      if (!cityName) return;
+      const m = cityCountByDay.get(dayIndex) ?? new Map<string, number>();
+      m.set(cityName, (m.get(cityName) ?? 0) + 1);
+      cityCountByDay.set(dayIndex, m);
     };
-    const center = { lng: median(coords.map((c) => c.lng)), lat: median(coords.map((c) => c.lat)) };
-    const radiusM = Math.round(
-      Math.sqrt(coords.reduce((m, c) => Math.max(m, haversineM(center, c)), 0)),
-    );
-    return { center, radiusM: Math.min(radiusM, 20000) };
+    for (const day of dayRows) {
+      const dayEntries = (entriesByDay.get(day.id) ?? []).sort((a, b) => a.position - b.position);
+      const placePoints: AreaPoint[] = [];
+      for (const e of dayEntries) {
+        if (e.entryType === "transit") {
+          // 大交通到发节点：起讫点引用了行程内地点时取真实坐标（纯文本起讫无坐标，跳过）；
+          // 端点是酒店类别时跳过（与 activity 路径一致），避免已选/候选酒店自我强化推荐圆心
+          for (const refId of [e.fromPlaceId, e.toPlaceId]) {
+            if (!refId) continue;
+            const p = placeById.get(refId);
+            if (!p || p.category === "hotel") continue;
+            scheduledPlaceIds.add(p.id);
+            countCity(day.dayIndex, p.cityName);
+            points.push({ kind: "transit", name: p.name, location: coordOf(p), weight: 1.5, dayIndex: day.dayIndex, cityName: p.cityName });
+          }
+          continue;
+        }
+        if (!e.placeId) continue;
+        const p = placeById.get(e.placeId);
+        if (!p || p.category === "hotel") continue;
+        scheduledPlaceIds.add(p.id);
+        countCity(day.dayIndex, p.cityName);
+        placePoints.push({ kind: "activity", name: p.name, location: coordOf(p), weight: 1, dayIndex: day.dayIndex, cityName: p.cityName });
+      }
+      // 首末点升权为动线锚点（单点天首末同点，只计一次）
+      placePoints.forEach((pp, i) => {
+        const isAnchor = i === 0 || i === placePoints.length - 1;
+        points.push(isAnchor ? { ...pp, kind: "day-anchor", weight: 2 } : pp);
+      });
+    }
+    // ---- 候选池未排期点：低权重并入，反映用户兴趣分布（旧实现的平等平均改为降级权重）----
+    for (const p of nonHotel) {
+      if (scheduledPlaceIds.has(p.id)) continue;
+      points.push({ kind: "candidate", name: p.name, location: coordOf(p), weight: 0.5, dayIndex: null, cityName: p.cityName });
+    }
+    if (points.length === 0) return null;
+
+    // 加权质心（行程尺度在区域内，不做反经线处理，与聚类质心同假设）
+    const weightedCentroid = (pts: AreaPoint[]): LngLat => {
+      const total = pts.reduce((s, p) => s + p.weight, 0);
+      return {
+        lng: pts.reduce((s, p) => s + p.location.lng * p.weight, 0) / total,
+        lat: pts.reduce((s, p) => s + p.location.lat * p.weight, 0) / total,
+      };
+    };
+    // 半径：覆盖 80% 权重点的距离，下限 1km（单片商圈）、上限 20km（前端画圈可读性）
+    const weightedRadiusM = (pts: AreaPoint[], center: LngLat): number => {
+      const total = pts.reduce((s, p) => s + p.weight, 0);
+      const byDist = pts
+        .map((p) => ({ d: haversineM(center, p.location), w: p.weight }))
+        .sort((a, b) => a.d - b.d);
+      let acc = 0;
+      let radius = byDist[byDist.length - 1].d;
+      for (const { d, w } of byDist) {
+        acc += w;
+        if (acc >= total * 0.8) {
+          radius = d;
+          break;
+        }
+      }
+      return Math.round(Math.min(20000, Math.max(1000, radius)));
+    };
+
+    const center = weightedCentroid(points);
+    const radiusM = weightedRadiusM(points, center);
+
+    // ---- 分天段：未被已选定酒店覆盖的连续天段（闭开区间，与 select_hotel 口径一致）----
+    const coveredDays = new Set<number>();
+    for (const h of selectedHotels) {
+      if (h.checkInDay == null || h.checkOutDay == null) continue;
+      for (let d = h.checkInDay; d < h.checkOutDay; d++) coveredDays.add(d);
+    }
+    const ranges: Array<{ fromDay: number; toDay: number }> = [];
+    for (let d = 1; d <= dayCount; d++) {
+      if (coveredDays.has(d)) continue;
+      let end = d;
+      while (end + 1 <= dayCount && !coveredDays.has(end + 1)) end++;
+      ranges.push({ fromDay: d, toDay: end + 1 });
+      d = end;
+    }
+
+    // 各天主导城市（当天信号点的 cityName 众数）
+    const dominantCityByDay = new Map<number, string>();
+    for (const [di, m] of cityCountByDay) {
+      const top = [...m.entries()].sort((a, b) => b[1] - a[1])[0];
+      if (top) dominantCityByDay.set(di, top[0]);
+    }
+    const stops = this.stopsOfTrip(trip);
+    const multiCity = stops.length > 1;
+    // 多城市行程：每个未覆盖天段内再按主导城市连续段拆分（换城 = 换住宿片区）；
+    // 无主导城市信息的天并入当前城市段（段首无信息则并入后一个城市段）
+    const cityRuns: Array<{ fromDay: number; toDay: number }> = [];
+    for (const { fromDay, toDay } of ranges) {
+      if (!multiCity) {
+        cityRuns.push({ fromDay, toDay });
+        continue;
+      }
+      let runStart = fromDay;
+      let runCity = dominantCityByDay.get(fromDay) ?? null;
+      for (let d = fromDay + 1; d < toDay; d++) {
+        const c = dominantCityByDay.get(d) ?? runCity;
+        if (runCity != null && c !== runCity) {
+          cityRuns.push({ fromDay: runStart, toDay: d });
+          runStart = d;
+        }
+        runCity = c;
+      }
+      cityRuns.push({ fromDay: runStart, toDay });
+    }
+    // 段主导城市：段内各天主导城市的众数；无 entry 信息时按段质心归最近途经地（≤150km，与聚类归属同阈值）
+    const segmentCity = (fromDay: number, toDay: number, segCenter: LngLat): string | null => {
+      const counts = new Map<string, number>();
+      for (let d = fromDay; d < toDay; d++) {
+        const c = dominantCityByDay.get(d);
+        if (c) counts.set(c, (counts.get(c) ?? 0) + 1);
+      }
+      const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+      if (top) return top[0];
+      let best: { name: string; distKm: number } | null = null;
+      for (const stop of stops) {
+        if (!stop.center) continue;
+        const distKm = haversineM(stop.center, segCenter) / 1000;
+        if (!best || distKm < best.distKm) best = { name: stop.name, distKm };
+      }
+      return best && best.distKm <= PLACE_CITY_ASSIGN_MAX_DIST_KM ? best.name : null;
+    };
+
+    const toDtoPoint = ({ cityName: _cityName, ...rest }: AreaPoint): HotelAreaSignalPoint => rest;
+    const segments: HotelAreaSegment[] = cityRuns.map(({ fromDay, toDay }) => {
+      // 段内天信号点（transit 到发点带 dayIndex，天然落入对应段）
+      const dayPts = points.filter((p) => p.dayIndex != null && p.dayIndex >= fromDay && p.dayIndex < toDay);
+      const roughCenter = dayPts.length > 0 ? weightedCentroid(dayPts) : center;
+      const cityName = segmentCity(fromDay, toDay, roughCenter);
+      // 候选点并入：单城市行程全并入；多城市行程只并入与段同城（都不为空且相等）的候选，避免跨城拉偏
+      const candPts = points.filter(
+        (p) =>
+          p.kind === "candidate" &&
+          (!multiCity || (cityName != null && p.cityName != null && p.cityName === cityName)),
+      );
+      // 段内无任何已排信号（天未建/未排点）时退回全域信号兜底，保证每个未覆盖天段都有建议
+      const segPts = dayPts.length + candPts.length > 0 ? [...dayPts, ...candPts] : points;
+      const segCenter = weightedCentroid(segPts);
+      return {
+        fromDay,
+        toDay,
+        cityName,
+        center: segCenter,
+        radiusM: weightedRadiusM(segPts, segCenter),
+        points: segPts.map(toDtoPoint),
+      };
+    });
+
+    const notes: string[] = [];
+    if (selectedHotels.length > 0 && segments.length === 0) {
+      notes.push("全部天数已被已选定酒店覆盖，无待安排天段；如需换酒店请先取消选定（unselect_hotel）");
+    } else if (selectedHotels.length > 0) {
+      notes.push("分天段建议只覆盖未被已选定酒店覆盖的天；已覆盖天段沿用现有酒店");
+    }
+    if (multiCity) {
+      notes.push("多城市行程：天段按途经地（换城）拆分，候选池地点按城市归属并入对应天段，不跨城混算");
+    }
+    const signals = {
+      dayAnchor: points.filter((p) => p.kind === "day-anchor").length,
+      transit: points.filter((p) => p.kind === "transit").length,
+      activity: points.filter((p) => p.kind === "activity").length,
+      candidate: points.filter((p) => p.kind === "candidate").length,
+    };
+    return {
+      center,
+      radiusM,
+      segments,
+      signals,
+      ...(notes.length > 0 ? { note: notes.join("；") } : {}),
+    };
   }
 }

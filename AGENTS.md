@@ -38,7 +38,8 @@ apps/server
                   drive 走真实路由）、suggest_day_clusters（区域聚类分天建议）、
                   set_start_date/set_end_date（出发/结束日期，对话中说「9/23 出发」「玩到 9/28」时写回
                   trip.startDate/endDate）、set_leg_mode（手动覆盖市内交通段方式，modeOverride）、
-                  recommend_hotel_area（按非酒店地点分布推荐住宿区域）、unselect_hotel（取消单个
+                  recommend_hotel_area（多信号加权推荐住宿区域：每日首末锚点+大交通到发节点加权，
+                  segments 按未被酒店覆盖的天段/途经地分段给建议）、unselect_hotel（取消单个
                   已选定酒店）、unschedule_place（按 placeId 撤销其全部日程并退回候选））、
                   app.ts（HTTP 端点）
   src/services/   tripService.ts（编排/顺路算法核心）、geo.ts（provider 抽象）、settings.ts（全局设置：
