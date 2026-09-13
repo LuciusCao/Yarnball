@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import pkg from "../../package.json" with { type: "json" };
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { Db } from "../db/client.js";
@@ -18,7 +19,8 @@ import {
  * MCP stateless 模式没有跨请求会话，工具调用全部是一次性 JSON-RPC，符合我们的用法。
  */
 
-const SERVER_VERSION = "0.1.0";
+/** MCP server 声明版本：与 /healthz、ACP clientInfo 同源，统一读 package.json */
+const SERVER_VERSION = pkg.version;
 
 export function createMcpApp(
   db: Db,
