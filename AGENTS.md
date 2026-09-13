@@ -38,7 +38,8 @@ Hono Server (apps/server, :18788)               │
 apps/server
   src/acp/        ACP 会话管理（sessionManager.ts ~750 行；permissions.ts 四层权限策略；
                   prompts.ts bootstrap prompt；terminal 协议支持）
-  src/mcp/        MCP 工具面：tools.ts（31 个工具 + scoped token 鉴权，含 lock_place/unlock_place、
+  src/mcp/        MCP 工具面：tools.ts（31 个工具 + scoped token 鉴权，含 add_to_trip/remove_from_trip
+                  （加入/移出行程）、
                   add_transit_entry/update_entry（大交通 entry，transitMode=flight/train/drive/bus，
                   drive 走真实路由）、suggest_day_clusters（区域聚类分天建议）、
                   set_start_date/set_end_date（出发/结束日期，对话中说「9/23 出发」「玩到 9/28」时写回
@@ -155,3 +156,4 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - 海外公交路线为估算（真实驾车路由时长 × 1.25 + 换乘惩罚）；国内公交走高德真实数据；渡轮无上游路由，统一按直线水域航线估算（含候船缓冲）
 - Photon / OSRM 是社区免费服务，高频使用应自托管（代码里换 base URL 即可）
 - ACP `session/load` 直连与 `session/cancel` 通知通道待 SDK（ActiveSession 封装）暴露后补
+- 数据层地点状态枚举 `locked` 为历史命名（界面与 agent 话术均为「加入行程/已加入行程」，M105 已清扫 agent 可见面）；枚举改名涉及 web 候选状态机，留作后续技术债
