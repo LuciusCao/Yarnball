@@ -72,6 +72,17 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
+  /**
+   * 修改行程标题（issue #12，PATCH /api/trips/:tripId/title）。
+   * 独立小端点（非 updateTrip 的 title 字段）：UpdateTripInputSchema 在 shared 包，
+   * 被并行 mission 占用，服务端用路由内联 zod 承接；后续可收敛进 updateTrip。
+   */
+  renameTrip: (tripId: string, title: string) =>
+    request<{ trip: TripDto }>(`/trips/${tripId}/title`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+
   // ---------- 候选状态机 ----------
 
   /**

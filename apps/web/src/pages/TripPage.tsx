@@ -146,6 +146,9 @@ export function TripPage() {
   const [panelMaximized, setPanelMaximized] = useState(false);
   /** 导出打印预览弹层（M97，issue #7） */
   const [exportOpen, setExportOpen] = useState(false);
+  /** 标题编辑态（issue #12）：点击信息条标题进入行内编辑；editingTitle 开关 + titleDraft 草稿 */
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
 
   useEffect(() => {
     if (!tripId) return;
@@ -219,6 +222,26 @@ export function TripPage() {
       await load(tripId);
     } catch (err) {
       toast.error((err as Error).message);
+    }
+  }
+
+  /** 标题修改进行中（防重入） */
+  const [titleBusy, setTitleBusy] = useState(false);
+
+  /** 保存标题（issue #12）：空标题或与原标题一致直接退出编辑态不发请求；写后靠 SSE 全量刷新 + 主动 load 兜底 */
+  async function saveTitle() {
+    if (!tripId) return;
+    const title = titleDraft.trim();
+    setEditingTitle(false);
+    if (!title || title === bundle?.trip.title) return;
+    setTitleBusy(true);
+    try {
+      await uxApi.renameTrip(tripId, title);
+      await load(tripId);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setTitleBusy(false);
     }
   }
 
@@ -453,9 +476,50 @@ export function TripPage() {
         >
           ‹
         </Link>
-        <h1 className="glass-text max-w-64 truncate text-sm font-semibold" title={trip.title}>
-          {trip.title}
-        </h1>
+        {/* 标题（issue #12）：点击进入行内编辑；Enter/✓ 保存，Esc/✕ 取消；空标题或与原标题一致不发请求 */}
+        {editingTitle ? (
+          <span className="flex items-center gap-1">
+            <input
+              autoFocus
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void saveTitle();
+                if (e.key === "Escape") setEditingTitle(false);
+              }}
+              disabled={titleBusy}
+              maxLength={120}
+              className="w-52 rounded-lg bg-white/70 px-2 py-0.5 text-sm font-semibold outline-none ring-1 ring-slate-900/15 focus:ring-blue-500 disabled:opacity-50"
+            />
+            <button
+              onClick={() => void saveTitle()}
+              disabled={titleBusy}
+              title="保存"
+              className="flex size-6 items-center justify-center rounded-full text-blue-600 transition-colors hover:bg-slate-900/8 disabled:opacity-50"
+            >
+              ✓
+            </button>
+            <button
+              onClick={() => setEditingTitle(false)}
+              disabled={titleBusy}
+              title="取消"
+              className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-700 disabled:opacity-50"
+            >
+              ✕
+            </button>
+          </span>
+        ) : (
+          <h1
+            className="glass-text max-w-64 cursor-pointer truncate rounded-lg px-1 text-sm font-semibold transition-colors hover:bg-slate-900/8"
+            title={`${trip.title}（点击修改标题）`}
+            onClick={() => {
+              setTitleDraft(trip.title);
+              setEditingTitle(true);
+            }}
+          >
+            {trip.title}
+          </h1>
+        )}
         <span
           className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500"
           title={trip.stops.length > 1 ? `途经地（按游览顺序）：${trip.stops.map((s) => s.name).join(" → ")}` : undefined}
