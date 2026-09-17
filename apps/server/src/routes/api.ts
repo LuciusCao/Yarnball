@@ -760,6 +760,23 @@ export function createApi(
     return c.json(await resetOwnerToken(db), 201);
   });
 
+  /**
+   * 校验 owner token（issue #32 远程主人登录入口）：远程浏览器把候选 token 作为 Bearer
+   * 发到这里——principalMiddleware 已完成校验（无效/已重置 → 401，有效 → owner 到这里），
+   * 端点本体只补「未配置」的引导分支（远程匿名 = 没带 token，通常为尚未在本机生成凭证）。
+   * 不挂 requireOwner：校验端点本身就是「验 token」，挂了会把待验证的远程调用方挡死。
+   */
+  guarded.post("/owner-token/verify", (c) => {
+    const p = getPrincipal(c);
+    if (p.kind === "anonymous") {
+      return c.json(
+        { error: "远程访问凭证无效或尚未生成——请先在本机「设置 → 远程访问凭证」生成，再粘贴到此处" },
+        403,
+      );
+    }
+    return c.json({ ok: true });
+  });
+
   // ---------- 行程访问链接管理（issue #16：owner-only，链接管理 UI 在 #17） ----------
 
   guarded.get("/trips/:tripId/access-links", async (c) => {

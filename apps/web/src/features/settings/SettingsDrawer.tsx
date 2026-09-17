@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import type { AgentAvailability, SettingsDto, UpdateSettingsInput } from "@yarnball/shared";
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api";
+import { useOwnerAuth } from "../../lib/principal";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
@@ -75,6 +76,10 @@ export function SettingsDrawer({
   const [ownerTokenBusy, setOwnerTokenBusy] = useState(false);
   const [confirmResetOwnerToken, setConfirmResetOwnerToken] = useState(false);
   const [copiedToken, setCopiedToken] = useState(false);
+
+  // 远程主人登录态（issue #32）：本浏览器是否以 owner token 登录（本机 loopback 恒可用，无需登录）
+  const remoteOwnerSignedIn = useOwnerAuth((s) => s.token != null);
+  const signOutOwner = useOwnerAuth((s) => s.signOut);
 
   const amapSectionRef = useRef<HTMLElement>(null);
   const agentsSectionRef = useRef<HTMLElement>(null);
@@ -357,8 +362,10 @@ export function SettingsDrawer({
               </div>
               <p className="mb-3 text-xs leading-relaxed text-slate-400">
                 owner token 用于在局域网 / 公网远程访问时证明「行程主人」身份（本机访问无需它）。
-                凭 API 请求头 <code className="rounded bg-slate-100 px-1 py-0.5 font-mono">Authorization: Bearer &lt;token&gt;</code> 携带；
-                仅在生成时展示一次，之后无法找回，只能重置（旧 token 立即失效）。
+                在其他设备上打开 <code className="rounded bg-slate-100 px-1 py-0.5 font-mono">/login</code> 粘贴
+                token 即可登录获得完整功能（issue #32）；也可凭 API 请求头
+                <code className="rounded bg-slate-100 px-1 py-0.5 font-mono"> Authorization: Bearer &lt;token&gt;</code> 携带。
+                仅在生成时展示一次，之后无法找回，只能重置（旧 token 立即失效，远程已登录设备全部掉线）。
               </p>
               {ownerToken ? (
                 <div className="space-y-2.5 rounded-box border border-blue-200/70 bg-blue-50/40 p-3.5">
@@ -401,16 +408,28 @@ export function SettingsDrawer({
                       )}
                     />
                     {ownerTokenConfigured ? "已生成" : "未生成"}
+                    {remoteOwnerSignedIn && (
+                      <span className="ml-1 rounded-full bg-blue-500/12 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+                        本浏览器已登录
+                      </span>
+                    )}
                   </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setConfirmResetOwnerToken(true)}
-                    disabled={ownerTokenBusy}
-                  >
-                    <RefreshCw className={cn("size-3", ownerTokenBusy && "animate-spin")} />
-                    {ownerTokenConfigured ? "重置" : "生成"}
-                  </Button>
+                  <span className="flex items-center gap-2">
+                    {remoteOwnerSignedIn && (
+                      <Button variant="ghost" size="sm" onClick={signOutOwner}>
+                        退出远程主人身份
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setConfirmResetOwnerToken(true)}
+                      disabled={ownerTokenBusy}
+                    >
+                      <RefreshCw className={cn("size-3", ownerTokenBusy && "animate-spin")} />
+                      {ownerTokenConfigured ? "重置" : "生成"}
+                    </Button>
+                  </span>
                 </div>
               )}
             </section>

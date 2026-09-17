@@ -555,6 +555,17 @@ describe("owner token（远程来源的 owner）", () => {
     const res = await call("/settings", { headers: bearer(ownerToken) });
     expect(res.status).toBe(200);
   });
+
+  // issue #32：远程主人登录页的校验端点——候选 token 作 Bearer，principalMiddleware 完成校验
+  it("verify 端点：有效 token 200 / 无效 401 / 远程匿名 403 引导（issue #32）", async () => {
+    expect((await remoteCall("/owner-token/verify", { method: "POST", headers: bearer(ownerToken) })).status).toBe(200);
+    expect(
+      (await remoteCall("/owner-token/verify", { method: "POST", headers: bearer("definitely-invalid") })).status,
+    ).toBe(401);
+    const anon = await remoteCall("/owner-token/verify", { method: "POST" });
+    expect(anon.status).toBe(403);
+    expect(((await anon.json()) as { error: string }).error).toContain("远程访问凭证");
+  });
 });
 
 // ---------- 7. access-links 管理端点语义（owner-only） ----------

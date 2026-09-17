@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import {
   CalendarDays,
   Globe2,
+  LogIn,
   MapPin,
   MoreHorizontal,
   Plus,
@@ -17,6 +18,8 @@ import { toast } from "sonner";
 import { isDomesticOsmTrip, type TripDto } from "@yarnball/shared";
 import { api } from "../api/client";
 import { api as uxApi } from "../lib/api";
+import { ApiError, GUEST_KICKED_EVENT } from "../lib/http";
+import { useOwnerAuth } from "../lib/principal";
 import { OnboardingBanner } from "../features/settings/OnboardingBanner";
 import { SettingsDrawer, type SettingsSection } from "../features/settings/SettingsDrawer";
 import { Button } from "../components/ui/button";
@@ -113,6 +116,12 @@ function StatValue({
 export function TripListPage() {
   const navigate = useNavigate();
   const [trips, setTrips] = useState<TripDto[]>([]);
+  /**
+   * 远程主人未登录态（issue #32）：远程浏览器无凭证访问 / 时 GET /api/trips 是 401
+   *（行程列表 owner-only）——此时渲染「需要登录」引导页而不是空列表加一堆报错 toast。
+   * 本机 loopback 恒为 owner，不会进入该态。
+   */
+  const [needLogin, setNeedLogin] = useState(false);
   /** 每个行程的天数/地点数（list 接口不含统计，并行拉 bundle 汇总；本地数据量小可接受） */
   const [stats, setStats] = useState<Record<string, { days: number; places: number }>>({});
   /** 统计拉取失败的行程 id：卡片上显示可重试的错误态，不静默吞掉 */
@@ -173,8 +182,7 @@ export function TripListPage() {
     const { trips } = await api.listTrips();
     // 最近编辑的排前面
     trips.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    setTrips(trips);
-    // 汇总天数/地点数：失败的行程记入 statErrors（卡片显示可重试的错误态）
+    setTrips(trips);    // 汇总天数/地点数：失败的行程记入 statErrors（卡片显示可重试的错误态）
     const results = await Promise.allSettled(trips.map((t) => api.getBundle(t.id)));
     const next: Record<string, { days: number; places: number }> = {};
     const errors: Record<string, true> = {};
@@ -208,8 +216,29 @@ export function TripListPage() {
   }
 
   useEffect(() => {
-    void refresh();
+    refresh().catch((err) => {
+      // 远程未登录（401）：切登录引导态；其余错误保持原空态（创建时会再报）
+      if (err instanceof ApiError && err.status === 401) setNeedLogin(true);
+    });
   }, []);
+
+  // owner 凭证在会话中失效（主人在本机重置了 token）：apiFetch 广播踢出（tripId=null），
+  // 已存的 owner 凭证已被清除——切回登录引导态。登录成功（token 从 null 变有值）则重拉列表。
+  const ownerToken = useOwnerAuth((s) => s.token);
+  useEffect(() => {
+    const onKicked = (e: Event) => {
+      const detail = (e as CustomEvent<{ tripId: string | null }>).detail;
+      if (detail?.tripId == null) setNeedLogin(true);
+    };
+    window.addEventListener(GUEST_KICKED_EVENT, onKicked);
+    return () => window.removeEventListener(GUEST_KICKED_EVENT, onKicked);
+  }, []);
+  useEffect(() => {
+    if (ownerToken != null && needLogin) {
+      setNeedLogin(false);
+      void refresh().catch(() => {});
+    }
+  }, [ownerToken]);
 
   // 高德 key 配置态（降级提示的展示条件之一；设置抽屉保存后bannerRefreshKey 递增会重挂引导条，这里随行建议输入实时判定即可）
   useEffect(() => {
@@ -266,6 +295,29 @@ export function TripListPage() {
     } finally {
       setDeleting(false);
     }
+  }
+
+  // 远程主人未登录（issue #32）：整页登录引导——远程无凭证访问 / 时 GET /api/trips 401
+  //（行程列表 owner-only）。本机 loopback 恒为 owner，不会进入该态。
+  if (needLogin) {
+    return (
+      <div className="flex min-h-full items-center justify-center bg-gradient-to-b from-sky-50 to-slate-100">
+        <div className="mx-4 flex max-w-sm flex-col items-center gap-3 rounded-3xl border border-slate-200/80 bg-white/85 px-8 py-10 text-center shadow-xl backdrop-blur">
+          <div className="flex size-12 items-center justify-center rounded-2xl bg-blue-600/10">
+            <LogIn className="size-6 text-blue-600" />
+          </div>
+          <h2 className="text-base font-semibold text-slate-900">需要主人身份</h2>
+          <p className="text-sm leading-relaxed text-slate-500">
+            你正在远程访问毛线团。粘贴「设置 → 远程访问凭证」生成的 owner token
+            登录，或使用行程主人发给你的协作链接（/join/…）进入对应行程。
+          </p>
+          <Button onClick={() => navigate("/login")}>
+            <LogIn className="size-4" />
+            前往登录
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   return (

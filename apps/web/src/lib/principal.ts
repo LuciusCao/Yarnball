@@ -108,3 +108,57 @@ export function credentialByToken(token: string): GuestCredential | null {
 export function credentialByTripId(tripId: string): GuestCredential | null {
   return usePrincipalStore.getState().saved.find((c) => c.tripId === tripId) ?? null;
 }
+
+// ---------- 远程主人身份（issue #32） ----------
+//
+// owner token 的浏览器侧形态：独立于 guest 凭证（单条、全局生效、无行程绑定）。
+// 生效后 apiFetch 注入 Bearer，服务端 resolvePrincipal 识别为 owner——全套 owner
+// UI（agent 面板/设置/分享管理）在远程设备可用。本机 loopback 本就是 owner，
+// 同一台机器存了 owner 凭证也无害（Bearer owner token = 同一身份）。
+
+const OWNER_STORAGE_KEY = "yarnball:owner-credential";
+
+function loadOwner(): string | null {
+  try {
+    return localStorage.getItem(OWNER_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveOwner(token: string | null): void {
+  try {
+    if (token === null) localStorage.removeItem(OWNER_STORAGE_KEY);
+    else localStorage.setItem(OWNER_STORAGE_KEY, token);
+  } catch {
+    // 持久化失败不影响会话内使用
+  }
+}
+
+interface OwnerAuth {
+  /** 生效中的 owner token（远程主人形态）；null = 未登录（本机 owner 形态不受影响） */
+  token: string | null;
+  /** 登录（/login 页 verify 通过后调用）：存 localStorage + 设为生效 */
+  signIn: (token: string) => void;
+  /** 退出远程主人身份（设置页入口）：清存储与生效态 */
+  signOut: () => void;
+}
+
+export const useOwnerAuth = create<OwnerAuth>((set, get) => ({
+  token: loadOwner(),
+
+  signIn: (token) => {
+    saveOwner(token);
+    set({ token });
+  },
+
+  signOut: () => {
+    saveOwner(null);
+    set({ token: null });
+  },
+}));
+
+/** React 外同步读（apiFetch 注入用）：生效中的 owner token */
+export function currentOwnerToken(): string | null {
+  return useOwnerAuth.getState().token;
+}
