@@ -12,7 +12,12 @@
  *      agent 收到决策
  *   4.8 unlock_luggage_flow：锁定简化（agent 可改已加入行程（joined）地点信息字段、
  *      删除已排期地点被拒）+ 换酒店日行李动线（酒店再次入队、legs 正确）
- *   5. 清理（关会话）
+ *   5. collab_permission_matrix（#21）：viewer 写 403 / editor 写 200 / 无效 token 401 /
+ *      匿名远程敏感端点 401（带无效 token 模拟——smoke 从 loopback 发，loopback 无
+ *      token = owner，必须带无效 token 才能测到 401 路径）/ 吊销后 401
+ *   6. collab_full_flow（#21）：owner 建行程 → 建 editor 链接 → join activate（写昵称）→
+ *      editor token 写一个地点 → activity 记录含昵称 → 吊销 → 同 token 401
+ *   7. 清理（关会话 + 删测试数据）
  */
 
 import "dotenv/config";
@@ -34,6 +39,24 @@ async function api(path: string, init?: RequestInit) {
   const body = (await res.json().catch(() => ({}))) as any;
   if (!res.ok) throw new Error(`${path} → ${res.status}: ${JSON.stringify(body)}`);
   return body;
+}
+
+/**
+ * 原样发请求并返回状态码（协作矩阵用）：不抛错——401/403 正是断言对象。
+ * token 传入时叠加 Authorization 头（api() 的 headers 展开语义会让调用方的 headers 覆盖
+ * 默认 content-type，Bearer 需在这里补）。
+ */
+async function rawStatus(path: string, init?: RequestInit, token?: string): Promise<number> {
+  const res = await fetch(`${BASE}/api${path}`, {
+    headers: {
+      "content-type": "application/json",
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    ...init,
+  });
+  // SSE 等流式响应：读掉 body 释放连接（.discarded 在 undici 里足够）
+  await res.body?.cancel().catch(() => {});
+  return res.status;
 }
 
 function assert(cond: boolean, message: string) {
@@ -993,7 +1016,117 @@ async function main() {
     await api(`/trips/${mcTrip.id}`, { method: "DELETE" });
     console.log("  ✓ multi-city trip cleaned up");
 
-    // 5. 清理 trip
+    // 5. collab_permission_matrix（#21）：鉴权矩阵核心路径回归。
+    // smoke 从 loopback 发请求——「带 token 一律按 token 身份处理」的规则（auth.ts）让
+    // guest 路径可在本机自测（loopback + Bearer guest token = guest，不静默升 owner）；
+    // 匿名远程敏感端点只能带无效 token 模拟（loopback 无 token = owner，测不到 401）。
+    console.log("-- collab_permission_matrix --");
+    {
+      const { trip: cTrip } = await api("/trips", {
+        method: "POST",
+        body: JSON.stringify({ title: `smoke-协作矩阵-${RUN_ID}`, destinationCity: "杭州" }),
+      });
+      // 建行程即落一条默认 viewer 链接（token == shareToken，迁移回填同口径）
+      const viewerToken = cTrip.shareToken;
+      const { link: editorLink } = await api(`/trips/${cTrip.id}/access-links`, {
+        method: "POST",
+        body: JSON.stringify({ role: "editor", label: "smoke 编辑链接" }),
+      });
+      const placeBody = JSON.stringify({
+        name: "协作矩阵测试点",
+        category: "other",
+        location: { lng: 120.15, lat: 30.25 },
+      });
+
+      // viewer（默认只读分享链接 token）：行程读 200、写 403
+      assert(
+        (await rawStatus(`/trips/${cTrip.id}`, undefined, viewerToken)) === 200,
+        "collab: viewer token reads trip bundle (200)",
+      );
+      assert(
+        (await rawStatus(`/trips/${cTrip.id}/places`, { method: "POST", body: placeBody }, viewerToken)) === 403,
+        "collab: viewer token write rejected (403)",
+      );
+
+      // editor：行程写 200（地点创建端点为 201，也属写放行）
+      assert(
+        (await rawStatus(`/trips/${cTrip.id}/places`, { method: "POST", body: placeBody }, editorLink.token)) === 201,
+        "collab: editor token write accepted (201)",
+      );
+
+      // 无效 token：一律 401（绝不静默降级）
+      assert(
+        (await rawStatus(`/trips/${cTrip.id}`, undefined, `smoke-invalid-${RUN_ID}`)) === 401,
+        "collab: invalid token rejected (401)",
+      );
+      // 匿名远程敏感端点（带无效 token 模拟远程匿名）：owner-only 端点 401
+      assert(
+        (await rawStatus(`/agents`, { method: "POST", body: JSON.stringify({ id: "x", label: "x", command: "x" }) }, `smoke-invalid-${RUN_ID}`)) === 401,
+        "collab: anonymous (invalid token) POST /agents rejected (401)",
+      );
+
+      // 吊销 editor 链接（软删终态）：同 token 下次请求 401
+      await api(`/access-links/${editorLink.id}`, { method: "DELETE" });
+      assert(
+        (await rawStatus(`/trips/${cTrip.id}`, undefined, editorLink.token)) === 401,
+        "collab: revoked editor token rejected (401)",
+      );
+
+      await api(`/trips/${cTrip.id}`, { method: "DELETE" });
+      console.log("  ✓ collab matrix trip cleaned up");
+    }
+
+    // 6. collab_full_flow（#21）：同伴协作完整链路——owner 发链接 → 同伴激活（昵称）→
+    // 带 token 编辑 → 动态流归属昵称 → 吊销即失效。这是 #16-#19 能力面的端到端串联。
+    console.log("-- collab_full_flow --");
+    {
+      const guestName = `小烟-${RUN_ID.slice(-4)}`;
+      const { trip: fTrip } = await api("/trips", {
+        method: "POST",
+        body: JSON.stringify({ title: `smoke-协作全程-${RUN_ID}`, destinationCity: "杭州" }),
+      });
+      // owner 建 editor 链接（「分享与协作」面板同款端点）
+      const { link: fLink } = await api(`/trips/${fTrip.id}/access-links`, {
+        method: "POST",
+        body: JSON.stringify({ role: "editor", label: "smoke 全程链接" }),
+      });
+
+      // 同伴打开 /join/:token → info → 激活（写昵称）
+      const info = await api(`/join/${fLink.token}/info`);
+      assert(info.tripTitle === fTrip.title && info.role === "editor" && info.displayName === null, "collab: join info carries title/role, no nickname yet");
+      const activated = await api(`/join/${fLink.token}/activate`, {
+        method: "POST",
+        body: JSON.stringify({ displayName: guestName }),
+      });
+      assert(activated.tripId === fTrip.id && activated.role === "editor", "collab: activate returns tripId + role");
+
+      // editor token 写一个地点（同伴在行程页上的「添加地点」）
+      const { place: guestPlace } = await api(`/trips/${fTrip.id}/places`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${fLink.token}` },
+        body: JSON.stringify({ name: "同伴添加的西湖", category: "attraction", location: { lng: 120.15, lat: 30.24 } }),
+      });
+      assert(!!guestPlace?.id && guestPlace.status === "joined", "collab: guest-edited place created (joined)");
+
+      // 动态流：该写操作记录为 guest 昵称（actorLabel），summary 完整句子服务端生成
+      const { activity } = await api(`/trips/${fTrip.id}/activity`, {
+        headers: { authorization: `Bearer ${fLink.token}` },
+      });
+      const entry = (activity as Array<{ actorLabel: string; summary: string }>).find((a) => a.summary.includes("同伴添加的西湖"));
+      assert(!!entry && entry.actorLabel === guestName, `collab: activity records guest nickname (got ${entry?.actorLabel ?? "none"})`);
+
+      // owner 吊销链接（面板「吊销」按钮）→ 同 token 立即 401
+      await api(`/access-links/${fLink.id}`, { method: "DELETE" });
+      assert(
+        (await rawStatus(`/trips/${fTrip.id}`, undefined, fLink.token)) === 401,
+        "collab: token unusable right after revoke (401)",
+      );
+
+      await api(`/trips/${fTrip.id}`, { method: "DELETE" });
+      console.log("  ✓ collab full-flow trip cleaned up");
+    }
+
+    // 7. 清理 trip
     await api(`/trips/${trip.id}`, { method: "DELETE" });
     console.log("  ✓ trip cleaned up");
 
