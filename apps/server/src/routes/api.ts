@@ -20,6 +20,7 @@ import {
   UpdateAgentInputSchema,
   UpdateDaySummaryInputSchema,
   UpdateEntryInputSchema,
+  UpdateHotelCandidateInputSchema,
   UpdatePlaceInputSchema,
   UpdateSettingsInputSchema,
   UpdateTripInputSchema,
@@ -341,6 +342,13 @@ export function createApi(
     const input = CreateHotelCandidateInputSchema.parse(await c.req.json());
     const result = await tripService.addHotelCandidate(c.req.param("tripId"), input, "human");
     return c.json(result, 201);
+  });
+
+  /** 回填酒店候选（issue #13）：订完酒店后写回真实每晚价/备注；选定状态流转走 select/unselect */
+  api.patch("/hotel-candidates/:candidateId", async (c) => {
+    const input = UpdateHotelCandidateInputSchema.parse(await c.req.json());
+    const candidate = await tripService.updateHotelCandidate(c.req.param("candidateId"), input);
+    return c.json({ candidate });
   });
 
   // 选定酒店：可带 checkInDay/checkOutDay（1-based 闭开区间，缺省服务端智能建议）；
