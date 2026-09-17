@@ -13,6 +13,7 @@ import {
   CreatePlaceInputSchema,
   CreateTripInputSchema,
   CreateTripNoteInputSchema,
+  JoinActivateInputSchema,
   POSSIBLE_DUPLICATE_CODE,
   ReorderDayInputSchema,
   SelectHotelInputSchema,
@@ -28,6 +29,8 @@ import {
   UpdateTripInputSchema,
   UpdateTripNoteInputSchema,
   type AgentAvailability,
+  type JoinActivateResult,
+  type JoinInfo,
   type SharePayload,
   type TripBundle,
 } from "@yarnball/shared";
@@ -35,7 +38,7 @@ import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { chatChannel, tripChannel, TRIPS_CHANNEL, type EventBus } from "../events.js";
 import type { AcpSessionManager } from "../acp/sessionManager.js";
-import { PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
+import { JoinLinkError, PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
 import { getProvider } from "../services/geo.js";
 import { getTripWeather } from "../services/weather.js";
 import { amapConfigured, getSettings, updateSettings, getOwnerTokenStatus, resetOwnerToken } from "../services/settings.js";
@@ -97,6 +100,8 @@ function aliasShareBundleIds(bundle: TripBundle, token: string): SharePayload["b
  *
  * 访问控制（v0.4 多人协作地基，issue #16）：
  * - 公开区（无需凭证）：GET /share/:token（只读分享，token 即凭证）、GET /config（前端启动配置）、
+ *   GET /join/:token/info + POST /join/:token/activate（同伴入口，issue #18，token 即凭证；
+ *   activate 成功 = 同伴拿到与 Bearer 鉴权同一 token 的 guest 身份）、
  *   两个 SSE events 端点（EventSource 无法带 header，token 走 ?token= query param）
  * - guard 区：其余全部端点。principal 中间件统一解析身份（loopback 无 token = owner 桌面形态、
  *   Bearer access-link token = guest、Bearer owner token = owner、远程匿名 401），
@@ -126,6 +131,11 @@ export function createApi(
         { error: err.message, code: POSSIBLE_DUPLICATE_CODE, existingPlace: err.existingPlace },
         409,
       );
+    }
+    // join 端点的可区分错误（issue #18）：code 让前端出「链接无效」vs「已被撤销」的不同文案；
+    // 必须先于 ServiceError 分支（JoinLinkError 是其子类）
+    if (err instanceof JoinLinkError) {
+      return c.json({ error: err.message, code: err.code }, err.status as 404 | 410);
     }
     if (err instanceof ServiceError) return c.json({ error: err.message }, err.status as 400);
     // zod 入参校验失败 → 400（此前一律 500，调用方无法区分是参数错还是服务端故障）
@@ -158,6 +168,19 @@ export function createApi(
       tripService.getBudgetSummary(trip.id),
     ]);
     return c.json({ bundle: aliasShareBundleIds(bundle, token), budget } satisfies SharePayload);
+  });
+
+  // ---------- 同伴入口（issue #18：token 在 URL 即凭证，同 /share/:token 模式） ----------
+
+  api.get("/join/:token/info", async (c) => {
+    const info = await tripService.getJoinInfo(c.req.param("token"));
+    return c.json(info satisfies JoinInfo);
+  });
+
+  api.post("/join/:token/activate", async (c) => {
+    const input = JoinActivateInputSchema.parse(await c.req.json());
+    const result = await tripService.activateJoinLink(c.req.param("token"), input);
+    return c.json(result satisfies JoinActivateResult);
   });
 
   // SSE 公开端点（token 必须走 ?token=：EventSource 不能带自定义 header；Bearer 也接受，方便 curl 自测）

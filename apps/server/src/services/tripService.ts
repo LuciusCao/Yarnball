@@ -9,6 +9,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type {
+  AccessLinkRole,
   Actor,
   AddEntryInput,
   CreateAccessLinkInput,
@@ -21,6 +22,10 @@ import type {
   HotelAreaRecommendation,
   HotelAreaSegment,
   HotelAreaSignalPoint,
+  JoinActivateInput,
+  JoinActivateResult,
+  JoinInfo,
+  JoinLinkErrorCode,
   LngLat,
   PlaceDto,
   PlaceStatus,
@@ -101,6 +106,21 @@ export class ServiceError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+/**
+ * join 端点专用错误（issue #18）：状态码 + 可区分 code 双保险——
+ * 前端按 code（join_link_not_found / join_link_revoked）出不同文案，
+ * code 缺失时退回按 HTTP 状态区分（404 无效 / 410 已吊销）。
+ */
+export class JoinLinkError extends ServiceError {
+  constructor(
+    public code: JoinLinkErrorCode,
+    status: 404 | 410,
+    message: string,
+  ) {
+    super(status, message);
   }
 }
 
@@ -1040,6 +1060,51 @@ export class TripService {
       .update(schema.tripAccessLinks)
       .set({ revokedAt: new Date() })
       .where(eq(schema.tripAccessLinks.id, linkId));
+  }
+
+  // ---------- 同伴入口（issue #18：公开端点，token 在 URL 即凭证，不走 principal 鉴权） ----------
+
+  /** 按 token 查访问链接（含已吊销行——join 端点要区分「无效」与「已撤销」） */
+  private async getAccessLinkByToken(token: string) {
+    const [link] = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(eq(schema.tripAccessLinks.token, token));
+    if (!link) throw new JoinLinkError("join_link_not_found", 404, "链接无效或已被删除");
+    if (link.revokedAt) throw new JoinLinkError("join_link_revoked", 410, "链接已被行程主人撤销");
+    return link;
+  }
+
+  /**
+   * 链接信息（GET /api/join/:token/info）。只给标题/角色/已填昵称——
+   * 不泄 bundle、不泄 owner 信息、不泄真实 tripId（tripId 在 activate 成功后才下发）。
+   */
+  async getJoinInfo(token: string): Promise<JoinInfo> {
+    const link = await this.getAccessLinkByToken(token);
+    const trip = await this.getTrip(link.tripId);
+    return {
+      tripTitle: trip.title,
+      role: link.role as AccessLinkRole,
+      displayName: link.displayName ?? null,
+    };
+  }
+
+  /**
+   * 激活链接（POST /api/join/:token/activate）：写昵称 + last_seen_at，返回 tripId/role。
+   * 重复激活（改昵称重进）直接覆盖 displayName——链接即身份，昵称是可变展示名。
+   * last_seen_at 在此显式写（本端点在公开区，不走 principalMiddleware 的节流触达）。
+   */
+  async activateJoinLink(token: string, input: JoinActivateInput): Promise<JoinActivateResult> {
+    const link = await this.getAccessLinkByToken(token);
+    await this.db
+      .update(schema.tripAccessLinks)
+      .set({ displayName: input.displayName, lastSeenAt: new Date() })
+      .where(eq(schema.tripAccessLinks.id, link.id));
+    return {
+      tripId: link.tripId,
+      role: link.role as AccessLinkRole,
+      displayName: input.displayName,
+    };
   }
 
   /**
