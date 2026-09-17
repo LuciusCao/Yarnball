@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import type { AccessLinkRole, TripAccessLinkDto } from "@yarnball/shared";
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api";
+import { usePresence } from "../presence/usePresence";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -33,7 +34,8 @@ import {
  * 面板打开期间每 30s 轮询刷新（在线近似），关闭即停。
  */
 
-/** 在线近似窗口：last_seen_at 距今小于该值显示「在线」绿点（节流写入 60s，见 server auth.ts） */
+/** 在线近似窗口：last_seen_at 距今小于该值显示「在线」绿点（节流写入 60s，见 server auth.ts）。
+ *  #19 起作为 presence 不可用时的兜底（SSE 掉线/服务重启时精确名单短暂缺失） */
 const ONLINE_WINDOW_MS = 90_000;
 /** 面板打开期间的列表轮询间隔（活跃时间 / 在线状态保鲜） */
 const REFRESH_INTERVAL_MS = 30_000;
@@ -71,8 +73,12 @@ function formatLastSeen(iso: string | null): string {
   return d.getFullYear() === now.getFullYear() ? md : `${d.getFullYear()}/${md}`;
 }
 
-/** 在线近似：last_seen_at 距今 < 90s 视为在线（精确 presence 在 #19） */
-function isOnline(link: TripAccessLinkDto): boolean {
+/** 在线近似（兜底）：presence 名单缺失时退回 last_seen_at 90s 窗口判定（精确名单见 usePresence） */
+function isOnline(link: TripAccessLinkDto, onlineLabels: Set<string>): boolean {
+  // 精确 presence：链接昵称（或备注名）出现在在线名单里（owner 自身显示为「主人」，不对应链接）
+  if (onlineLabels.size > 0 && (link.displayName || link.label)) {
+    if (onlineLabels.has(link.displayName!) || onlineLabels.has(link.label!)) return true;
+  }
   if (!link.lastSeenAt) return false;
   return Date.now() - new Date(link.lastSeenAt).getTime() < ONLINE_WINDOW_MS;
 }
@@ -101,6 +107,11 @@ export function ShareCollabDialog({
   const [highlightId, setHighlightId] = useState<string | null>(null);
   /** 最近一次成功复制的对象 key（行级「已复制」反馈，2s 后还原） */
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // 精确在线名单（issue #19 升级 #17 的 90s 近似）：SSE presence 事件驱动，
+  // 名单拿不到（SSE 未就绪/断线）时 isOnline 自动退回 last_seen_at 兜底
+  const presenceViewers = usePresence(tripId);
+  const onlineLabels = new Set(presenceViewers.map((v) => v.label));
 
   /**
    * 备注名输入的 IME 组合标志位（issue #4/#12 同款修复）：WebKit 下中文输入法确认候选的
@@ -265,7 +276,7 @@ export function ShareCollabDialog({
                 </div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-slate-400">
-                    {legacyLink && isOnline(legacyLink) && (
+                    {legacyLink && isOnline(legacyLink, onlineLabels) && (
                       <span title="最近 90 秒内有访问" className="size-1.5 shrink-0 rounded-full bg-available" />
                     )}
                     <span className="truncate">
@@ -326,7 +337,7 @@ export function ShareCollabDialog({
                       )}
                     >
                       <div className="flex items-center gap-2">
-                        {!revoked && isOnline(link) && (
+                        {!revoked && isOnline(link, onlineLabels) && (
                           <span
                             title="在线（最近 90 秒内有访问）"
                             className="size-1.5 shrink-0 rounded-full bg-available"

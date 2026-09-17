@@ -17,12 +17,14 @@ import {
   type OwnerTokenStatus,
   type PlaceDto,
   type PlaceStatus,
+  type PresenceEntry,
   type SelectHotelInput,
   type SettingsDto,
   type SetLegModeInput,
   type SuggestDayClustersResult,
   type TransportMode,
   type TripAccessLinkDto,
+  type TripActivityDto,
   type TripDto,
   type TripNoteDto,
   type TripWeather,
@@ -301,6 +303,23 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ displayName }),
     }),
+
+  // ---------- 协作实时体验（issue #19：动态流 / 在线名单 / 分享页实时化） ----------
+
+  /**
+   * 行程动态流（GET /api/trips/:tripId/activity）：最近 N 条「谁改了什么」。
+   * 动态数据（含 presence），走 react-query 或组件内 state，不进 zustand bundle。
+   */
+  listTripActivity: (tripId: string) =>
+    request<{ activity: TripActivityDto[] }>(`/trips/${tripId}/activity`),
+
+  /** 当前在线名单快照（GET /api/trips/:tripId/presence）：首屏拉取，之后靠 SSE presence 事件增量更新 */
+  getTripPresence: (tripId: string) =>
+    request<{ viewers: PresenceEntry[] }>(`/trips/${tripId}/presence`),
+
+  /** 分享页天气（GET /api/share/:token/weather，公开端点：token 即凭证，响应无真实 id） */
+  getShareWeather: (token: string) =>
+    request<{ weather: TripWeather }>(`/share/${token}/weather`),
 
   // ---------- agent 注册 ----------
 

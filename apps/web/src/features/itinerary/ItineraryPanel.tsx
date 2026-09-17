@@ -4,9 +4,10 @@ import { toast } from "sonner";
 import { BedDouble, Bus, Car, CarTaxiFront, ChevronDown, Clock, Footprints, Landmark, MapPin, Package, PlaneLanding, PlaneTakeoff, Repeat, Ship, TrainFront, TrainFrontTunnel, TramFront, TriangleAlert, UtensilsCrossed, Zap, type LucideIcon } from "lucide-react";
 import { api } from "../../api/client";
 import { api as libApi } from "../../lib/api";
+import { useSyncedInput } from "../../lib/useSyncedInput";
 import { DAY_COLORS } from "../map/MapCanvas";
 import { buildDayTimeline, formatHHMM, type TimelineItem } from "./timeline";
-import { DayWeatherBadge, useTripWeather } from "./weather";
+import { DayWeatherBadge, useShareWeather, useTripWeather } from "./weather";
 import { deriveDayIntensity, INTENSITY_META } from "./intensity";
 import { DaySummaryRow } from "./DaySummaryRow";
 import {
@@ -95,6 +96,8 @@ interface ItineraryPanelProps {
   onDataChanged: () => void;
   /** 只读模式（分享页）：不渲染编辑按钮与交通段切换 */
   readOnly?: boolean;
+  /** 分享 token（issue #19 分享页实时化）：readOnly 模式下天气走公开端点 /api/share/:token/weather */
+  shareToken?: string;
   /**
    * Day 筛选 tabs（M15，仅 TripPage 传入）：面板顶部渲染「全部/Day 1/Day 2…」，
    * 选中后过滤面板只显示该天，并回传 TripPage 让地图聚焦同一天（原地图浮条的状态通道）
@@ -117,6 +120,7 @@ export function ItineraryPanel({
   onSelectPlace,
   onDataChanged,
   readOnly = false,
+  shareToken,
   visibleDay = null,
   onVisibleDayChange,
   selectedLegId = null,
@@ -128,8 +132,10 @@ export function ItineraryPanel({
   const placeById = new Map(bundle.places.map((p) => [p.id, p]));
 
   /** 天气（M102，#5）：react-query 按 tripId 缓存，面板挂载即拉取/刷新；动态数据不进 bundle。
-      分享页 trip.id 被脱敏置空，useTripWeather 禁用查询，徽章不渲染（分享页不出天气，见 weather.tsx） */
-  const weatherQuery = useTripWeather(tripId);
+   *  分享页（#19）：trip.id 被脱敏置空 → useTripWeather 禁用，改走 share token 公开端点 */
+  const weatherQuery = readOnly && shareToken
+    ? useShareWeather(shareToken)
+    : useTripWeather(tripId);
   /** dayIndex（1-based）→ 当天天气；查询中/失败/无数据的天拿不到条目，徽章不渲染 */
   const weatherByDay = new Map<number, DayWeather>();
   for (const d of weatherQuery.data?.days ?? []) {
@@ -428,9 +434,11 @@ export function ItineraryPanel({
               )}
             </header>
 
-            {/* 每日概要（M102，#9）：summaryAuto=服务端兜底（带「自动」标记）；点击编辑，清空恢复自动 */}
+            {/* 每日概要（M102，#9）：summaryAuto=服务端兜底（带「自动」标记）；点击编辑，清空恢复自动。
+                key 只钉 day.id（issue #19 防冲突）：旧 key 含 summary 文本，SSE 全量刷新（任何同伴的
+                写操作）会改 key 重挂载组件，正在编辑的 input 被整体卸载——草稿丢失、退回展示态 */}
             <DaySummaryRow
-              key={`${day.id}:${day.summaryAuto}:${day.summary ?? ""}`}
+              key={day.id}
               day={day}
               readOnly={readOnly}
               busy={busy}
@@ -554,7 +562,7 @@ export function ItineraryPanel({
                     )}
                     {kind ? (
                       <TransitRow
-                        key={`${entry.id}:${entry.departTime ?? ""}:${entry.arriveTime ?? ""}`}
+                        key={entry.id}
                         item={item}
                         kind={kind}
                         route={transitRouteText(entry, placeById) ?? place?.name ?? "大交通"}
@@ -778,13 +786,15 @@ function TransitRow({
             : kind === "departure"
               ? PlaneTakeoff
               : TrainFront;
-  // 本地编辑态：失焦/回车提交；SSE 刷新后由父级按 entry.id+时间 重置 key 重挂载
-  const [depart, setDepart] = useState(entry.departTime ?? "");
-  const [arrive, setArrive] = useState(entry.arriveTime ?? "");
+  // 本地编辑态：失焦/回车提交。防冲突（issue #19）：旧实现靠父级 key 含时间字段重挂载来重置
+  // 输入——多人协作时任何 bundle 刷新都会改 key，正在改时刻的输入被整体卸载。
+  // 现改为 useSyncedInput：key 只钉 entry.id，外部时刻变化在失焦后照常同化、聚焦中不冲掉。
+  const depart = useSyncedInput(entry.departTime ?? "");
+  const arrive = useSyncedInput(entry.arriveTime ?? "");
 
   function commit() {
-    const nextDepart = depart || null;
-    const nextArrive = arrive || null;
+    const nextDepart = depart.value || null;
+    const nextArrive = arrive.value || null;
     if (nextDepart === entry.departTime && nextArrive === entry.arriveTime) {
       return;
     }
@@ -838,20 +848,28 @@ function TransitRow({
           <span className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500" onClick={(e) => e.stopPropagation()}>
             <input
               type="time"
-              value={depart}
+              value={depart.value}
               disabled={busy}
-              onChange={(e) => setDepart(e.target.value)}
-              onBlur={commit}
+              onChange={depart.onChange}
+              onFocus={depart.onFocus}
+              onBlur={() => {
+                depart.onBlur();
+                commit();
+              }}
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
               className="w-[76px] rounded border border-slate-300/60 bg-white/70 px-1 py-0.5 tabular-nums disabled:opacity-50"
             />
             –
             <input
               type="time"
-              value={arrive}
+              value={arrive.value}
               disabled={busy}
-              onChange={(e) => setArrive(e.target.value)}
-              onBlur={commit}
+              onChange={arrive.onChange}
+              onFocus={arrive.onFocus}
+              onBlur={() => {
+                arrive.onBlur();
+                commit();
+              }}
               onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
               className="w-[76px] rounded border border-slate-300/60 bg-white/70 px-1 py-0.5 tabular-nums disabled:opacity-50"
             />
