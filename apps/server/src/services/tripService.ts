@@ -33,6 +33,8 @@ import type {
   TransitSegment,
   TransportMode,
   TripAccessLinkDto,
+  TripActivityAction,
+  TripActivityDto,
   TripBundle,
   TripNoteDto,
   TripStop,
@@ -42,7 +44,7 @@ import type {
   UpdateTripInput,
   UpdateTripNoteInput,
 } from "@yarnball/shared";
-import { isDomesticOsmTrip } from "@yarnball/shared";
+import { isDomesticOsmTrip, TRIP_ACTIVITY_ACTION_LABELS, actorKindOf, actorLabelOf } from "@yarnball/shared";
 import { TRIPS_CHANNEL, tripChannel, type EventBus } from "../events.js";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
@@ -53,6 +55,7 @@ import {
   toHotelDto,
   toLegDto,
   toPlaceDto,
+  toTripActivityDto,
   toTripDto,
   toTripNoteDto,
 } from "./mappers.js";
@@ -64,6 +67,12 @@ import { mintAccessToken } from "./auth.js";
 const uuid = () => randomUUID();
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+/** 动态流宾语截断（issue #19）：注意事项等长文本只进句子前 20 字，防止动态条刷屏 */
+function truncateSubject(text: string, max = 20): string {
+  const t = text.trim();
+  return t.length <= max ? t : `${t.slice(0, max)}…`;
+}
 
 /**
  * 并发限流器：同一时刻最多 concurrency 个任务在执行，其余排队。
@@ -523,7 +532,7 @@ export class TripService {
    * 天数口径（getTripDayCount / getBudgetSummary / selectHotel 上界）要求两者同时非空且区间为正才按日期区间计，
    * 只设一个或区间倒置时自动回退到已建天数兜底，不会产生破坏性的天数变化。
    */
-  async updateTrip(tripId: string, input: UpdateTripInput) {
+  async updateTrip(tripId: string, input: UpdateTripInput, actor: Actor = "human") {
     await this.getTrip(tripId);
     const patch: Partial<typeof schema.trips.$inferInsert> = {};
     if (input.title !== undefined) patch.title = input.title;
@@ -533,6 +542,7 @@ export class TripService {
       patch.updatedAt = new Date();
       await this.db.update(schema.trips).set(patch).where(eq(schema.trips.id, tripId));
       await this.publishBundle(tripId);
+      await this.recordActivity(tripId, actor, "trip_updated", patch.title ?? null);
     }
     return toTripDto(await this.getTrip(tripId));
   }
@@ -631,6 +641,77 @@ export class TripService {
     this.bus.publish(tripChannel(tripId), { type: "bundle", bundle });
   }
 
+  // ---------- 动态流（issue #19「谁改了什么」） ----------
+
+  /**
+   * 动态流滚动保留条数：超过即删除最旧行（v1 只做最近 N 条，不做翻页/检索）。
+   * 独立小表 + 低频写，每次插入后顺手清理即可，无需定时任务。
+   */
+  static readonly ACTIVITY_KEEP = 50;
+
+  /**
+   * 记录一条动态：落库 + 滚动清理超旧行 + SSE 推送（行程频道，与 bundle 事件同频道）。
+   * subject 是 summary 里的宾语（如地点名「悉尼歌剧院」、天标签「Day 2」）。
+   * 错误不传播：动态流是旁路可观测性数据，落库失败不应让写操作本身变红——
+   * 真正的数据变更已经提交，activity 只是它的记录（console.warn 留排查线索）。
+   */
+  private async recordActivity(
+    tripId: string,
+    actor: Actor,
+    action: TripActivityAction,
+    subject?: string | null,
+  ): Promise<void> {
+    try {
+      const label = actorLabelOf(actor);
+      const verb = TRIP_ACTIVITY_ACTION_LABELS[action];
+      const summary = subject ? `${label} ${verb} ${subject}` : `${label} ${verb}`;
+      const [row] = await this.db
+        .insert(schema.tripActivity)
+        .values({
+          id: uuid(),
+          tripId,
+          actorKind: actorKindOf(actor),
+          actorLabel: label,
+          action,
+          summary,
+        })
+        .returning();
+      // 滚动清理：createdAt 秒级精度有并列，按 createdAt 再按插入顺序（SQLite rowid）稳定排序
+      const stale = await this.db
+        .select({ id: schema.tripActivity.id })
+        .from(schema.tripActivity)
+        .where(eq(schema.tripActivity.tripId, tripId))
+        .orderBy(asc(schema.tripActivity.createdAt), asc(sql`rowid`))
+        .all();
+      if (stale.length > TripService.ACTIVITY_KEEP) {
+        await this.db.delete(schema.tripActivity).where(
+          inArray(
+            schema.tripActivity.id,
+            stale.slice(0, stale.length - TripService.ACTIVITY_KEEP).map((r) => r.id),
+          ),
+        );
+      }
+      this.bus.publish(tripChannel(tripId), {
+        type: "activity",
+        activity: toTripActivityDto(row),
+      });
+    } catch (err) {
+      console.warn(`[activity] 记录失败（${action}，不影响写操作）:`, (err as Error).message);
+    }
+  }
+
+  /** 最近动态（REST 拉取端点用；新的在前） */
+  async listActivity(tripId: string): Promise<TripActivityDto[]> {
+    await this.getTrip(tripId);
+    const rows = await this.db
+      .select()
+      .from(schema.tripActivity)
+      .where(eq(schema.tripActivity.tripId, tripId))
+      .orderBy(asc(schema.tripActivity.createdAt), asc(sql`rowid`))
+      .all();
+    return rows.map(toTripActivityDto).reverse();
+  }
+
   private async touchTrip(tripId: string) {
     await this.db.update(schema.trips).set({ updatedAt: new Date() }).where(eq(schema.trips.id, tripId));
   }
@@ -671,6 +752,8 @@ export class TripService {
         );
       }
     }
+    // DB 列 createdBy 仍是 human|agent 二值：guest 建点归 human（归属昵称记在 trip_activity）
+    const createdBy = typeof actor === "string" ? actor : "human";
     const cityName = input.cityName ?? (nearest && nearest.distKm <= PLACE_CITY_ASSIGN_MAX_DIST_KM ? nearest.name : null);
     const existingPlaces = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
     // amapPoiId 精确匹配 → 幂等返回已有 place 并补齐缺失字段（不插新行、不报疑似重复）
@@ -712,12 +795,13 @@ export class TripService {
         bookingInfo: input.bookingInfo ?? null,
         openingHours: input.openingHours ?? null,
         bookingStatus: input.bookingStatus ?? "none",
-        createdBy: actor,
-        status: input.status ?? (actor === "human" ? "joined" : "candidate"),
+        createdBy,
+        status: input.status ?? (createdBy === "human" ? "joined" : "candidate"),
       })
       .returning();
     await this.touchTrip(tripId);
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "place_added", row.name);
     return toPlaceDto(row);
   }
 
@@ -790,7 +874,7 @@ export class TripService {
   }
 
   /** 加入/移出行程（用户确认候选 → joined=已加入行程；退回候选池 → candidate）。UI 话术为「加入行程/移出行程」 */
-  async setPlaceStatus(placeId: string, status: PlaceStatus) {
+  async setPlaceStatus(placeId: string, status: PlaceStatus, actor: Actor = "human") {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
     const [row] = await this.db
@@ -800,11 +884,17 @@ export class TripService {
       .returning();
     await this.touchTrip(existing.tripId);
     await this.publishBundle(existing.tripId);
+    await this.recordActivity(
+      existing.tripId,
+      actor,
+      status === "joined" ? "place_joined" : "place_unjoined",
+      existing.name,
+    );
     return toPlaceDto(row);
   }
 
   /** M54 状态简化：agent 可改任何地点（含已加入行程的）的信息字段——补官网/改备注/调价等，不再有状态拦截 */
-  async updatePlace(placeId: string, input: UpdatePlaceInput) {
+  async updatePlace(placeId: string, input: UpdatePlaceInput, actor: Actor = "human") {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
     const patch: Partial<typeof schema.places.$inferInsert> = {};
@@ -833,6 +923,8 @@ export class TripService {
     const [row] = await this.db.update(schema.places).set(patch).where(eq(schema.places.id, placeId)).returning();
     await this.touchTrip(existing.tripId);
     await this.publishBundle(existing.tripId);
+    // 信息字段编辑不进动态流（结构性变更才记，防高频微调刷屏）；actor 参数留给后续字段级动态扩展
+    void actor;
     return toPlaceDto(row);
   }
 
@@ -867,6 +959,7 @@ export class TripService {
       await Promise.all(affectedDays.map(({ dayId }) => this.recalcDayLegs(tripId, dayId)));
     }
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "place_removed", existing.name);
   }
 
   /**
@@ -874,7 +967,7 @@ export class TripService {
    * （place 退回候选态，不删 place 本身，transit 起讫点对其的引用保留）。
    * 受影响天 normalizePositions 填洞 + 重算 legs（首尾锚定/交通段按 recalcDayLegs 现有不变式重算）。
    */
-  async unschedulePlace(placeId: string) {
+  async unschedulePlace(placeId: string, actor: Actor = "human") {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
     const entryRows = await this.db
@@ -899,6 +992,9 @@ export class TripService {
       await this.recalcDayLegs(existing.tripId, dayId);
     }
     await this.publishBundle(existing.tripId);
+    if (entryRows.length > 0) {
+      await this.recordActivity(existing.tripId, actor, "place_unjoined", existing.name);
+    }
     return { removedEntries: entryRows.length };
   }
 
@@ -925,12 +1021,15 @@ export class TripService {
   }
 
   /** 撰写/更新每日概要（REST 与 MCP set_day_summary 共用）；null = 清除撰写值，恢复 bundle 层自动兜底 */
-  async updateDaySummary(dayId: string, summary: string | null) {
+  async updateDaySummary(dayId: string, summary: string | null, actor: Actor = "human") {
     const [day] = await this.db.select().from(schema.days).where(eq(schema.days.id, dayId));
     if (!day) throw new ServiceError(404, `day ${dayId} not found`);
     await this.db.update(schema.days).set({ summary }).where(eq(schema.days.id, dayId));
     await this.touchTrip(day.tripId);
     await this.publishBundle(day.tripId);
+    if (summary != null) {
+      await this.recordActivity(day.tripId, actor, "day_summary_updated", `Day ${day.dayIndex}`);
+    }
     const [updated] = await this.db.select().from(schema.days).where(eq(schema.days.id, dayId));
     const dto = toDayDto(updated);
     // 即时响应与 bundle 口径一致：清除撰写值（summary=null）后按兜底重算，
@@ -948,7 +1047,7 @@ export class TripService {
 
   // ---------- 行程级注意事项（trip_notes） ----------
 
-  async createTripNote(tripId: string, input: CreateTripNoteInput): Promise<TripNoteDto> {
+  async createTripNote(tripId: string, input: CreateTripNoteInput, actor: Actor = "human"): Promise<TripNoteDto> {
     await this.getTrip(tripId);
     let position = input.position;
     if (position == null) {
@@ -964,6 +1063,7 @@ export class TripService {
       .returning();
     await this.touchTrip(tripId);
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "note_added", truncateSubject(row.content));
     return toTripNoteDto(row);
   }
 
@@ -984,12 +1084,13 @@ export class TripService {
     return toTripNoteDto(updated);
   }
 
-  async removeTripNote(noteId: string) {
+  async removeTripNote(noteId: string, actor: Actor = "human") {
     const [existing] = await this.db.select().from(schema.tripNotes).where(eq(schema.tripNotes.id, noteId));
     if (!existing) throw new ServiceError(404, `note ${noteId} not found`);
     await this.db.delete(schema.tripNotes).where(eq(schema.tripNotes.id, noteId));
     await this.touchTrip(existing.tripId);
     await this.publishBundle(existing.tripId);
+    await this.recordActivity(existing.tripId, actor, "note_removed", truncateSubject(existing.content));
   }
 
   // ---------- 访问链接（trip_access_links，issue #16：owner-only 管理） ----------
@@ -1113,7 +1214,7 @@ export class TripService {
    * 起讫引用 place 时 recalcDayLegs 走真实坐标参与锚定（到达日起点 / 离开日收口），纯文本则不产生交通段。
    * transit 的 startTime 缺省取 departTime（时间轴排序用）。
    */
-  async addEntry(tripId: string, input: AddEntryInput) {
+  async addEntry(tripId: string, input: AddEntryInput, actor: Actor = "human") {
     await this.getTrip(tripId);
     const entryType = input.entryType ?? "place";
     if (entryType === "place") {
@@ -1193,6 +1294,30 @@ export class TripService {
     await this.touchTrip(tripId);
     await this.recalcDayLegs(tripId, day.id);
     await this.publishBundle(tripId);
+    // 动态流：place entry 记「排了日程 地点名」；transit 记「添加了大交通 起 → 讫」
+    if (entryType === "place") {
+      const [place] = await this.db
+        .select({ name: schema.places.name })
+        .from(schema.places)
+        .where(eq(schema.places.id, input.placeId!));
+      await this.recordActivity(tripId, actor, "entry_added", place?.name ?? null);
+    } else {
+      const fromPlace = input.fromPlaceId
+        ? (await this.db
+            .select({ name: schema.places.name })
+            .from(schema.places)
+            .where(eq(schema.places.id, input.fromPlaceId)))[0]
+        : undefined;
+      const toPlace = input.toPlaceId
+        ? (await this.db
+            .select({ name: schema.places.name })
+            .from(schema.places)
+            .where(eq(schema.places.id, input.toPlaceId)))[0]
+        : undefined;
+      const fromText = fromPlace?.name ?? input.fromName ?? "起点";
+      const toText = toPlace?.name ?? input.toName ?? "讫点";
+      await this.recordActivity(tripId, actor, "transit_added", `${fromText} → ${toText}`);
+    }
     return { entryId, dayId: day.id, position: pos };
   }
 
@@ -1264,17 +1389,36 @@ export class TripService {
     return toEntryDto(row);
   }
 
-  async removeEntry(entryId: string) {
+  async removeEntry(entryId: string, actor: Actor = "human") {
     const [entry] = await this.db.select().from(schema.entries).where(eq(schema.entries.id, entryId));
     if (!entry) throw new ServiceError(404, `entry ${entryId} not found`);
+    // 主体在删除前取（行删了就查不到名字/天序）
+    const subject =
+      entry.entryType === "place"
+        ? (await this.db
+            .select({ name: schema.places.name })
+            .from(schema.places)
+            .where(eq(schema.places.id, entry.placeId!)))[0]?.name ?? null
+        : null;
+    const [dayRow] = await this.db
+      .select({ dayIndex: schema.days.dayIndex })
+      .from(schema.days)
+      .where(eq(schema.days.id, entry.dayId));
     await this.db.delete(schema.entries).where(eq(schema.entries.id, entryId));
     await this.normalizePositions(entry.dayId);
     await this.touchTrip(entry.tripId);
     await this.recalcDayLegs(entry.tripId, entry.dayId);
     await this.publishBundle(entry.tripId);
+    const dayLabel = dayRow ? `Day ${dayRow.dayIndex}` : null;
+    await this.recordActivity(
+      entry.tripId,
+      actor,
+      "entry_removed",
+      [dayLabel, subject].filter(Boolean).join(" · ") || null,
+    );
   }
 
-  async moveEntry(entryId: string, dayIndex: number, position: number) {
+  async moveEntry(entryId: string, dayIndex: number, position: number, actor: Actor = "human") {
     const [entry] = await this.db.select().from(schema.entries).where(eq(schema.entries.id, entryId));
     if (!entry) throw new ServiceError(404, `entry ${entryId} not found`);
     const day = await this.ensureDay(entry.tripId, dayIndex);
@@ -1334,7 +1478,7 @@ export class TripService {
   }
 
   /** 整天重排（人拖拽 or agent reorder_day） */
-  async reorderDay(tripId: string, dayIndex: number, entryIds: string[]) {
+  async reorderDay(tripId: string, dayIndex: number, entryIds: string[], actor: Actor = "human") {
     const day = await this.ensureDay(tripId, dayIndex);
     const entries = await this.db.select().from(schema.entries).where(eq(schema.entries.dayId, day.id));
     const currentIds = new Set(entries.map((e) => e.id));
@@ -1356,6 +1500,9 @@ export class TripService {
     await this.touchTrip(tripId);
     await this.recalcDayLegs(tripId, day.id);
     await this.publishBundle(tripId);
+    if (entryIds.length >= 2) {
+      await this.recordActivity(tripId, actor, "day_reordered", `Day ${dayIndex}`);
+    }
   }
 
   private normalizePositions(dayId: string) {
@@ -1689,7 +1836,7 @@ export class TripService {
    * 手动覆盖某段交通方式（mode=null 清除覆盖恢复自动）。
    * 覆盖存在 leg.modeOverride 上，recalcDayLegs 按端点配对保留。
    */
-  async setLegMode(legId: string, mode: TransportMode | null) {
+  async setLegMode(legId: string, mode: TransportMode | null, actor: Actor = "human") {
     const [leg] = await this.db.select().from(schema.transportLegs).where(eq(schema.transportLegs.id, legId));
     if (!leg) throw new ServiceError(404, `leg ${legId} not found`);
     await this.db
@@ -1699,6 +1846,8 @@ export class TripService {
     await this.touchTrip(leg.tripId);
     await this.recalcDayLegs(leg.tripId, leg.dayId);
     await this.publishBundle(leg.tripId);
+    // 交通方式手动覆盖不进动态流：微调频次高且非结构性，与地点信息字段编辑同口径
+    void actor;
   }
 
   /** 行程全部天的 legs 重算（换酒店/删除酒店地点用）。多天并行，外部路由并发由 routeLimits 全局收口 */
@@ -2236,6 +2385,7 @@ export class TripService {
     tripId: string,
     candidateId: string | null,
     days?: { checkInDay?: number; checkOutDay?: number },
+    actor: Actor = "human",
   ) {
     const trip = await this.getTrip(tripId);
     // candidateId=null：取消全部选定（兼容旧单选契约）
@@ -2346,11 +2496,12 @@ export class TripService {
     // 酒店是每天往返交通的锚点：选定/取消后全量重算各天 legs
     await this.recalcAllDayLegs(tripId);
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "hotel_selected", await this.hotelPlaceName(tripId, candidateId));
     return { checkInDay, checkOutDay };
   }
 
   /** 取消单个酒店的选定 */
-  async unselectHotel(tripId: string, candidateId: string) {
+  async unselectHotel(tripId: string, candidateId: string, actor: Actor = "human") {
     await this.getTrip(tripId);
     const [cand] = await this.db
       .select()
@@ -2364,6 +2515,17 @@ export class TripService {
     await this.syncSelectedHotelMirror(tripId);
     await this.recalcAllDayLegs(tripId);
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "hotel_unselected", await this.hotelPlaceName(tripId, candidateId));
+  }
+
+  /** 酒店候选对应地点名（activity 宾语用） */
+  private async hotelPlaceName(tripId: string, candidateId: string): Promise<string | null> {
+    const [row] = await this.db
+      .select({ name: schema.places.name })
+      .from(schema.hotelCandidates)
+      .innerJoin(schema.places, eq(schema.places.id, schema.hotelCandidates.placeId))
+      .where(and(eq(schema.hotelCandidates.id, candidateId), eq(schema.hotelCandidates.tripId, tripId)));
+    return row?.name ?? null;
   }
 
   /**
@@ -2404,6 +2566,7 @@ export class TripService {
   async updateBudget(
     tripId: string,
     input: { budgetCny?: number | null; travelerCount?: number; currency?: string },
+    actor: Actor = "human",
   ) {
     await this.getTrip(tripId);
     const patch: Partial<typeof schema.trips.$inferInsert> = { updatedAt: new Date() };
@@ -2418,6 +2581,7 @@ export class TripService {
     }
     await this.db.update(schema.trips).set(patch).where(eq(schema.trips.id, tripId));
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "budget_updated");
   }
 
   /**

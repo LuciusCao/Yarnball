@@ -88,7 +88,7 @@ export function TripNotesPanel({
           <ul className="space-y-1">
             {byCategory.get(category)!.map((note) => (
               <NoteRow
-                key={`${note.id}:${note.content}`}
+                key={note.id}
                 note={note}
                 readOnly={readOnly}
                 busy={busy}

@@ -82,9 +82,27 @@ export function isRailMode(mode: TransportMode): boolean {
 export const TRANSIT_MODES = ["flight", "train", "drive", "bus"] as const;
 export type TransitMode = (typeof TRANSIT_MODES)[number];
 
-/** 变更由谁触发（人类直接编辑 or agent 经 MCP） */
-export const ACTORS = ["human", "agent"] as const;
-export type Actor = (typeof ACTORS)[number];
+/**
+ * 变更由谁触发（人类直接编辑 or agent 经 MCP）。
+ * issue #19 起带标签形态：`{ guest: "小红" }` 表示持协作链接的同伴（昵称来自 join 入口的
+ * displayName）。places.created_by 等 DB 列仍只存 "human" | "agent" 二值（列宽窄、语义稳定），
+ * guest 单独落在 trip_activity.actor_label——本类型只用于服务层入参传递。
+ */
+export type Actor = "human" | "agent" | { guest: string };
+
+/** Actor 的类别（DB/DTO 层形态）：human=本机主人、agent=agent、guest=协作同伴 */
+export const ACTOR_KINDS = ["human", "agent", "guest"] as const;
+export type ActorKind = (typeof ACTOR_KINDS)[number];
+
+/** Actor 归一化：类型 + 展示标签（human→"主人"、agent→"agent"、guest→昵称） */
+export function actorKindOf(actor: Actor): ActorKind {
+  return typeof actor === "string" ? actor : "guest";
+}
+
+/** actor 展示标签（activity/动态流文案用）：guest 用昵称，其余用固定文案 */
+export function actorLabelOf(actor: Actor): string {
+  return typeof actor === "string" ? (actor === "agent" ? "agent" : "主人") : actor.guest;
+}
 
 /**
  * 地点状态机：candidate（候选池，agent 解析攻略/推荐的默认值）
@@ -317,7 +335,8 @@ export const PlaceDtoSchema = z.object({
   bookingStatus: z.enum(BOOKING_STATUSES),
   /** 候选（candidate）或已加入行程（joined），见 PLACE_STATUSES */
   status: z.enum(PLACE_STATUSES),
-  createdBy: z.enum(ACTORS),
+  /** 建点者（human | agent；guest 建点在 DB 层归为 human，归属昵称只记在 trip_activity） */
+  createdBy: z.enum(["human", "agent"]),
   createdAt: z.string(),
 });
 export type PlaceDto = z.infer<typeof PlaceDtoSchema>;
@@ -1000,11 +1019,99 @@ export const JoinActivateResultSchema = z.object({
 });
 export type JoinActivateResult = z.infer<typeof JoinActivateResultSchema>;
 
+// ---------- 动态流与在线名单（issue #19） ----------
+
+/**
+ * 动作枚举（trip_activity.action）：狭义「谁改了什么」只记结构性变更，
+ * 不记字段级编辑（update 系列统一 place_updated/entry_updated 等，防止动态流被高频微调刷屏）。
+ */
+export const TRIP_ACTIVITY_ACTIONS = [
+  // 地点
+  "place_added",
+  "place_removed",
+  "place_joined",
+  "place_unjoined",
+  // 日程
+  "entry_added",
+  "entry_removed",
+  "day_reordered",
+  // 大交通
+  "transit_added",
+  // 酒店
+  "hotel_selected",
+  "hotel_unselected",
+  // 须知/概要/行程字段
+  "note_added",
+  "note_removed",
+  "day_summary_updated",
+  "trip_updated",
+  "budget_updated",
+] as const;
+export type TripActivityAction = (typeof TRIP_ACTIVITY_ACTIONS)[number];
+
+/** 动作中文文案（单一定义点，三端共用；summary 完整句子在服务端生成） */
+export const TRIP_ACTIVITY_ACTION_LABELS: Record<TripActivityAction, string> = {
+  place_added: "添加了地点",
+  place_removed: "删除了地点",
+  place_joined: "加入了行程",
+  place_unjoined: "移出了行程",
+  entry_added: "排了日程",
+  entry_removed: "移除了日程",
+  day_reordered: "重排了日程顺序",
+  transit_added: "添加了大交通",
+  hotel_selected: "选定了酒店",
+  hotel_unselected: "取消了酒店",
+  note_added: "添加了注意事项",
+  note_removed: "删除了注意事项",
+  day_summary_updated: "撰写了每日概要",
+  trip_updated: "更新了行程信息",
+  budget_updated: "更新了预算",
+};
+
+/** 动态流条目（trip_activity 行的 DTO 形态；REST 拉取与 SSE activity 事件共用） */
+export const TripActivityDtoSchema = z.object({
+  id: z.string(),
+  tripId: z.string(),
+  actorKind: z.enum(ACTOR_KINDS),
+  /** 展示标签：guest 昵称 / "agent" / "主人"（三端文案一致，服务端生成） */
+  actorLabel: z.string(),
+  action: z.enum(TRIP_ACTIVITY_ACTIONS),
+  /** 服务端生成的完整句子（如「小红 添加了地点 悉尼歌剧院」），前端直接展示 */
+  summary: z.string(),
+  createdAt: z.string(),
+});
+export type TripActivityDto = z.infer<typeof TripActivityDtoSchema>;
+
+/**
+ * 在线名单条目（presence）：一个正在订阅本行程 SSE 的会话。
+ * key 用连接序号 + 身份标签（同一人开两个标签页算两条连接，名单聚合展示时按 label 去重）。
+ */
+export const PresenceEntrySchema = z.object({
+  /** 名单展示标签："主人" / guest 昵称（脱敏端点下同 GET /share 的角色口径） */
+  label: z.string(),
+  /** 身份类别（前端区分头像/排序用） */
+  kind: z.enum(ACTOR_KINDS),
+});
+export type PresenceEntry = z.infer<typeof PresenceEntrySchema>;
+
+/** presence 事件（行程频道）：join/leave 携带事件后的全量名单，前端整包替换 */
+export const PresenceEventSchema = z.object({
+  kind: z.enum(["join", "leave"]),
+  entry: PresenceEntrySchema,
+  /** 当前全部在线连接（含本次事件的结果），前端直接整体替换名单 */
+  viewers: z.array(PresenceEntrySchema),
+});
+export type PresenceEvent = z.infer<typeof PresenceEventSchema>;
+
 // ---------- SSE 事件 ----------
 
 export const TripEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("bundle"), bundle: TripBundleSchema }),
   z.object({ type: z.literal("deleted"), tripId: z.string() }),
+  // 动态流（issue #19）：tripService 写操作完成后随行程频道广播（summary 文案服务端生成，三端一致）
+  z.object({ type: z.literal("activity"), activity: TripActivityDtoSchema }),
+  // 在线名单（issue #19）：SSE 连接建立/断开时广播（kind=join/leave，viewers 为当前全量名单）
+  z.object({ type: z.literal("presence"), presence: PresenceEventSchema }),
 ]);
 export type TripEvent = z.infer<typeof TripEventSchema>;
 

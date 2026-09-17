@@ -321,6 +321,31 @@ export const tripAccessLinks = sqliteTable(
   ],
 );
 
+/**
+ * 行程动态流（issue #19「谁改了什么」）：tripService 写操作完成后落一行，
+ * 服务端生成完整 summary 句子（三端文案一致）。滚动保留最近 N 条（服务层删除超旧行），
+ * 不做翻页/检索（v1 边界）。随行程删除级联清理。
+ */
+export const tripActivity = sqliteTable(
+  "trip_activity",
+  {
+    id: text("id").primaryKey(),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    /** 变更者类别：human（本机主人）/ agent / guest（协作同伴），见 shared ACTOR_KINDS */
+    actorKind: text("actor_kind").notNull(),
+    /** 变更者展示标签：guest 昵称 / "agent" / "主人"（脱敏口径与 presence 一致） */
+    actorLabel: text("actor_label").notNull(),
+    /** 动作枚举（shared TRIP_ACTIVITY_ACTIONS），如 place_added */
+    action: text("action").notNull(),
+    /** 服务端生成的完整句子（如「小红 添加了地点 悉尼歌剧院」） */
+    summary: text("summary").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
+  },
+  (t) => [index("trip_activity_trip_idx").on(t.tripId)],
+);
+
 export const agentTokens = sqliteTable(
   "agent_tokens",
   {

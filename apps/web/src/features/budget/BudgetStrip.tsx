@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   formatMoney,
   TRIP_CURRENCIES,
@@ -10,12 +10,17 @@ import { api } from "../../api/client";
 import { Input, Select } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
+import { useSyncedInput } from "../../lib/useSyncedInput";
 
 /**
  * 预算条 —— 横切关注点：常驻左面板顶部，跨 住宿/美食/门票 汇总。
  * 收起时一行摘要（总花费/预算/剩余 + 未定价警示），展开显示分类条与编辑。
  * 口径：住宿 = 每晚价 × 晚数（不按人数计）；美食/门票只计已加入行程的地点 × 人数。
  * readOnly（issue #20 viewer 同伴）：保留摘要/明细查看，隐藏预算/人数/币种编辑表单。
+ *
+ * 防冲突（issue #19）：summary 由 bundle 变化驱动（SSE 全量快照，任何同伴写操作都会刷新），
+ * 旧实现 useEffect 无条件回灌三个输入——多人协作时正在填的预算会被冲掉。
+ * 现改为 useSyncedInput：输入聚焦/IME 组合期间跳过外部同化，失焦后照常对齐。
  */
 export function BudgetStrip({
   tripId,
@@ -29,30 +34,23 @@ export function BudgetStrip({
   readOnly?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [budgetInput, setBudgetInput] = useState("");
-  const [travelerCount, setTravelerCount] = useState(1);
-  const [currency, setCurrency] = useState("AUD");
+  const budget = useSyncedInput(summary?.budgetCny != null ? String(summary.budgetCny) : "");
+  const travelers = useSyncedInput(summary != null ? String(summary.travelerCount) : "1");
+  const currencyInput = useSyncedInput(summary?.currency ?? "AUD");
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (summary) {
-      setTravelerCount(summary.travelerCount);
-      setCurrency(summary.currency);
-      setBudgetInput(summary.budgetCny != null ? String(summary.budgetCny) : "");
-    }
-  }, [summary]);
 
   if (!summary) return null;
   const cur = summary.currency;
   const overBudget = summary.remainingCny != null && summary.remainingCny < 0;
+  const travelerCount = Number(travelers.value) || 1;
 
   async function save() {
     setSaving(true);
     try {
       await api.updateBudget(tripId, {
-        budgetCny: budgetInput.trim() === "" ? null : Number(budgetInput),
+        budgetCny: budget.value.trim() === "" ? null : Number(budget.value),
         travelerCount,
-        currency,
+        currency: currencyInput.value,
       });
       toast.success("预算已更新");
       await onRefresh();
@@ -126,32 +124,40 @@ export function BudgetStrip({
               {summary.unpricedCount} 个地点未定价，交通费未计入——实际花费可能更高。
             </p>
           )}
-          {/* 编辑（owner/editor；viewer 只读展示） */}
+          {/* 编辑（owner/editor；viewer 只读展示；useSyncedInput 防冲突——SSE 刷新不冲掉编辑中的输入） */}
           {!readOnly && (
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
-                <Wallet className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+                <Wallet className="pointer-events-none absolute left-2.5 top-1/2 size-3 -translate-y-1/2 text-slate-400" />
                 <Input
-                  value={budgetInput}
-                  onChange={(e) => setBudgetInput(e.target.value.replace(/[^\d]/g, ""))}
+                  value={budget.value}
+                  onChange={budget.onChange}
+                  onFocus={budget.onFocus}
+                  onBlur={budget.onBlur}
+                  {...budget.compositionGuard}
                   placeholder="总预算"
                   className="h-8 w-28 pl-8 text-xs"
                 />
               </div>
               <div className="relative">
-                <Users className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+                <Users className="pointer-events-none absolute left-2.5 top-1/2 size-3 -translate-y-1/2 text-slate-400" />
                 <Input
                   type="number"
                   min={1}
                   max={20}
-                  value={travelerCount}
-                  onChange={(e) => setTravelerCount(Number(e.target.value) || 1)}
+                  value={travelers.value}
+                  onChange={travelers.onChange}
+                  onFocus={travelers.onFocus}
+                  onBlur={travelers.onBlur}
+                  {...travelers.compositionGuard}
                   className="h-8 w-16 pl-8 text-xs"
                 />
               </div>
               <Select
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value)}
+                value={currencyInput.value}
+                onChange={currencyInput.onChange}
+                onFocus={currencyInput.onFocus}
+                onBlur={currencyInput.onBlur}
                 className="h-8 text-xs"
               >
                 {TRIP_CURRENCIES.map((c) => (

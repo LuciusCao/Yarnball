@@ -42,6 +42,7 @@ import {
   type GuestCredential,
 } from "../lib/principal";
 import { useTripStore } from "../stores/tripStore";
+import { useSyncedInput } from "../lib/useSyncedInput";
 import { Badge } from "../components/ui/badge";
 import { MapCanvas } from "../features/map/MapCanvas";
 import { ItineraryPanel } from "../features/itinerary/ItineraryPanel";
@@ -61,6 +62,9 @@ import { BudgetStrip } from "../features/budget/BudgetStrip";
 import { ExportPrintDialog } from "../features/export/ExportPrintDialog";
 import { TripNotesPanel } from "../features/notes/TripNotesPanel";
 import { ShareCollabDialog } from "../features/share/ShareCollabDialog";
+// 协作实时体验（issue #19）：在线名单 + 动态流，独立组件、挂载点最小化（guest 门控属 #20，此处不碰）
+import { PresenceBar } from "../features/presence/PresenceBar";
+import { ActivityFeed } from "../features/activity/ActivityFeed";
 
 /**
  * 行程页 —— macOS Tahoe（Liquid Glass）布局：地图全屏打底，一切 UI 都是玻璃浮层。
@@ -234,6 +238,10 @@ export function TripPage() {
     const unsubscribe = subscribe(tripId);
     return unsubscribe;
   }, [tripId, load, subscribe]);
+
+  // 出发日期输入草稿（issue #19 防冲突）：聚焦期间 SSE 全量刷新不冲掉挑选中的日期；
+  // change 即提交（保持原行为），外部值在失焦后照常对齐
+  const startDateInput = useSyncedInput(bundle?.trip.startDate ?? "");
 
   useEffect(() => {
     void api.config().then((c) => {
@@ -660,6 +668,8 @@ export function TripPage() {
           {/* 多城市（M39）：信息条直接展示途经地链；单城市仍是目的地名 */}
           {trip.stops.length > 1 ? trip.stops.map((s) => s.name).join(" → ") : trip.destinationCity}
         </span>
+        {/* 在线名单（issue #19）：owner/guest 共用，SSE presence 事件驱动 */}
+        <PresenceBar tripId={trip.id} />
         {trip.geoProvider === "osm" && !isDomesticOsmTrip(trip) && (
           <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
             海外
@@ -672,7 +682,9 @@ export function TripPage() {
           </span>
         )}
         {/* 出发日期（可选）：设置后每天标签显示真实日期（D1 · 9/23 周三）；清空退回 Day N。
-            写端点（PATCH 行程）→ viewer 降级为纯文本展示 */}
+            写端点（PATCH 行程）→ viewer 降级为纯文本展示；
+            防冲突（issue #19）：date input 的 value 直接绑 bundle 快照，同伴的任何写操作都会推
+            新 bundle 重渲染——正在挑日期时会被外部值冲掉；useSyncedInput 在聚焦期间跳过同化 */}
         {caps.canEditTrip ? (
           <label
             title="出发日期（可选）：设置后行程每天显示真实日期"
@@ -681,8 +693,13 @@ export function TripPage() {
             <CalendarDays className="size-3" />
             <input
               type="date"
-              value={trip.startDate ?? ""}
-              onChange={(e) => void updateStartDate(e.target.value || null)}
+              value={startDateInput.value}
+              onChange={(e) => {
+                startDateInput.onChange(e);
+                void updateStartDate(e.target.value || null);
+              }}
+              onFocus={startDateInput.onFocus}
+              onBlur={startDateInput.onBlur}
               className="w-[7.2rem] cursor-pointer bg-transparent outline-none"
             />
           </label>
@@ -1159,6 +1176,9 @@ export function TripPage() {
             </div>
           </aside>
         ))}
+
+      {/* 动态流（issue #19）：左下角轻量动态条「谁改了什么」；地点信息卡（z-30）打开时让位隐藏 */}
+      {!selectedPlace && <ActivityFeed tripId={trip.id} />}
 
       {/* 导出打印预览弹层（M97，portal 挂 body，打印时只留该浮层参与分页）；
           open 恒 false 的挂载不影响行为，但同伴（canExport=false）直接不渲染，
