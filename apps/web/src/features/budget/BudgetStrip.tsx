@@ -15,15 +15,18 @@ import { Badge } from "../../components/ui/badge";
  * 预算条 —— 横切关注点：常驻左面板顶部，跨 住宿/美食/门票 汇总。
  * 收起时一行摘要（总花费/预算/剩余 + 未定价警示），展开显示分类条与编辑。
  * 口径：住宿 = 每晚价 × 晚数（不按人数计）；美食/门票只计已加入行程的地点 × 人数。
+ * readOnly（issue #20 viewer 同伴）：保留摘要/明细查看，隐藏预算/人数/币种编辑表单。
  */
 export function BudgetStrip({
   tripId,
   summary,
   onRefresh,
+  readOnly = false,
 }: {
   tripId: string;
   summary: BudgetSummary | null;
   onRefresh: () => Promise<void>;
+  readOnly?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
@@ -123,43 +126,45 @@ export function BudgetStrip({
               {summary.unpricedCount} 个地点未定价，交通费未计入——实际花费可能更高。
             </p>
           )}
-          {/* 编辑 */}
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <Wallet className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
-              <Input
-                value={budgetInput}
-                onChange={(e) => setBudgetInput(e.target.value.replace(/[^\d]/g, ""))}
-                placeholder="总预算"
-                className="h-8 w-28 pl-8 text-xs"
-              />
+          {/* 编辑（owner/editor；viewer 只读展示） */}
+          {!readOnly && (
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Wallet className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+                <Input
+                  value={budgetInput}
+                  onChange={(e) => setBudgetInput(e.target.value.replace(/[^\d]/g, ""))}
+                  placeholder="总预算"
+                  className="h-8 w-28 pl-8 text-xs"
+                />
+              </div>
+              <div className="relative">
+                <Users className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+                <Input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={travelerCount}
+                  onChange={(e) => setTravelerCount(Number(e.target.value) || 1)}
+                  className="h-8 w-16 pl-8 text-xs"
+                />
+              </div>
+              <Select
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+                className="h-8 text-xs"
+              >
+                {TRIP_CURRENCIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </Select>
+              <Button size="sm" onClick={save} disabled={saving}>
+                保存
+              </Button>
             </div>
-            <div className="relative">
-              <Users className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
-              <Input
-                type="number"
-                min={1}
-                max={20}
-                value={travelerCount}
-                onChange={(e) => setTravelerCount(Number(e.target.value) || 1)}
-                className="h-8 w-16 pl-8 text-xs"
-              />
-            </div>
-            <Select
-              value={currency}
-              onChange={(e) => setCurrency(e.target.value)}
-              className="h-8 text-xs"
-            >
-              {TRIP_CURRENCIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </Select>
-            <Button size="sm" onClick={save} disabled={saving}>
-              保存
-            </Button>
-          </div>
+          )}
         </div>
       )}
     </div>
