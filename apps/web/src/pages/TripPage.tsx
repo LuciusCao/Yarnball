@@ -533,12 +533,16 @@ export function TripPage() {
   const isGuest = guest != null;
   /** 工具面板可见集（issue #20）：行程/候选/须知对三种身份可见（viewer 只读态）；
    *  「添加」是编辑入口（搜索 POI + 建点），viewer 不渲染该 tab。
-   *  viewer 停留在被记住的「添加」tab 时切回行程（只读视角的主信息面板） */
+   *  viewer 停留在被记住的「添加」tab 时切回行程（只读视角的主信息面板）。
+   *  null 是合法的收起态（M61：再点当前 tab / 面板头 ✕ 都置 null）——只在「记住的
+   *  tab 不在可用集」时回退（viewer 的 search 被过滤），收起态不强制弹回（v0.4 回归修复） */
   const availablePanels: ToolPanel[] = caps.canEditTrip
     ? ["itinerary", "candidates", "search", "notes"]
     : ["itinerary", "candidates", "notes"];
   const effectiveToolPanel =
-    toolPanel != null && availablePanels.includes(toolPanel) ? toolPanel : availablePanels[0];
+    toolPanel == null || availablePanels.includes(toolPanel)
+      ? toolPanel
+      : availablePanels[0];
   const effectiveToolMeta = effectiveToolPanel != null ? TOOL_PANEL_META[effectiveToolPanel] : null;
   /** 浮层右缘：owner 恒为 right-[404px]（给 agent 面板让位，M67 不随面板收起变化）；
    *  同伴没有 agent 面板（canUseAgent=false），右缘收窄到 right-4，浮层/分段条铺满更大自由区 */
@@ -756,10 +760,10 @@ export function TripPage() {
             .map(([key, meta]) => (
               <button
                 key={key}
-                onClick={() => switchToolPanel(key)}
-                title={toolPanel === key ? `收起${meta.label}面板` : `展开${meta.label}面板`}
+                onClick={() => switchToolPanel(effectiveToolPanel === key ? null : key)}
+                title={effectiveToolPanel === key ? `收起${meta.label}面板` : `展开${meta.label}面板`}
                 className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-                  toolPanel === key
+                  effectiveToolPanel === key
                     ? "bg-slate-900 text-white shadow-sm"
                     : "text-slate-500 hover:bg-slate-900/5 hover:text-slate-800"
                 }`}
