@@ -177,7 +177,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 ## 环境变量与安全
 
 - 见 `.env.example`；无必填项（`DATABASE_URL` 为 SQLite 文件路径，可选，默认 `~/.yarnball/yarnball.db`；M80 起 `postgres://` 等无法识别的 scheme 会直接报错退出，不再被当成文件路径），其余有默认值（`SERVER_PORT=18788`、`WEB_ORIGIN=http://localhost:15173`、`SERVER_BASE_URL` 默认 loopback）
-- `SERVER_HOST` 默认 `127.0.0.1`：`/api` 无鉴权（`POST /api/agents` 可 spawn agent 子进程），绑 `0.0.0.0` 会暴露 LAN 构成同网段 RCE 链路；LAN 调试需显式设置。Tauri 桌面壳场景保持默认即可
+- `SERVER_HOST` 默认 `127.0.0.1`（推荐保持）。v0.4 起 `/api` 已按 principal 鉴权（loopback 无 token=owner、Bearer owner token=owner、access-link token=guest、远程匿名 401），绑 `0.0.0.0` 不再是无条件 RCE——但 agents（spawn agent 子进程）/ settings / chat-sessions 等敏感端点仍仅 owner 可达，最小暴露原则不变。绑定非 loopback 地址需 `YARNBALL_ALLOW_REMOTE=1` 显式确认（#21），未设置时启动打显著警告并指向 README「让同伴访问」部署指南（局域网 / tailscale / cloudflared / frp；纯 HTTP 明文公网会泄露 token，必须走 TLS）。Tauri 桌面壳场景保持默认即可
 - 生产态 server 直接托管 web 静态产物：探测到 `apps/web/dist/index.html`（或 `YARNBALL_WEB_DIST_DIR` 指定目录，Tauri 打包后由壳注入）即挂载 serve-static + SPA 回退，`/api` `/mcp` `/healthz` 优先不受影响；dev（vite :15173）无 dist 时行为不变（`apps/server/src/services/staticWeb.ts`）
 - `/healthz` 返回 `{ ok, app:"yarnball", version, webStatic }`：Tauri 壳靠 `app`/`webStatic` 判定 18788 占用者身份——同包且托管 web 产物才复用，否则换端口，避免窗口被指向旧版孤儿 sidecar 的 404（`apps/tauri/src-tauri/src/sidecar.rs`）
 - 高德三个 key（`AMAP_JS_KEY` / `AMAP_SERVER_KEY` / `AMAP_JS_SECRET`）是**国内行程的可选增强**（M113 起不再是国内必需）：配齐后新建国内行程走高德（POI 搜索/真实公交数据更准）；未配 key 时新建国内行程自动走 OSM 开源栈（与海外同代码路径，零配置可用，公交为估算），海外行程始终零配置。仅存的降级路径：M113 前创建的存量 amap 行程在无 key 环境仍是高德引擎——POI 搜索不可用、路线降级直线距离 × 1.3 估算（配 key 即恢复）
@@ -185,9 +185,10 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - `.env` 不入库；MCP token 只存 hash；agent 经 `session/new` 注入的 URL+header 直连 `/mcp`，不经浏览器
 - 前端渲染 agent 文本用 marked + sanitize-html，不要绕过 sanitize 直接 `dangerouslySetInnerHTML`
 
-## 已知边界（v1）
+## 已知边界（v0.4）
 
-- 单人编辑 + 只读分享链接（`/share/:token`）；多人实时协同（CRDT）留待 v2
+- 多人协作已支持（v0.4 里程碑 #16-#21）：owner 本机编辑 + 协作链接同伴（viewer 只读 / editor 可编辑）+ 只读分享链接（`/share/:token`），实时体验含 SSE 同步 / 在线名单 / 动态流；并发编辑语义为 last-write-wins，无 CRDT（留待 v2）
+- 远程访问（局域网 / 公网隧道）的部署形态与安全口径见 README「让同伴访问」；web 界面暂无 owner token 登录入口，主人远程用 UI 时推荐以同伴协作链接形态浏览
 - 海外公交走 transitous（MOTIS 2）真实换乘：覆盖城市命中真实线路/方式/分段；未覆盖（如部分小城返回空 itineraries）、超时或错误时降级为估算（真实驾车路由时长 × 1.25 + 换乘惩罚），transitous 为社区 best-effort 服务无 SLA。国内公交：高德引擎行程走高德真实数据，开源引擎回退行程（M113）为估算（transitous 国内 GTFS 无覆盖）；transitous 未命中时的渡轮仍按直线水域航线估算（含候船缓冲）
 - Photon / OSRM / transitous 是社区免费服务，高频使用应自托管（代码里换 base URL 即可）；transitous usage policy 要求 UA 带联系方式 + UI 署名 transitous.org（已在设置抽屉底部，改动时不得删除）
 - ACP `session/load` 直连与 `session/cancel` 通知通道待 SDK（ActiveSession 封装）暴露后补
