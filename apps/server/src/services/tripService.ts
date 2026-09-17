@@ -29,6 +29,7 @@ import type {
   TripNoteDto,
   TripStop,
   UpdateEntryInput,
+  UpdateHotelCandidateInput,
   UpdatePlaceInput,
   UpdateTripInput,
   UpdateTripNoteInput,
@@ -971,11 +972,12 @@ export class TripService {
         input.fromName,
         input.toName,
         input.transitMode,
+        input.priceCny,
       ];
       if (transitFields.some((v) => v != null)) {
         throw new ServiceError(
           422,
-          "entryType=place 不接受 departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName/transitMode",
+          "entryType=place 不接受 departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName/transitMode/priceCny",
         );
       }
       const [place] = await this.db
@@ -1031,6 +1033,7 @@ export class TripService {
         fromName: entryType === "transit" ? (input.fromName ?? null) : null,
         toName: entryType === "transit" ? (input.toName ?? null) : null,
         transitMode: entryType === "transit" ? (input.transitMode ?? null) : null,
+        priceCny: entryType === "transit" ? (input.priceCny ?? null) : null,
       }).run();
       this.normalizePositionsTx(tx, day.id);
     });
@@ -1056,9 +1059,10 @@ export class TripService {
       input.fromName,
       input.toName,
       input.transitMode,
+      input.priceCny,
     ];
     if (entry.entryType !== "transit" && transitFields.some((v) => v !== undefined)) {
-      throw new ServiceError(422, "departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName/transitMode 仅 transit entry 可编辑");
+      throw new ServiceError(422, "departTime/arriveTime/fromPlaceId/toPlaceId/fromName/toName/transitMode/priceCny 仅 transit entry 可编辑");
     }
     for (const pid of [input.fromPlaceId, input.toPlaceId]) {
       if (!pid) continue;
@@ -1083,6 +1087,7 @@ export class TripService {
       if (input.fromName !== undefined) patch.fromName = input.fromName ?? null;
       if (input.toName !== undefined) patch.toName = input.toName ?? null;
       if (input.transitMode !== undefined) patch.transitMode = input.transitMode ?? null;
+      if (input.priceCny !== undefined) patch.priceCny = input.priceCny ?? null;
       // 起讫不变量与 add 侧一致：patch 合并后起点/讫点各自至少留一个（place 引用或自由文本）
       const effective = <K extends "fromPlaceId" | "toPlaceId" | "fromName" | "toName">(key: K) =>
         key in patch ? (patch[key] as string | null) : entry[key];
@@ -1164,6 +1169,7 @@ export class TripService {
           fromName: entry.fromName,
           toName: entry.toName,
           transitMode: entry.transitMode,
+          priceCny: entry.priceCny,
         }).run();
         this.normalizePositionsTx(tx, day.id);
       });
@@ -2076,6 +2082,32 @@ export class TripService {
     return { candidate: toHotelDto(row), place };
   }
 
+  /**
+   * 回填酒店候选信息（issue #13）：订完酒店拿到真实房价往往晚于建候选，
+   * 只改 pricePerNight / notes（选定状态流转走 select/unselect，不在此处）。
+   */
+  async updateHotelCandidate(candidateId: string, input: UpdateHotelCandidateInput) {
+    const [existing] = await this.db
+      .select()
+      .from(schema.hotelCandidates)
+      .where(eq(schema.hotelCandidates.id, candidateId));
+    if (!existing) throw new ServiceError(404, `hotel candidate ${candidateId} not found`);
+    const patch: Partial<typeof schema.hotelCandidates.$inferInsert> = {};
+    if (input.pricePerNight !== undefined) {
+      patch.pricePerNight = input.pricePerNight != null ? Math.round(input.pricePerNight) : null;
+    }
+    if (input.notes !== undefined) patch.notes = input.notes ?? null;
+    if (Object.keys(patch).length === 0) return toHotelDto(existing);
+    const [row] = await this.db
+      .update(schema.hotelCandidates)
+      .set(patch)
+      .where(eq(schema.hotelCandidates.id, candidateId))
+      .returning();
+    await this.touchTrip(existing.tripId);
+    await this.publishBundle(existing.tripId);
+    return toHotelDto(row);
+  }
+
   async selectHotel(
     tripId: string,
     candidateId: string | null,
@@ -2266,10 +2298,12 @@ export class TripService {
 
   /**
    * 预算汇总：住宿（各已选定酒店 × 各自覆盖晚数求和，每晚价 × 晚数，不按人数计）
-   * + 美食（已加入餐厅人均 × 人数）+ 门票（已加入景点 × 人数）。
-   * 美食/门票只计已加入行程（joined）的地点，候选池里未加入的不计入；
-   * 交通费不自动计入（打车/公交成本因人而异，提示用户自行预留）。
-   * unpricedCount = 已加入但未填价格的餐厅/景点数 + 已选定但未填每晚价的酒店数（预算低估提醒）。
+   * + 美食（已加入餐厅人均 × 人数）+ 门票（已加入景点 × 人数）
+   * + 大交通（transit entry 的 priceCny 总价求和，issue #14——机票/火车票等大件支出；
+   *   市内交通 legs 因人而异仍不计入）。
+   * 美食/门票只计已加入行程（joined）的地点，候选池里未加入的不计入。
+   * unpricedCount = 已加入但未填价格的餐厅/景点数 + 已选定但未填每晚价的酒店数（预算低估提醒）；
+   * transitUnpricedCount = 未填价格的 transit entry 数（独立提醒，issue #14）。
    */
   async getBudgetSummary(tripId: string) {
     const trip = await this.getTrip(tripId);
@@ -2335,7 +2369,24 @@ export class TripService {
       else if (p.category === "attraction" || p.category === "activity") ticketsCny += p.priceCny * travelerCount;
     }
 
-    const totalCny = (hotelCny ?? 0) + diningCny + ticketsCny;
+    // 大交通费（issue #14）：transit entry 的 priceCny 求和（总价口径不按人数计——
+    // 机票/火车票按整单填，市内交通因人而异不进预算）。未填价格的 transit 段计入
+    // transitUnpricedCount（独立于地点的 unpricedCount，前端分开提示）。
+    const transitRows = await this.db
+      .select({ priceCny: schema.entries.priceCny })
+      .from(schema.entries)
+      .where(and(eq(schema.entries.tripId, tripId), eq(schema.entries.entryType, "transit")));
+    let transitCny = 0;
+    let transitUnpricedCount = 0;
+    for (const t of transitRows) {
+      if (t.priceCny == null) {
+        transitUnpricedCount += 1;
+        continue;
+      }
+      transitCny += t.priceCny;
+    }
+
+    const totalCny = (hotelCny ?? 0) + diningCny + ticketsCny + transitCny;
     const budgetCny = trip.budgetCny ?? null;
     return {
       currency: trip.currency ?? "CNY",
@@ -2346,9 +2397,11 @@ export class TripService {
       hotelCny,
       diningCny,
       ticketsCny,
+      transitCny,
       totalCny,
       remainingCny: budgetCny != null ? budgetCny - totalCny : null,
       unpricedCount,
+      transitUnpricedCount,
     };
   }
 
