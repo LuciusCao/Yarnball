@@ -52,6 +52,7 @@ import { SearchAddPanel } from "../features/map/SearchAddPanel";
 import { BudgetStrip } from "../features/budget/BudgetStrip";
 import { ExportPrintDialog } from "../features/export/ExportPrintDialog";
 import { TripNotesPanel } from "../features/notes/TripNotesPanel";
+import { ShareCollabDialog } from "../features/share/ShareCollabDialog";
 
 /**
  * 行程页 —— macOS Tahoe（Liquid Glass）布局：地图全屏打底，一切 UI 都是玻璃浮层。
@@ -153,6 +154,8 @@ export function TripPage() {
   const [panelMaximized, setPanelMaximized] = useState(false);
   /** 导出打印预览弹层（M97，issue #7） */
   const [exportOpen, setExportOpen] = useState(false);
+  /** 分享与协作面板（issue #17）：原「一个只读分享链接」升级为多链接管理（创建/复制/吊销） */
+  const [shareOpen, setShareOpen] = useState(false);
   /** 国内零配置降级横幅（M113）：osm 引擎国内行程的一次性提示，关闭后全局不再展示 */
   const [osmBannerDismissed, setOsmBannerDismissed] = useState(
     () => localStorage.getItem(DOMESTIC_OSM_BANNER_KEY) === "1",
@@ -592,15 +595,16 @@ export function TripPage() {
         >
           <Crosshair className="size-3.5" />
         </button>
-        <Link
-          to={`/share/${trip.shareToken}`}
-          target="_blank"
-          title="打开只读分享页"
+        {/* 分享与协作（issue #17）：按钮打开管理面板——老只读 /share 直链保留在面板的「只读分享」区，
+            协作链接（/join/:token，入口页在 #18）可创建/复制/吊销 */}
+        <button
+          onClick={() => setShareOpen(true)}
+          title="分享与协作：只读链接 / 协作链接管理"
           className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
         >
           <Link2 className="size-3" />
           分享
-        </Link>
+        </button>
         {/* 导出入口（M97，issue #7）：预览弹层 → 保存为 PDF（Tauri 壳内走原生直存，浏览器回退 window.print） */}
         <button
           onClick={() => setExportOpen(true)}
@@ -1017,6 +1021,14 @@ export function TripPage() {
 
       {/* 导出打印预览弹层（M97，portal 挂 body，打印时只留该浮层参与分页） */}
       <ExportPrintDialog bundle={bundle} open={exportOpen} onClose={() => setExportOpen(false)} />
+
+      {/* 分享与协作面板（issue #17，portal 挂 body）：只读分享 + 协作链接多链接管理 */}
+      <ShareCollabDialog
+        tripId={trip.id}
+        shareToken={trip.shareToken}
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+      />
     </div>
   );
 }
