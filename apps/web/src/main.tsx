@@ -7,6 +7,7 @@ import { Toaster } from "sonner";
 import { TripListPage } from "./pages/TripListPage";
 import { TripPage } from "./pages/TripPage";
 import { SharePage } from "./pages/SharePage";
+import { JoinPage } from "./pages/JoinPage";
 
 /** react-query 客户端（M102 启用）：天气等动态接口数据的缓存/刷新；bundle 仍走 zustand + SSE */
 const queryClient = new QueryClient();
@@ -19,6 +20,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <Route path="/" element={<TripListPage />} />
           <Route path="/trip/:tripId" element={<TripPage />} />
           <Route path="/share/:token" element={<SharePage />} />
+          {/* 同伴入口（issue #18）：链接即身份，填昵称后按角色进入行程/只读页 */}
+          <Route path="/join/:token" element={<JoinPage />} />
         </Routes>
         <Toaster position="top-center" richColors />
       </BrowserRouter>

@@ -5,13 +5,16 @@ import type {
   TripBundle,
   TripDto,
 } from "@yarnball/shared";
+import { apiFetch } from "../lib/http";
+import { usePrincipalStore } from "../lib/principal";
 
 /**
  * 前端 API 层 —— 全部走 Vite 代理（/api → server），无跨域。
+ * 底层 fetch 走 lib/http.ts 的 apiFetch：guest 凭证存在时统一注入 Bearer（issue #18）。
  */
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await apiFetch(`/api${path}`, {
     headers: { "content-type": "application/json" },
     ...init,
   });
@@ -170,15 +173,24 @@ export const api = {
     request<{ ok: true }>(`/chat-sessions/${sessionId}`, { method: "DELETE" }),
 };
 
-/** SSE 订阅（EventSource 自动重连；断线补拉由调用方处理） */
+/**
+ * SSE 订阅（EventSource 自动重连；断线补拉由调用方处理）。
+ * EventSource 无法带自定义 header：guest 凭证存在时把 token 附加为 ?token= query param
+ * （server 的 sseAuth 同规则解析，#16 已支持）；无凭证（本机 owner）URL 不变，零回归。
+ */
 export function subscribeTrip(tripId: string, onEvent: (event: unknown) => void): () => void {
-  const es = new EventSource(`/api/trips/${tripId}/events`);
+  const token = usePrincipalStore.getState().active?.token;
+  const url = token
+    ? `/api/trips/${tripId}/events?token=${encodeURIComponent(token)}`
+    : `/api/trips/${tripId}/events`;
+  const es = new EventSource(url);
   es.onmessage = (e) => {
     if (e.data) onEvent(JSON.parse(e.data));
   };
   return () => es.close();
 }
 
+/** chat 事件流是 owner-only（agent 面板对同伴不可见）：guest 模式下不会有人订阅，保持无 token 直连 */
 export function subscribeChat(sessionId: string, onEvent: (event: unknown) => void): () => void {
   const es = new EventSource(`/api/chat-sessions/${sessionId}/events`);
   es.onmessage = (e) => {
