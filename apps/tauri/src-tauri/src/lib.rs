@@ -10,15 +10,15 @@ use tauri_plugin_dialog::DialogExt;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // issue #28：single-instance 必须是第一个注册的插件（Tauri 官方要求）——二实例在
+        // 被拒绝前不应跑任何其他插件的初始化，否则双实例防护（共享 sidecar/SQLite 互杀）不可靠
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            window::focus_main(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         // issue #15：外链统一走系统默认浏览器（前端 document 拦截层调 plugin:opener|open_url）
         .plugin(tauri_plugin_opener::init())
-        // issue #22：单实例——二实例只聚焦首实例主窗口然后退出，避免两个壳
-        // 共享/互杀同一个 sidecar（首实例退出时会把复用中的 sidecar 一起带走）
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            window::focus_main(app);
-        }))
         .invoke_handler(tauri::generate_handler![pdf::export_pdf])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -41,7 +41,10 @@ pub fn run() {
             });
 
             // issue #22：sidecar 运行期意外退出的恢复入口——后台线程弹原生对话框
-            // （重启走原 launch 路径 + 窗口重新 navigate），不能阻塞事件回调线程
+            // （重启走原 launch 路径 + 窗口重新 navigate），不能阻塞事件回调线程。
+            // 非主线程 blocking_show 的安全性（issue #29）：插件内部经 run_on_main_thread
+            // 分发、rfd 无 parent 走 CFUserNotificationDisplayAlert（不创建 AppKit 面板），
+            // 详见 onboarding.rs 的完整论证——勿按 AGENTS.md 主线程纪律「好心改坏」
             sidecar::on_unexpected_exit(Box::new(move |app| {
                 let app = app.clone();
                 std::thread::spawn(move || {
