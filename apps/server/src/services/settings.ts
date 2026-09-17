@@ -1,8 +1,9 @@
 import { eq } from "drizzle-orm";
-import type { SettingsDto, UpdateSettingsInput } from "@yarnball/shared";
+import type { OwnerTokenStatus, SettingsDto, UpdateSettingsInput } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { env } from "../env.js";
+import { mintOwnerToken, setOwnerTokenHashCache } from "./auth.js";
 
 /**
  * 全局设置：settings 表单行（id="global"），DB 值覆盖同名 env（DB > env）。
@@ -16,6 +17,7 @@ interface SettingsRow {
   amapJsKey: string | null;
   amapServerKey: string | null;
   amapJsSecret: string | null;
+  ownerTokenHash: string | null;
 }
 
 let cache: SettingsRow | null = null;
@@ -26,8 +28,15 @@ const nonEmpty = (v: string | null | undefined): v is string => !!v;
 export async function initSettingsCache(db: Db): Promise<void> {
   const [row] = await db.select().from(schema.settings).where(eq(schema.settings.id, SETTINGS_ID));
   cache = row
-    ? { amapJsKey: row.amapJsKey, amapServerKey: row.amapServerKey, amapJsSecret: row.amapJsSecret }
-    : { amapJsKey: null, amapServerKey: null, amapJsSecret: null };
+    ? {
+        amapJsKey: row.amapJsKey,
+        amapServerKey: row.amapServerKey,
+        amapJsSecret: row.amapJsSecret,
+        ownerTokenHash: row.ownerTokenHash ?? null,
+      }
+    : { amapJsKey: null, amapServerKey: null, amapJsSecret: null, ownerTokenHash: null };
+  // owner token hash 同步给 auth 模块的比对缓存（避免每请求查库）
+  setOwnerTokenHashCache(cache.ownerTokenHash);
 }
 
 export function getAmapJsKey(): string {
@@ -78,6 +87,7 @@ export async function updateSettings(db: Db, input: UpdateSettingsInput): Promis
     amapJsKey: cache?.amapJsKey ?? null,
     amapServerKey: cache?.amapServerKey ?? null,
     amapJsSecret: cache?.amapJsSecret ?? null,
+    ownerTokenHash: cache?.ownerTokenHash ?? null,
   };
   if (input.amapJsKey !== undefined) row.amapJsKey = input.amapJsKey || null;
   if (input.amapServerKey !== undefined) row.amapServerKey = input.amapServerKey || null;
@@ -91,4 +101,40 @@ export async function updateSettings(db: Db, input: UpdateSettingsInput): Promis
     });
   cache = row;
   return getSettings();
+}
+
+// ---------- owner token（issue #16） ----------
+
+/** owner token 是否已配置（auth 模块的快速判定入口；hash 本身不出模块） */
+export function ownerTokenConfigured(): boolean {
+  return (cache?.ownerTokenHash ?? null) !== null;
+}
+
+/** GET /api/owner-token：只报配置态，明文永不回显 */
+export function getOwnerTokenStatus(): OwnerTokenStatus {
+  return { configured: ownerTokenConfigured() };
+}
+
+/**
+ * POST /api/owner-token/reset：生成/重置 owner token（旧 token 立即失效）。
+ * 明文仅此一次返回；DB 只存 sha256 hash（同 MCP token 惯例）。
+ */
+export async function resetOwnerToken(db: Db): Promise<{ token: string }> {
+  const { token, tokenHash } = mintOwnerToken();
+  const row: SettingsRow = {
+    amapJsKey: cache?.amapJsKey ?? null,
+    amapServerKey: cache?.amapServerKey ?? null,
+    amapJsSecret: cache?.amapJsSecret ?? null,
+    ownerTokenHash: tokenHash,
+  };
+  await db
+    .insert(schema.settings)
+    .values({ id: SETTINGS_ID, ...row, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: schema.settings.id,
+      set: { ownerTokenHash: tokenHash, updatedAt: new Date() },
+    });
+  cache = row;
+  setOwnerTokenHashCache(tokenHash);
+  return { token };
 }

@@ -9,6 +9,7 @@ import { EventBus } from "./events.js";
 import { env } from "./env.js";
 import { TripService } from "./services/tripService.js";
 import { amapConfigured, initSettingsCache } from "./services/settings.js";
+import { isLoopbackAddress } from "./services/auth.js";
 import { AcpSessionManager } from "./acp/sessionManager.js";
 import { createMcpApp } from "./mcp/app.js";
 import { createApi } from "./routes/api.js";
@@ -17,6 +18,11 @@ import { mountWebStatic } from "./services/staticWeb.js";
 /**
  * 毛线团（Yarnball）server —— 组装：DB / 事件总线 / TripService / MCP 工具面 / ACP 会话 / REST + SSE。
  */
+
+/** 监听地址是否 loopback（127.x / ::1；localhost 域名解析后必为 loopback，不单独特判） */
+function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || isLoopbackAddress(host) || host.startsWith("127.");
+}
 
 const { db, sqlite } = createDb(env.databaseUrl);
 const bus = new EventBus();
@@ -73,6 +79,25 @@ async function seedAgents() {
 const server = serve({ fetch: app.fetch, port: env.serverPort, hostname: env.serverHost }, async (info) => {
   console.log(`[yarnball] server listening on http://${env.serverHost}:${info.port}`);
   if (webDistDir) console.log(`[yarnball] serving web dist: ${webDistDir}`);
+  // 非 loopback 绑定 = 暴露给局域网/公网（issue #16）：/api 的 owner-only 端点虽已按
+  // principal 鉴权挡住 guest，但任何远程访问者都能请求到 server 本身——保持显著警告。
+  // 部署文档与阻断策略在收尾 issue；当前远程访问需 owner token 或 access-link token。
+  if (!isLoopbackHost(env.serverHost)) {
+    console.warn(
+      "=".repeat(72),
+    );
+    console.warn(
+      `[安全警告] SERVER_HOST=${env.serverHost}：服务端已绑定非 loopback 地址，` +
+        "局域网/公网内的任何主机都可访问本服务。\n" +
+        "  - 敏感端点（agents / settings / chat-sessions / 行程删除）仅 owner 可用：本机访问即 owner，" +
+        "远程需 Bearer owner token（设置页生成）。\n" +
+        "  - 访客仅可凭 access-link token（viewer/editor）或只读分享链接访问对应行程。\n" +
+        "  - 公网暴露请自行加 TLS 反代（鉴权按公网暴露标准实现，但传输层明文）。",
+    );
+    console.warn(
+      "=".repeat(72),
+    );
+  }
   await initSettingsCache(db);
   await seedAgents();
   if (!amapConfigured()) {

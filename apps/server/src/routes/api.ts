@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { and, asc, eq, ne } from "drizzle-orm";
 import { createHash } from "node:crypto";
@@ -6,6 +7,7 @@ import { z } from "zod";
 import {
   AddEntryInputSchema,
   ChatMessagesQuerySchema,
+  CreateAccessLinkInputSchema,
   CreateAgentInputSchema,
   CreateHotelCandidateInputSchema,
   CreatePlaceInputSchema,
@@ -17,6 +19,7 @@ import {
   SetLegModeInputSchema,
   SetPlaceStatusInputSchema,
   UnselectHotelInputSchema,
+  UpdateAccessLinkInputSchema,
   UpdateAgentInputSchema,
   UpdateDaySummaryInputSchema,
   UpdateEntryInputSchema,
@@ -35,10 +38,11 @@ import type { AcpSessionManager } from "../acp/sessionManager.js";
 import { PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
 import { getProvider } from "../services/geo.js";
 import { getTripWeather } from "../services/weather.js";
-import { amapConfigured, getSettings, updateSettings } from "../services/settings.js";
+import { amapConfigured, getSettings, updateSettings, getOwnerTokenStatus, resetOwnerToken } from "../services/settings.js";
 import { toAgentDto, toChatSessionDto } from "../services/mappers.js";
 import { listChatMessages } from "../services/chatStore.js";
 import { findExecutable } from "../services/processEnv.js";
+import { principalMiddleware, rejectNonOwner, requireOwner, tripReadGuard, tripWriteGuard, AuthError, resolvePrincipal } from "../services/auth.js";
 
 /**
  * 分享包 id 脱敏：把 bundle 内所有真实 id（含 tripId/placeId/dayId/entryId 等引用字段）
@@ -90,7 +94,19 @@ function aliasShareBundleIds(bundle: TripBundle, token: string): SharePayload["b
 
 /**
  * REST API —— 人类直接编辑行程（与 agent 经 MCP 的编辑双入口）+ chat 会话管理 + SSE。
- * 单机自托管：不做用户体系，CORS 锁定前端 origin。
+ *
+ * 访问控制（v0.4 多人协作地基，issue #16）：
+ * - 公开区（无需凭证）：GET /share/:token（只读分享，token 即凭证）、GET /config（前端启动配置）、
+ *   两个 SSE events 端点（EventSource 无法带 header，token 走 ?token= query param）
+ * - guard 区：其余全部端点。principal 中间件统一解析身份（loopback 无 token = owner 桌面形态、
+ *   Bearer access-link token = guest、Bearer owner token = owner、远程匿名 401），
+ *   权限矩阵按端点收敛为三个 guard（见 services/auth.ts）：
+ *     requireOwner    owner-only（删行程 / agents / settings / chat-sessions / access-links / owner-token）
+ *     tripReadGuard   viewer+editor 的行程读端点（仅限 guest 绑定的行程）
+ *     tripWriteGuard  仅 editor 的行程写端点（仅限 guest 绑定的行程）
+ *   guard 区兜底 rejectNonOwner：非行程级端点（行程列表、city-suggest、agents 等）对 guest 一律拒绝，
+ *   新增端点忘记挂 guard 也不会直通。
+ * - /mcp 不在此文件（独立 scoped token 体系，不在本 issue 范围）。
  */
 
 export function createApi(
@@ -120,7 +136,9 @@ export function createApi(
     return c.json({ error: "internal error" }, 500);
   });
 
-  // ---------- 系统状态 ----------
+  // ---------- 公开区（无需凭证） ----------
+  // 顺序敏感：这些端点必须先注册，才能挡在 guard 子 app 的 use("*") 中间件之前
+  //（Hono 按注册顺序匹配，先命中的 handler 不会落到后挂载子 app 的中间件——已用脚本验证）。
 
   api.get("/config", (c) => {
     const s = getSettings();
@@ -132,9 +150,76 @@ export function createApi(
     });
   });
 
-  // ---------- 城市联想（创建表单自动补全） ----------
+  api.get("/share/:token", async (c) => {
+    const token = c.req.param("token");
+    const trip = await tripService.getTripByShareToken(token);
+    const [bundle, budget] = await Promise.all([
+      tripService.getBundle(trip.id),
+      tripService.getBudgetSummary(trip.id),
+    ]);
+    return c.json({ bundle: aliasShareBundleIds(bundle, token), budget } satisfies SharePayload);
+  });
 
-  api.get("/city-suggest", async (c) => {
+  // SSE 公开端点（token 必须走 ?token=：EventSource 不能带自定义 header；Bearer 也接受，方便 curl 自测）
+  api.get("/trips/:tripId/events", async (c) => {
+    const denied = await sseAuth(c, c.req.param("tripId"), "trip");
+    if (denied) return denied;
+    return streamSSE(c, async (stream) => {
+      const unsubscribers = [tripChannel(c.req.param("tripId")), TRIPS_CHANNEL].map((ch) =>
+        bus.subscribe(ch, (event) => {
+          void stream.writeSSE({ data: JSON.stringify(event) });
+        }),
+      );
+      const heartbeat = setInterval(() => {
+        void stream.writeSSE({ data: "", event: "ping" });
+      }, 25_000);
+      stream.onAbort(() => {
+        clearInterval(heartbeat);
+        for (const u of unsubscribers) u();
+      });
+      // 挂到断连
+      await new Promise<void>((resolve) => stream.onAbort(resolve));
+    });
+  });
+
+  api.get("/chat-sessions/:sessionId/events", async (c) => {
+    // chat 会话对同伴不可见（agent 面板边界）：仅 owner 可订阅（loopback / owner token）
+    const denied = await sseAuth(c, null, "owner");
+    if (denied) return denied;
+    const channel = chatChannel(c.req.param("sessionId"));
+    return streamSSE(c, async (stream) => {
+      const unsubscribe = bus.subscribe(channel, (event) => {
+        void stream.writeSSE({ data: JSON.stringify(event) });
+      });
+      const heartbeat = setInterval(() => {
+        void stream.writeSSE({ data: "", event: "ping" });
+      }, 25_000);
+      stream.onAbort(() => {
+        clearInterval(heartbeat);
+        unsubscribe();
+      });
+      await new Promise<void>((resolve) => stream.onAbort(resolve));
+    });
+  });
+
+  // ---------- guard 区（受保护端点） ----------
+  // 结构：api.route("/", guarded) —— 先注册的公开 handler 挡在上面，这里只剩需鉴权的路径。
+
+  const guarded = new Hono();
+
+  // principal 解析中间件：每请求解析身份挂 context；无效/已吊销 token 直接 401。
+  // AuthError（guard 抛出）由下方 guarded.onError 统一转响应。
+  guarded.use("*", principalMiddleware(db));
+
+  guarded.onError((err, c) => {
+    if (err instanceof AuthError) return c.json({ error: err.message }, err.status as 401 | 403);
+    throw err; // 其余错误交外层 api.onError（ServiceError / ZodError / 未知错误）
+  });
+
+  // ---------- 城市联想（创建表单自动补全；非行程级端点，guest 一律拒绝） ----------
+
+  guarded.get("/city-suggest", async (c) => {
+    rejectNonOwner(c);
     const q = (c.req.query("q") ?? "").trim();
     if (q.length < 1) return c.json({ suggestions: [] });
     // 高德可用时国内城市优先走高德（中文名更准），否则 OSM 栈（Nominatim 优先）
@@ -155,25 +240,37 @@ export function createApi(
 
   // ---------- 行程目的地自愈重定位 ----------
 
-  api.post("/trips/:tripId/resolve-city", async (c) =>
-    c.json({ trip: await tripService.reResolveCity(c.req.param("tripId")) }),
-  );
+  guarded.post("/trips/:tripId/resolve-city", async (c) => {
+    tripWriteGuard(c.req.param("tripId"), c);
+    return c.json({ trip: await tripService.reResolveCity(c.req.param("tripId")) });
+  });
 
   // ---------- trips ----------
 
-  api.get("/trips", async (c) => c.json({ trips: await tripService.listTrips() }));
+  /** 行程列表（非行程级端点）：行程元数据全库可见，对 guest 泄露其他行程标题——owner-only */
+  guarded.get("/trips", async (c) => {
+    rejectNonOwner(c);
+    return c.json({ trips: await tripService.listTrips() });
+  });
 
-  api.post("/trips", async (c) => {
+  guarded.post("/trips", async (c) => {
+    rejectNonOwner(c); // 创建行程是 owner-only（guest 没有自己的行程空间）
     const input = CreateTripInputSchema.parse(await c.req.json());
     return c.json({ trip: await tripService.createTrip(input) }, 201);
   });
 
-  api.get("/trips/:tripId", async (c) => c.json({ bundle: await tripService.getBundle(c.req.param("tripId")) }));
+  guarded.get("/trips/:tripId", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripReadGuard(tripId, c);
+    return c.json({ bundle: await tripService.getBundle(tripId) });
+  });
 
   /** 更新行程字段：title 标题 / startDate 出发日期 / endDate 结束日期（日期传 null = 清除，天标签退化为 Day N） */
-  api.patch("/trips/:tripId", async (c) => {
+  guarded.patch("/trips/:tripId", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const input = UpdateTripInputSchema.parse(await c.req.json());
-    return c.json({ trip: await tripService.updateTrip(c.req.param("tripId"), input) });
+    return c.json({ trip: await tripService.updateTrip(tripId, input) });
   });
 
   /**
@@ -181,12 +278,15 @@ export function createApi(
    * M101 起 title 已收敛进 UpdateTripInputSchema（上面的通用 PATCH 端点）；
    * 本端点保留兼容（前端 renameTrip 仍在用），内部委托同一条 updateTrip 路径，行为完全一致。
    */
-  api.patch("/trips/:tripId/title", async (c) => {
+  guarded.patch("/trips/:tripId/title", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const { title } = z.object({ title: z.string().trim().min(1).max(120) }).parse(await c.req.json());
-    return c.json({ trip: await tripService.updateTrip(c.req.param("tripId"), { title }) });
+    return c.json({ trip: await tripService.updateTrip(tripId, { title }) });
   });
 
-  api.delete("/trips/:tripId", async (c) => {
+  guarded.delete("/trips/:tripId", async (c) => {
+    requireOwner(c); // owner-only：删除整段行程对 guest 始终 403
     const tripId = c.req.param("tripId");
     // 句柄以 chatSessionId 为键——必须按 trip 归组停，否则 agent 子进程泄漏
     await sessions.stopByTrip(tripId, "trip deleted").catch(() => {});
@@ -199,41 +299,49 @@ export function createApi(
     return c.json({ ok: true });
   });
 
-  // ---------- places ----------
+  // ---------- places（实体级写端点：无 tripId 前缀，归属在 guard 内查行校验） ----------
 
-  api.post("/trips/:tripId/places", async (c) => {
+  guarded.post("/trips/:tripId/places", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const input = CreatePlaceInputSchema.parse(await c.req.json());
-    return c.json({ place: await tripService.createPlace(c.req.param("tripId"), input, "human") }, 201);
+    return c.json({ place: await tripService.createPlace(tripId, input, "human") }, 201);
   });
 
-  api.patch("/places/:placeId", async (c) => {
+  guarded.patch("/places/:placeId", async (c) => {
+    await guardPlaceTrip(c, c.req.param("placeId"), "write");
     const input = UpdatePlaceInputSchema.parse(await c.req.json());
     return c.json({ place: await tripService.updatePlace(c.req.param("placeId"), input) });
   });
 
   /** 加入/移出行程（地点状态机：candidate ↔ joined，UI 与 agent 话术「加入行程/移出行程」） */
-  api.patch("/places/:placeId/status", async (c) => {
+  guarded.patch("/places/:placeId/status", async (c) => {
+    await guardPlaceTrip(c, c.req.param("placeId"), "write");
     const input = SetPlaceStatusInputSchema.parse(await c.req.json());
     return c.json({ place: await tripService.setPlaceStatus(c.req.param("placeId"), input.status) });
   });
 
   /** 移出行程（M20）：撤销该地点的全部日程 entry，地点退回候选态 */
-  api.post("/places/:placeId/unschedule", async (c) => {
+  guarded.post("/places/:placeId/unschedule", async (c) => {
+    await guardPlaceTrip(c, c.req.param("placeId"), "write");
     const result = await tripService.unschedulePlace(c.req.param("placeId"));
     return c.json({ ok: true, removedEntries: result.removedEntries });
   });
 
-  api.delete("/places/:placeId", async (c) => {
+  guarded.delete("/places/:placeId", async (c) => {
+    await guardPlaceTrip(c, c.req.param("placeId"), "write");
     await tripService.removePlace(c.req.param("placeId"));
     return c.json({ ok: true });
   });
 
-  // ---------- search（人类手动加地点） ----------
+  // ---------- search（人类手动加地点；editor 可用，viewer 403） ----------
 
-  api.get("/trips/:tripId/search", async (c) => {
+  guarded.get("/trips/:tripId/search", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const keyword = c.req.query("keyword") ?? "";
     if (!keyword.trim()) return c.json({ candidates: [] });
-    const [trip] = await db.select().from(schema.trips).where(eq(schema.trips.id, c.req.param("tripId")));
+    const [trip] = await db.select().from(schema.trips).where(eq(schema.trips.id, tripId));
     const provider = getProvider(trip?.geoProvider ?? "osm");
     const bias =
       trip?.cityCenterLng != null && trip?.cityCenterLat != null
@@ -257,24 +365,29 @@ export function createApi(
   // ---------- entries ----------
 
   /** 排入某天：entryType=place（默认，placeId 必填）或 transit（大交通节点，起讫点 fromPlaceId/fromName + toPlaceId/toName） */
-  api.post("/trips/:tripId/entries", async (c) => {
+  guarded.post("/trips/:tripId/entries", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const input = AddEntryInputSchema.parse(await c.req.json());
-    const result = await tripService.addEntry(c.req.param("tripId"), input);
+    const result = await tripService.addEntry(tripId, input);
     return c.json(result, 201);
   });
 
   /** 编辑 entry：startTime/durationMin/note 通用；departTime/arriveTime/起讫点仅 transit entry */
-  api.patch("/entries/:entryId", async (c) => {
+  guarded.patch("/entries/:entryId", async (c) => {
+    await guardEntryTrip(c, c.req.param("entryId"), "write");
     const input = UpdateEntryInputSchema.parse(await c.req.json());
     return c.json({ entry: await tripService.updateEntry(c.req.param("entryId"), input) });
   });
 
-  api.delete("/entries/:entryId", async (c) => {
+  guarded.delete("/entries/:entryId", async (c) => {
+    await guardEntryTrip(c, c.req.param("entryId"), "write");
     await tripService.removeEntry(c.req.param("entryId"));
     return c.json({ ok: true });
   });
 
-  api.post("/entries/:entryId/move", async (c) => {
+  guarded.post("/entries/:entryId/move", async (c) => {
+    await guardEntryTrip(c, c.req.param("entryId"), "write");
     const input = z
       .object({ dayIndex: z.number().int().min(1), position: z.number().int().min(0) })
       .parse(await c.req.json());
@@ -282,33 +395,40 @@ export function createApi(
     return c.json({ ok: true });
   });
 
-  api.post("/trips/:tripId/days/:dayIndex/reorder", async (c) => {
+  guarded.post("/trips/:tripId/days/:dayIndex/reorder", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const input = ReorderDayInputSchema.parse(await c.req.json());
-    await tripService.reorderDay(c.req.param("tripId"), Number(c.req.param("dayIndex")), input.entryIds);
+    await tripService.reorderDay(tripId, Number(c.req.param("dayIndex")), input.entryIds);
     return c.json({ ok: true });
   });
 
   // ---------- 每日概要（issue #9） ----------
 
   /** 撰写/更新每日概要（summary 传 null = 清除撰写值，恢复服务端自动兜底） */
-  api.patch("/days/:dayId/summary", async (c) => {
+  guarded.patch("/days/:dayId/summary", async (c) => {
+    await guardDayTrip(c, c.req.param("dayId"), "write");
     const input = UpdateDaySummaryInputSchema.parse(await c.req.json());
     return c.json({ day: await tripService.updateDaySummary(c.req.param("dayId"), input.summary) });
   });
 
   // ---------- 行程级注意事项（issue #11） ----------
 
-  api.post("/trips/:tripId/notes", async (c) => {
+  guarded.post("/trips/:tripId/notes", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const input = CreateTripNoteInputSchema.parse(await c.req.json());
-    return c.json({ note: await tripService.createTripNote(c.req.param("tripId"), input) }, 201);
+    return c.json({ note: await tripService.createTripNote(tripId, input) }, 201);
   });
 
-  api.patch("/notes/:noteId", async (c) => {
+  guarded.patch("/notes/:noteId", async (c) => {
+    await guardNoteTrip(c, c.req.param("noteId"), "write");
     const input = UpdateTripNoteInputSchema.parse(await c.req.json());
     return c.json({ note: await tripService.updateTripNote(c.req.param("noteId"), input) });
   });
 
-  api.delete("/notes/:noteId", async (c) => {
+  guarded.delete("/notes/:noteId", async (c) => {
+    await guardNoteTrip(c, c.req.param("noteId"), "write");
     await tripService.removeTripNote(c.req.param("noteId"));
     return c.json({ ok: true });
   });
@@ -316,8 +436,10 @@ export function createApi(
   // ---------- 天气（issue #5） ----------
 
   /** 按天天气预报（Open-Meteo，零 key）：仅未来约 16 天可信，超窗日期 available=false + reason */
-  api.get("/trips/:tripId/weather", async (c) => {
-    const bundle = await tripService.getBundle(c.req.param("tripId"));
+  guarded.get("/trips/:tripId/weather", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripReadGuard(tripId, c);
+    const bundle = await tripService.getBundle(tripId);
     try {
       return c.json({ weather: await getTripWeather(bundle) });
     } catch (err) {
@@ -329,7 +451,8 @@ export function createApi(
   // ---------- 交通段 ----------
 
   /** 手动覆盖交通方式（mode=null 清除覆盖恢复自动计算） */
-  api.patch("/legs/:legId/mode", async (c) => {
+  guarded.patch("/legs/:legId/mode", async (c) => {
+    await guardLegTrip(c, c.req.param("legId"), "write");
     const input = SetLegModeInputSchema.parse(await c.req.json());
     await tripService.setLegMode(c.req.param("legId"), input.mode);
     return c.json({ ok: true });
@@ -337,17 +460,21 @@ export function createApi(
 
   // ---------- hotels ----------
 
-  api.post("/trips/:tripId/hotel-candidates", async (c) => {
+  guarded.post("/trips/:tripId/hotel-candidates", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const input = CreateHotelCandidateInputSchema.parse(await c.req.json());
-    const result = await tripService.addHotelCandidate(c.req.param("tripId"), input, "human");
+    const result = await tripService.addHotelCandidate(tripId, input, "human");
     return c.json(result, 201);
   });
 
   // 选定酒店：可带 checkInDay/checkOutDay（1-based 闭开区间，缺省服务端智能建议）；
   // candidateId=null 取消全部选定（兼容旧单选契约）
-  api.post("/trips/:tripId/select-hotel", async (c) => {
+  guarded.post("/trips/:tripId/select-hotel", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const input = SelectHotelInputSchema.parse(await c.req.json());
-    const range = await tripService.selectHotel(c.req.param("tripId"), input.candidateId, {
+    const range = await tripService.selectHotel(tripId, input.candidateId, {
       checkInDay: input.checkInDay,
       checkOutDay: input.checkOutDay,
     });
@@ -355,37 +482,49 @@ export function createApi(
   });
 
   // 取消单个酒店的选定
-  api.post("/trips/:tripId/unselect-hotel", async (c) => {
+  guarded.post("/trips/:tripId/unselect-hotel", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const input = UnselectHotelInputSchema.parse(await c.req.json());
-    await tripService.unselectHotel(c.req.param("tripId"), input.candidateId);
+    await tripService.unselectHotel(tripId, input.candidateId);
     return c.json({ ok: true });
   });
 
-  api.get("/trips/:tripId/hotel-area", async (c) =>
-    c.json({ area: await tripService.recommendHotelArea(c.req.param("tripId")) }),
-  );
+  guarded.get("/trips/:tripId/hotel-area", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripReadGuard(tripId, c);
+    return c.json({ area: await tripService.recommendHotelArea(tripId) });
+  });
 
-  // ---------- 顺路分析（前端直用） ----------
+  // ---------- 顺路分析（前端直用；只读族，viewer 也可） ----------
 
-  api.get("/trips/:tripId/analyze-detour", async (c) => {
+  guarded.get("/trips/:tripId/analyze-detour", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripReadGuard(tripId, c);
     const input = z
       .object({ placeId: z.string(), dayIndex: z.number().int().min(1) })
       .parse({ placeId: c.req.query("placeId"), dayIndex: Number(c.req.query("dayIndex")) });
-    return c.json({ analysis: await tripService.analyzeDetour(c.req.param("tripId"), input.placeId, input.dayIndex) });
+    return c.json({ analysis: await tripService.analyzeDetour(tripId, input.placeId, input.dayIndex) });
   });
 
-  api.get("/trips/:tripId/suggest-order", async (c) =>
-    c.json({ suggestion: await tripService.suggestDayOrder(c.req.param("tripId"), Number(c.req.query("dayIndex"))) }),
-  );
+  guarded.get("/trips/:tripId/suggest-order", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripReadGuard(tripId, c);
+    return c.json({ suggestion: await tripService.suggestDayOrder(tripId, Number(c.req.query("dayIndex"))) });
+  });
 
   /** 区域聚类建议（只建议不落库）：未排期地点按地理聚成 1-4 片，建议每天一片 */
-  api.get("/trips/:tripId/suggest-clusters", async (c) =>
-    c.json({ suggestion: await tripService.suggestDayClusters(c.req.param("tripId")) }),
-  );
+  guarded.get("/trips/:tripId/suggest-clusters", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripReadGuard(tripId, c);
+    return c.json({ suggestion: await tripService.suggestDayClusters(tripId) });
+  });
 
   // ---------- 预算 ----------
 
-  api.patch("/trips/:tripId/budget", async (c) => {
+  guarded.patch("/trips/:tripId/budget", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripWriteGuard(tripId, c);
     const input = z
       .object({
         budgetCny: z.number().nullable().optional(),
@@ -393,38 +532,75 @@ export function createApi(
         currency: z.string().regex(/^[A-Z]{3}$/).optional(),
       })
       .parse(await c.req.json());
-    await tripService.updateBudget(c.req.param("tripId"), input);
+    await tripService.updateBudget(tripId, input);
     return c.json({ ok: true });
   });
 
-  api.get("/trips/:tripId/budget", async (c) =>
-    c.json({ summary: await tripService.getBudgetSummary(c.req.param("tripId")) }),
-  );
-
-  // ---------- share（只读） ----------
-
-  api.get("/share/:token", async (c) => {
-    const token = c.req.param("token");
-    const trip = await tripService.getTripByShareToken(token);
-    const [bundle, budget] = await Promise.all([
-      tripService.getBundle(trip.id),
-      tripService.getBudgetSummary(trip.id),
-    ]);
-    return c.json({ bundle: aliasShareBundleIds(bundle, token), budget } satisfies SharePayload);
+  guarded.get("/trips/:tripId/budget", async (c) => {
+    const tripId = c.req.param("tripId");
+    tripReadGuard(tripId, c);
+    return c.json({ summary: await tripService.getBudgetSummary(tripId) });
   });
 
   // ---------- 设置（高德 key 等，DB 覆盖 > env） ----------
 
-  api.get("/settings", (c) => c.json({ settings: getSettings() }));
+  guarded.get("/settings", (c) => {
+    requireOwner(c);
+    return c.json({ settings: getSettings() });
+  });
 
-  api.put("/settings", async (c) => {
+  guarded.put("/settings", async (c) => {
+    requireOwner(c);
     const input = UpdateSettingsInputSchema.parse(await c.req.json());
     return c.json({ settings: await updateSettings(db, input) });
   });
 
-  // ---------- agent 注册 CRUD ----------
+  // ---------- owner token 管理（issue #16：设置页生成/重置，一次展示） ----------
 
-  api.get("/agents", async (c) => {
+  /** 只报配置态；明文永不回显（DB 只存 sha256 hash） */
+  guarded.get("/owner-token", (c) => {
+    requireOwner(c);
+    return c.json(getOwnerTokenStatus());
+  });
+
+  /** 生成/重置：token 明文仅此响应一次返回；重置后旧 token 立即失效 */
+  guarded.post("/owner-token/reset", async (c) => {
+    requireOwner(c);
+    return c.json(await resetOwnerToken(db), 201);
+  });
+
+  // ---------- 行程访问链接管理（issue #16：owner-only，链接管理 UI 在 #17） ----------
+
+  guarded.get("/trips/:tripId/access-links", async (c) => {
+    const tripId = c.req.param("tripId");
+    requireOwner(c); // 链接列表含 token 明文，绝不下发给 guest
+    return c.json({ links: await tripService.listAccessLinks(tripId) });
+  });
+
+  guarded.post("/trips/:tripId/access-links", async (c) => {
+    const tripId = c.req.param("tripId");
+    requireOwner(c);
+    const input = CreateAccessLinkInputSchema.parse(await c.req.json());
+    return c.json({ link: await tripService.createAccessLink(tripId, input) }, 201);
+  });
+
+  guarded.patch("/access-links/:linkId", async (c) => {
+    requireOwner(c);
+    const input = UpdateAccessLinkInputSchema.parse(await c.req.json());
+    return c.json({ link: await tripService.updateAccessLink(c.req.param("linkId"), input) });
+  });
+
+  /** 吊销链接（软删终态）：持该 token 的同伴下次请求即 401 */
+  guarded.delete("/access-links/:linkId", async (c) => {
+    requireOwner(c);
+    await tripService.revokeAccessLink(c.req.param("linkId"));
+    return c.json({ ok: true });
+  });
+
+  // ---------- agent 注册 CRUD（owner-only：POST 可 spawn 任意子进程，RCE 面） ----------
+
+  guarded.get("/agents", async (c) => {
+    requireOwner(c);
     const rows = await db
       .select()
       .from(schema.agentRegistry)
@@ -434,7 +610,8 @@ export function createApi(
   });
 
   /** 检测各注册 agent 的 command 在本机是否可用（增强 PATH 搜索，GUI/sidecar 极简 PATH 也能找到用户级 CLI） */
-  api.get("/agents/detect", async (c) => {
+  guarded.get("/agents/detect", async (c) => {
+    requireOwner(c);
     const rows = await db
       .select()
       .from(schema.agentRegistry)
@@ -448,7 +625,8 @@ export function createApi(
     return c.json({ agents });
   });
 
-  api.post("/agents", async (c) => {
+  guarded.post("/agents", async (c) => {
+    requireOwner(c);
     const input = CreateAgentInputSchema.parse(await c.req.json());
     const [row] = await db
       .insert(schema.agentRegistry)
@@ -457,7 +635,8 @@ export function createApi(
     return c.json({ agent: toAgentDto(row) }, 201);
   });
 
-  api.patch("/agents/:agentId", async (c) => {
+  guarded.patch("/agents/:agentId", async (c) => {
+    requireOwner(c);
     const input = UpdateAgentInputSchema.parse(await c.req.json());
     const patch: Partial<typeof schema.agentRegistry.$inferInsert> = {};
     if (input.label !== undefined) patch.label = input.label;
@@ -473,7 +652,8 @@ export function createApi(
     return c.json({ agent: toAgentDto(row) });
   });
 
-  api.delete("/agents/:agentId", async (c) => {
+  guarded.delete("/agents/:agentId", async (c) => {
+    requireOwner(c);
     const agentId = c.req.param("agentId");
     const [existing] = await db
       .select()
@@ -497,9 +677,10 @@ export function createApi(
     return c.json({ ok: true, disabled: false });
   });
 
-  // ---------- chat sessions ----------
+  // ---------- chat sessions（owner-only：agent 面板对同伴不可见，整个会话族不暴露给 guest） ----------
 
-  api.get("/trips/:tripId/chat-sessions", async (c) => {
+  guarded.get("/trips/:tripId/chat-sessions", async (c) => {
+    requireOwner(c);
     const rows = await db
       .select()
       .from(schema.chatSessions)
@@ -508,7 +689,8 @@ export function createApi(
     return c.json({ sessions: rows.map(toChatSessionDto) });
   });
 
-  api.post("/trips/:tripId/chat-sessions", async (c) => {
+  guarded.post("/trips/:tripId/chat-sessions", async (c) => {
+    requireOwner(c);
     const tripId = c.req.param("tripId");
     const input = z.object({ agentId: z.string() }).parse(await c.req.json());
     const [agent] = await db.select().from(schema.agentRegistry).where(eq(schema.agentRegistry.id, input.agentId));
@@ -540,7 +722,8 @@ export function createApi(
     return c.json({ session: toChatSessionDto(row) }, 201);
   });
 
-  api.get("/chat-sessions/:sessionId/messages", async (c) => {
+  guarded.get("/chat-sessions/:sessionId/messages", async (c) => {
+    requireOwner(c);
     // keyset 分页：缺省取最新一页；?beforeSeq=&limit= 向更早翻页（「加载更早」）
     const query = ChatMessagesQuerySchema.parse(c.req.query());
     const page = await listChatMessages(db, c.req.param("sessionId"), query);
@@ -585,7 +768,8 @@ export function createApi(
     }
   }
 
-  api.post("/chat-sessions/:sessionId/prompt", async (c) => {
+  guarded.post("/chat-sessions/:sessionId/prompt", async (c) => {
+    requireOwner(c);
     const sessionId = c.req.param("sessionId");
     const input = z.object({ text: z.string().min(1).max(20000) }).parse(await c.req.json());
     const [row] = await db.select().from(schema.chatSessions).where(eq(schema.chatSessions.id, sessionId));
@@ -606,7 +790,8 @@ export function createApi(
   });
 
   /** 手动重连（前端「重新连接」按钮）：与 prompt 的懒恢复同路径，但不携带消息 */
-  api.post("/chat-sessions/:sessionId/reconnect", async (c) => {
+  guarded.post("/chat-sessions/:sessionId/reconnect", async (c) => {
+    requireOwner(c);
     const sessionId = c.req.param("sessionId");
     const [row] = await db.select().from(schema.chatSessions).where(eq(schema.chatSessions.id, sessionId));
     if (!row) return c.json({ error: "session not found" }, 404);
@@ -619,7 +804,8 @@ export function createApi(
     return c.json({ ok: true, session: toChatSessionDto(updated) });
   });
 
-  api.post("/chat-sessions/:sessionId/permissions/:requestId", async (c) => {
+  guarded.post("/chat-sessions/:sessionId/permissions/:requestId", async (c) => {
+    requireOwner(c);
     const sessionId = c.req.param("sessionId");
     const requestId = c.req.param("requestId");
     const input = z
@@ -641,7 +827,8 @@ export function createApi(
     return c.json({ ok });
   });
 
-  api.post("/chat-sessions/:sessionId/allow-all", async (c) => {
+  guarded.post("/chat-sessions/:sessionId/allow-all", async (c) => {
+    requireOwner(c);
     const sessionId = c.req.param("sessionId");
     const input = z.object({ enabled: z.boolean() }).parse(await c.req.json());
     await db
@@ -652,7 +839,8 @@ export function createApi(
   });
 
   /** 前端把 UI 选中态回写（agent 经 get_trip_context 的 userUiContext 实时读） */
-  api.post("/chat-sessions/:sessionId/ui-context", async (c) => {
+  guarded.post("/chat-sessions/:sessionId/ui-context", async (c) => {
+    requireOwner(c);
     const sessionId = c.req.param("sessionId");
     const body = await c.req.json();
     await db
@@ -662,50 +850,82 @@ export function createApi(
     return c.json({ ok: true });
   });
 
-  api.delete("/chat-sessions/:sessionId", async (c) => {
+  guarded.delete("/chat-sessions/:sessionId", async (c) => {
+    requireOwner(c);
     const sessionId = c.req.param("sessionId");
     await sessions.stopSession(sessionId, "user closed");
     return c.json({ ok: true });
   });
 
-  // ---------- SSE ----------
+  // ---------- guard 区挂载（所有受保护端点注册完毕后） ----------
 
-  api.get("/trips/:tripId/events", (c) => {
-    const channels = [tripChannel(c.req.param("tripId")), TRIPS_CHANNEL];
-    return streamSSE(c, async (stream) => {
-      const unsubscribers = channels.map((ch) =>
-        bus.subscribe(ch, (event) => {
-          void stream.writeSSE({ data: JSON.stringify(event) });
-        }),
-      );
-      const heartbeat = setInterval(() => {
-        void stream.writeSSE({ data: "", event: "ping" });
-      }, 25_000);
-      stream.onAbort(() => {
-        clearInterval(heartbeat);
-        for (const u of unsubscribers) u();
-      });
-      // 挂到断连
-      await new Promise<void>((resolve) => stream.onAbort(resolve));
-    });
-  });
+  api.route("/", guarded);
 
-  api.get("/chat-sessions/:sessionId/events", (c) => {
-    const channel = chatChannel(c.req.param("sessionId"));
-    return streamSSE(c, async (stream) => {
-      const unsubscribe = bus.subscribe(channel, (event) => {
-        void stream.writeSSE({ data: JSON.stringify(event) });
-      });
-      const heartbeat = setInterval(() => {
-        void stream.writeSSE({ data: "", event: "ping" });
-      }, 25_000);
-      stream.onAbort(() => {
-        clearInterval(heartbeat);
-        unsubscribe();
-      });
-      await new Promise<void>((resolve) => stream.onAbort(resolve));
-    });
-  });
+  // ---------- 鉴权辅助（createApi 闭包内，共享 db） ----------
+
+  /**
+   * SSE 鉴权（公开区专用）：EventSource 不能带自定义 header，token 走 ?token= query param。
+   * 手动解析身份（公开区不挂 principalMiddleware）：
+   *   - ?token=（或 Authorization Bearer，curl 调试用）无效/已吊销 → 401 JSON（与 Bearer 路径同语义）
+   *   - 无 token：loopback → owner（存量 EventSource 直连零变化）；远程匿名 → 401
+   *   - 带 token 一律按 token 身份处理，不因 loopback 静默升为 owner（与 REST 路径同一规则）
+   * kind="owner"：owner-only 事件流（chat-sessions——agent 面板对同伴不可见）；
+   * kind="trip"：行程事件流，owner / 本行程 viewer+editor 放行。
+   * 返回 null = 放行；否则返回 401/403 JSON 响应（调用处直接 return——EventSource 收到
+   * 非 2xx 会触发 onerror，前端按连接失败处理）。
+   */
+  async function sseAuth(c: Parameters<typeof resolvePrincipal>[0], tripId: string | null, kind: "trip" | "owner"): Promise<Response | null> {
+    const queryToken = c.req.query("token")?.trim();
+    let principal: Awaited<ReturnType<typeof resolvePrincipal>>;
+    try {
+      // ?token= 有值就按 token 处理（tokenOverride 复用 Bearer 同一套解析规则，包括 Authorization 头被忽略）
+      if (queryToken) {
+        principal = await resolvePrincipal(c, db, queryToken);
+      } else {
+        principal = await resolvePrincipal(c, db);
+      }
+    } catch (err) {
+      if (err instanceof AuthError) return c.json({ error: err.message }, err.status);
+      throw err;
+    }
+    if (kind === "owner") {
+      return principal.kind === "owner" ? null : c.json({ error: "仅行程主人可订阅该事件流" }, 403);
+    }
+    if (principal.kind === "owner") return null;
+    if (principal.kind === "anonymous") return c.json({ error: "需要访问凭证" }, 401);
+    if (principal.tripId !== tripId) return c.json({ error: "无权订阅该行程的事件流" }, 403);
+    return null; // viewer/editor 都可订阅本行程事件流（读端点）
+  }
+
+  /**
+   * 实体级端点的归属 guard：按实体 id 查行拿到 tripId，再走行程级 guard。
+   * guest 拿其他行程的实体 id 调写端点 → 403（行程归属不符）；
+   * 不存在的实体 → 404（与无鉴权时代的行为一致，不泄露存在性差异）。
+   * 模式统一：先查行（owner 也需要——handler 本来就要查），guard 失败抛 AuthError 由
+   * guarded.onError 转 401/403。
+   */
+  async function guardEntityTrip(
+    c: Context,
+    entityId: string,
+    table: typeof schema.places | typeof schema.entries | typeof schema.days | typeof schema.tripNotes | typeof schema.transportLegs,
+    need: "read" | "write",
+  ): Promise<void> {
+    const [row] = await db.select({ tripId: table.tripId }).from(table).where(eq(table.id, entityId));
+    if (!row) throw new ServiceError(404, "not found");
+    if (need === "write") tripWriteGuard(row.tripId, c);
+    else tripReadGuard(row.tripId, c);
+  }
+
+  const guardPlaceTrip = (c: Context, id: string, need: "read" | "write") =>
+    guardEntityTrip(c, id, schema.places, need);
+  const guardEntryTrip = (c: Context, id: string, need: "read" | "write") =>
+    guardEntityTrip(c, id, schema.entries, need);
+  const guardDayTrip = (c: Context, id: string, need: "read" | "write") =>
+    guardEntityTrip(c, id, schema.days, need);
+  const guardNoteTrip = (c: Context, id: string, need: "read" | "write") =>
+    guardEntityTrip(c, id, schema.tripNotes, need);
+  const guardLegTrip = (c: Context, id: string, need: "read" | "write") =>
+    guardEntityTrip(c, id, schema.transportLegs, need);
 
   return api;
 }
