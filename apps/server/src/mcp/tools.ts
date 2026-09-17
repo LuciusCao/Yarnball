@@ -13,6 +13,7 @@ import {
   TRANSIT_MODES,
   TRANSPORT_MODES,
   TRIP_NOTE_CATEGORIES,
+  UpdateHotelCandidateInputSchema,
   UpdatePlaceInputSchema,
 } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
@@ -106,6 +107,8 @@ const AddTransitEntryInput = z.object({
   toName: z.string().min(1).max(120).nullable().optional(),
   /** 大交通方式：flight=航班 / train=火车高铁 / drive=自驾 / bus=大巴；缺省 null（直线段）。自驾环线城际段务必传 drive（走真实公路路线） */
   transitMode: z.enum(TRANSIT_MODES).nullable().optional(),
+  /** 大交通费用（总价口径不按人数计，单位为行程币种）；预算面板「交通」行汇总依据 */
+  priceCny: z.number().int().min(0).nullable().optional(),
   note: z.string().max(2000).nullable().optional(),
 });
 
@@ -134,6 +137,8 @@ const UpdateEntryInput = z.object({
   toName: z.string().min(1).max(120).nullable().optional(),
   /** 大交通方式（仅 transit entry 可改）：flight|train|drive|bus；null=清除恢复直线段 */
   transitMode: z.enum(TRANSIT_MODES).nullable().optional(),
+  /** 大交通费用（仅 transit entry 可改）：总价口径不按人数计；null=清除（未定价，预算面板单独提醒） */
+  priceCny: z.number().int().min(0).nullable().optional(),
 });
 
 const MoveEntryInput = z.object({
@@ -280,6 +285,16 @@ async function assertNoteInSessionTrip(ctx: ToolContext, noteId: string) {
     .select({ tripId: schema.tripNotes.tripId })
     .from(schema.tripNotes)
     .where(eq(schema.tripNotes.id, noteId));
+  if (!row || row.tripId !== ctx.tripId) {
+    throw new ServiceError(403, "无权操作该资源：不属于当前会话的行程");
+  }
+}
+
+async function assertHotelCandidateInSessionTrip(ctx: ToolContext, candidateId: string) {
+  const [row] = await ctx.db
+    .select({ tripId: schema.hotelCandidates.tripId })
+    .from(schema.hotelCandidates)
+    .where(eq(schema.hotelCandidates.id, candidateId));
   if (!row || row.tripId !== ctx.tripId) {
     throw new ServiceError(403, "无权操作该资源：不属于当前会话的行程");
   }
@@ -536,7 +551,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "add_transit_entry",
     {
       description:
-        "添加大交通节点（transit entry：航班/高铁/城际移动，如「家 → 萧山机场」「杭州东站 → 市区酒店」）到某一天。起讫点各给一种：fromPlaceId/toPlaceId（行程内地点，走真实坐标参与当天路线锚定，推荐先 search_poi 建好站点 place）或 fromName/toName（自由文本，如「家」「浦东机场」，不产生交通段）。departTime/arriveTime 尽量给（HH:MM）——到达日的 arriveTime 约束当天可排容量，离开日的 departTime 是当天收口（最后一个景点要预留赶车缓冲）。到达 transit 排在当天第一位、离开 transit 排在当天最后一位。**多城市/环线行程：城市间移动也是 transit entry**（排在移动日当天首位，fromPlaceId/toPlaceId 引用两端城市的 place）；transitMode 传 drive（自驾环线城际段，走真实公路路线和里程）、train（火车/高铁）、flight（航班）、bus（大巴），缺省为直线段（适合航班/高铁）。环线闭合：最后一段 transit 的讫点回到主目的地（stops[0]）即自动视为环线闭合，无需特殊标记。",
+        "添加大交通节点（transit entry：航班/高铁/城际移动，如「家 → 萧山机场」「杭州东站 → 市区酒店」）到某一天。起讫点各给一种：fromPlaceId/toPlaceId（行程内地点，走真实坐标参与当天路线锚定，推荐先 search_poi 建好站点 place）或 fromName/toName（自由文本，如「家」「浦东机场」，不产生交通段）。departTime/arriveTime 尽量给（HH:MM）——到达日的 arriveTime 约束当天可排容量，离开日的 departTime 是当天收口（最后一个景点要预留赶车缓冲）。到达 transit 排在当天第一位、离开 transit 排在当天最后一位。**多城市/环线行程：城市间移动也是 transit entry**（排在移动日当天首位，fromPlaceId/toPlaceId 引用两端城市的 place）；transitMode 传 drive（自驾环线城际段，走真实公路路线和里程）、train（火车/高铁）、flight（航班）、bus（大巴），缺省为直线段（适合航班/高铁）。priceCny：该段大交通费用（**总价口径，不按人数计**——两人往返机票就填两人的总价；单位为行程币种），预算面板「交通」行会汇总；订票前可先空着，拿到真实价格后用 update_entry 回填。环线闭合：最后一段 transit 的讫点回到主目的地（stops[0]）即自动视为环线闭合，无需特殊标记。",
       inputSchema: AddTransitEntryInput.shape,
     },
     async (input) => {
@@ -554,7 +569,7 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
     "update_entry",
     {
       description:
-        "修改某天行程中的条目：startTime（HH:MM）、durationMin（该次停留时长覆盖，分钟）、note；transit entry 还可改 departTime/arriveTime、起讫点（fromPlaceId/toPlaceId/fromName/toName，传 null 清除）与 transitMode（flight|train|drive|bus，传 null 恢复直线段）。",
+        "修改某天行程中的条目：startTime（HH:MM）、durationMin（该次停留时长覆盖，分钟）、note；transit entry 还可改 departTime/arriveTime、起讫点（fromPlaceId/toPlaceId/fromName/toName，传 null 清除）、transitMode（flight|train|drive|bus，传 null 恢复直线段）与 priceCny（大交通费用，总价口径不按人数计，传 null 清除——订票后拿到真实价格回填这里，预算面板「交通」行会汇总）。",
       inputSchema: UpdateEntryInput.shape,
     },
     async ({ entryId, ...patch }) => {
@@ -822,6 +837,25 @@ export function registerYarnballTools(server: McpServer, ctx: ToolContext) {
       try {
         await tripService.unselectHotel(tripId, candidateId);
         return json({ ok: true });
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "update_hotel_candidate",
+    {
+      description:
+        "回填酒店候选信息（issue #13 场景：订完酒店拿到真实房价往往晚于建候选）。pricePerNight=每晚房价（单位为行程币种；预算面板「住宿」行按 每晚价 × 覆盖晚数 计价）、notes=备注；传 null 清除。选定状态/住宿天数的流转走 select_hotel / unselect_hotel，不在这里改。订完一家回填一家——这是预算面板住宿项能计价的前提。",
+      inputSchema: UpdateHotelCandidateInputSchema.extend({ candidateId: z.string() }).shape,
+    },
+    async ({ candidateId, ...patch }) => {
+      ctx.markMcpObserved();
+      try {
+        await assertHotelCandidateInSessionTrip(ctx, candidateId);
+        const candidate = await tripService.updateHotelCandidate(candidateId, patch);
+        return json({ ok: true, candidate });
       } catch (err) {
         return toolError(err);
       }

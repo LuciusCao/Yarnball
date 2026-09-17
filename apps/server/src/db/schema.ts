@@ -156,6 +156,8 @@ export const entries = sqliteTable(
     toName: text("to_name"),
     /** 大交通方式：flight|train|drive|bus；null=未指定（直线段）。drive=自驾：城际段走真实路由 */
     transitMode: text("transit_mode"),
+    /** 大交通费用（行程币种，总价口径不按人数计，issue #14 预算面板交通行汇总依据）；null=未填 */
+    priceCny: integer("price_cny"),
   },
   (t) => [
     index("entries_day_idx").on(t.dayId),

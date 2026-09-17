@@ -135,6 +135,7 @@ export function toEntryDto(row: EntryRow): EntryDto {
     fromName: row.fromName,
     toName: row.toName,
     transitMode: (row.transitMode as EntryDto["transitMode"]) ?? null,
+    priceCny: row.priceCny ?? null,
   };
 }
 

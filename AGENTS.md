@@ -44,15 +44,16 @@ Hono Server (apps/server, :18788)               │
 apps/server
   src/acp/        ACP 会话管理（sessionManager.ts ~750 行；permissions.ts 四层权限策略；
                   prompts.ts bootstrap prompt；terminal 协议支持）
-  src/mcp/        MCP 工具面：tools.ts（31 个工具 + scoped token 鉴权，含 add_to_trip/remove_from_trip
+  src/mcp/        MCP 工具面：tools.ts（32 个工具 + scoped token 鉴权，含 add_to_trip/remove_from_trip
                   （加入/移出行程）、
                   add_transit_entry/update_entry（大交通 entry，transitMode=flight/train/drive/bus，
-                  drive 走真实路由）、suggest_day_clusters（区域聚类分天建议）、
+                  drive 走真实路由；priceCny 大交通费用总价口径，预算面板交通行汇总）、suggest_day_clusters（区域聚类分天建议）、
                   set_start_date/set_end_date（出发/结束日期，对话中说「9/23 出发」「玩到 9/28」时写回
                   trip.startDate/endDate）、set_leg_mode（手动覆盖市内交通段方式，9 值含 ferry/metro/light_rail/train/bus 子类型，modeOverride）、
                   recommend_hotel_area（多信号加权推荐住宿区域：每日首末锚点+大交通到发节点加权，
                   segments 按未被酒店覆盖的天段/途经地分段给建议）、unselect_hotel（取消单个
-                  已选定酒店）、unschedule_place（按 placeId 撤销其全部日程并退回候选）、
+                  已选定酒店）、update_hotel_candidate（回填酒店候选 pricePerNight/notes，
+                  订完房写真实房价进预算）、unschedule_place（按 placeId 撤销其全部日程并退回候选）、
                   set_day_summary（排天时撰写每日概要）、add_trip_note/update_trip_note/remove_trip_note
                   （行程级注意事项，按目的地/日期预填与维护）、get_weather（按天天气预报））、
                   app.ts（HTTP 端点）

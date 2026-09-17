@@ -24,6 +24,7 @@ import {
   UpdateAgentInputSchema,
   UpdateDaySummaryInputSchema,
   UpdateEntryInputSchema,
+  UpdateHotelCandidateInputSchema,
   UpdatePlaceInputSchema,
   UpdateSettingsInputSchema,
   UpdateTripInputSchema,
@@ -643,6 +644,16 @@ export function createApi(
     return c.json(result, 201);
   });
 
+  /** 回填酒店候选（issue #13）：订完酒店后写回真实每晚价/备注；选定状态流转走 select/unselect。
+   *  v0.4 合并修正：从公开区挪进 guarded 区 + 实体归属 guard（hotelCandidates 表）——
+   *  自动合并曾把它挂在外层 api（公开区先注册先命中），远程匿名可直改价格，属鉴权矩阵漏洞 */
+  guarded.patch("/hotel-candidates/:candidateId", async (c) => {
+    const candidateId = c.req.param("candidateId");
+    await guardHotelCandidateTrip(c, candidateId, "write");
+    const input = UpdateHotelCandidateInputSchema.parse(await c.req.json());
+    return c.json({ candidate: await tripService.updateHotelCandidate(candidateId, input) });
+  });
+
   // 选定酒店：可带 checkInDay/checkOutDay（1-based 闭开区间，缺省服务端智能建议）；
   // candidateId=null 取消全部选定（兼容旧单选契约）
   guarded.post("/trips/:tripId/select-hotel", async (c) => {
@@ -1093,7 +1104,7 @@ export function createApi(
   async function guardEntityTrip(
     c: Context,
     entityId: string,
-    table: typeof schema.places | typeof schema.entries | typeof schema.days | typeof schema.tripNotes | typeof schema.transportLegs,
+    table: typeof schema.places | typeof schema.entries | typeof schema.days | typeof schema.tripNotes | typeof schema.transportLegs | typeof schema.hotelCandidates,
     need: "read" | "write",
   ): Promise<void> {
     const [row] = await db.select({ tripId: table.tripId }).from(table).where(eq(table.id, entityId));
@@ -1112,6 +1123,8 @@ export function createApi(
     guardEntityTrip(c, id, schema.tripNotes, need);
   const guardLegTrip = (c: Context, id: string, need: "read" | "write") =>
     guardEntityTrip(c, id, schema.transportLegs, need);
+  const guardHotelCandidateTrip = (c: Context, id: string, need: "read" | "write") =>
+    guardEntityTrip(c, id, schema.hotelCandidates, need);
 
   return api;
 }

@@ -368,6 +368,12 @@ export const EntryDtoSchema = z.object({
   toName: z.string().nullable(),
   /** 大交通方式（见 TRANSIT_MODES）；null=未指定（直线段）。drive=自驾：城际段走真实路由 */
   transitMode: z.enum(TRANSIT_MODES).nullable(),
+  /**
+   * 大交通费用（行程币种，**总价口径不按人数计**，如两人往返机票填两人总价）。
+   * issue #14：transit entry 的票价/油费等大件支出，预算面板「交通」行汇总依据；
+   * null=未填（不计入预算，计入 transitUnpricedCount 提醒）。
+   */
+  priceCny: z.number().int().min(0).nullable(),
 });
 export type EntryDto = z.infer<typeof EntryDtoSchema>;
 
@@ -628,6 +634,8 @@ export const AddEntryInputSchema = z
     toName: z.string().min(1).max(120).nullable().optional(),
     /** 大交通方式（仅 transit 有意义）；drive=自驾城际段走真实路由 */
     transitMode: z.enum(TRANSIT_MODES).nullable().optional(),
+    /** 大交通费用（仅 transit 有意义；总价口径不按人数计，传 null 清除） */
+    priceCny: z.number().int().min(0).nullable().optional(),
   })
   .refine((v) => v.entryType !== "place" || !!v.placeId, {
     message: "entryType=place 时必须提供 placeId",
@@ -658,6 +666,8 @@ export const UpdateEntryInputSchema = z.object({
   toName: z.string().min(1).max(120).nullable().optional(),
   /** 大交通方式（仅 transit entry 可改）；null=清除恢复直线段 */
   transitMode: z.enum(TRANSIT_MODES).nullable().optional(),
+  /** 大交通费用（仅 transit entry 可改；总价口径不按人数计，传 null 清除） */
+  priceCny: z.number().int().min(0).nullable().optional(),
 });
 export type UpdateEntryInput = z.infer<typeof UpdateEntryInputSchema>;
 
@@ -827,6 +837,17 @@ export const CreateHotelCandidateInputSchema = CreatePlaceInputSchema.extend({
 export type CreateHotelCandidateInput = z.infer<
   typeof CreateHotelCandidateInputSchema
 >;
+
+/**
+ * 回填酒店候选信息（PATCH /api/hotel-candidates/:id 与 MCP update_hotel_candidate，issue #13）。
+ * 订完酒店拿到真实房价往往晚于建候选：这里支持改 pricePerNight（预算面板住宿项计价依据）
+ * 与 notes；传 null 清除。selected/checkInDay/checkOutDay 的流转走 select/unselect，不放这里。
+ */
+export const UpdateHotelCandidateInputSchema = z.object({
+  pricePerNight: z.number().min(0).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+});
+export type UpdateHotelCandidateInput = z.infer<typeof UpdateHotelCandidateInputSchema>;
 
 /**
  * 选定酒店（POST /api/trips/:tripId/select-hotel 与 MCP select_hotel）。
@@ -1193,10 +1214,14 @@ export const BudgetSummarySchema = z.object({
   hotelCny: z.number().nullable(),
   diningCny: z.number(),
   ticketsCny: z.number(),
+  /** 大交通费用合计（transit entry 的 priceCny 总价口径求和，不按人数计，issue #14） */
+  transitCny: z.number(),
   totalCny: z.number(),
   remainingCny: z.number().nullable(),
   /** 还没填价格的餐厅/景点数（预算低估提醒） */
   unpricedCount: z.number(),
+  /** 还没填价格的大交通段数（transit entry priceCny 为空的条数，预算低估提醒，issue #14） */
+  transitUnpricedCount: z.number(),
 });
 export type BudgetSummary = z.infer<typeof BudgetSummarySchema>;
 
