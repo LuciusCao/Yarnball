@@ -184,12 +184,16 @@ export function principalMiddleware(db: Db): MiddlewareHandler {
 //   2. DNS rebinding：服务端不校验 Host，恶意域 A 记录重绑 127.0.0.1 后请求变「同源」，
 //      CORS 完全失效，可读全部 /api（含 access-links 明文 token）。
 //
-// 防护（两层，均为中间件形态，不碰业务 handler）：
-//   - originGuard：带 Origin 头（浏览器发起的跨站请求必带）但不在白名单 → 403。
-//     白名单 = WEB_ORIGIN（dev 的 vite）+ loopback 变体（壳内 webview / 生产同源页面 /
-//     本机浏览器直开）。curl/agent 不带 Origin，不受影响。
-//   - hostGuard：Host 头的 host 部分（去端口）不在允许集 → 403。允许集 = loopback 变体 +
-//     WEB_ORIGIN 的 host + SERVER_HOST（部署形态同伴用 LAN IP / 域名访问）。杀 rebinding。
+// 防护分层（评审三 P1-1a/P1-1b 修正：**仅桌面形态生效**）：
+//   - 攻击前提「loopback 免凭证 = owner」只存在于桌面形态（trustLoopbackOwner=true）；
+//     部署形态（绑非 loopback）下 loopback 来源不再免凭证、敏感操作强制 token，
+//     principal 即安全边界——Origin/Host 校验在那里零收益纯误杀（同伴的 Origin/Host
+//     是 LAN IP / tailscale IP / 反代域名，无法穷举白名单）。
+//   - 桌面形态下只对「无凭证」请求做 Origin 白名单（杀 drive-by；沙箱 iframe / file://
+//     发的 "null" 一律拒——评审三 P1-1a 曾因豁免 null 被 RCE 复现）+ Host 允许集
+//     （杀 rebinding）。带凭证请求跳过：有效 token 本身就是鉴权，无效由 principal
+//     中间件 401 兜底，凭证无法被恶意网页伪造。
+//   - curl / agent 子进程不发 Origin 头，天然放行。
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
@@ -210,39 +214,55 @@ const allowedHosts = new Set<string>();
 
 function buildBrowserAllowlist(): void {
   const port = String(env.serverPort);
-  // Origin 白名单：vite dev、生产同源（loopback 全变体）、显式 SERVER_HOST 部署形态
+  // Origin 白名单：vite dev、生产同源（loopback 全变体，含 IPv6 与 0.0.0.0 部署绑定值）
   allowedBrowserOrigins.add(env.webOrigin);
-  for (const scheme of ["http"]) {
-    for (const host of ["127.0.0.1", "localhost"]) {
-      allowedBrowserOrigins.add(`${scheme}://${host}:${port}`);
-    }
+  for (const host of ["127.0.0.1", "localhost", "[::1]", "::1"]) {
+    allowedBrowserOrigins.add(`http://${host}:${port}`);
   }
-  if (!env.trustLoopbackOwner) {
-    // 绑定非 loopback（LAN/隧道部署）：Origin 可能是 http://<lan-ip>:<port> 或反代域名
-    allowedBrowserOrigins.add(`http://${env.serverHost}:${port}`);
-  }
-  // Host 允许集：loopback 变体 + WEB_ORIGIN 的 host + SERVER_HOST（部署形态）
+  // Host 允许集：loopback 变体 + WEB_ORIGIN 的 host（vite 代理转发形态）
   for (const h of LOOPBACK_HOSTS) allowedHosts.add(h);
   try {
     allowedHosts.add(new URL(env.webOrigin).hostname.toLowerCase());
   } catch {
     // WEB_ORIGIN 非法时忽略（env 校验另有兜底）
   }
-  if (!LOOPBACK_HOSTS.has(env.serverHost.toLowerCase())) {
-    allowedHosts.add(env.serverHost.toLowerCase());
-  }
 }
 buildBrowserAllowlist();
 
 /**
- * 浏览器攻击面防护中间件：Origin 白名单 + Host 校验。
- * 挂在全部 /api 路径最前（含公开区——恶意网页同样可以打 share/join 端点做探测与滥用）。
- * 不带 Origin 的请求（curl / agent / Tauri 壳的 fetch 若不带）直接放行，桌面零回归。
+ * 浏览器攻击面防护中间件（**仅桌面形态生效**，评审三 P1-1a/P1-1b 修正）：
+ *
+ * 分层依据：drive-by / rebinding 的攻击前提是「loopback 免凭证 = owner」，这只存在于
+ * 桌面形态（trustLoopbackOwner=true）。部署形态（绑非 loopback）下 loopback 来源不再
+ * 免凭证、敏感操作全部强制 token（principal 即安全边界），Origin/Host 校验在那里零收益
+ * 纯误杀（同伴的 Origin/Host 是 LAN IP / tailscale IP / 反代域名，无法穷举白名单）。
+ *
+ * 桌面形态下对**无凭证**请求做两层校验：
+ *   - Origin 白名单：浏览器跨站/simple request 必带 Origin；"null"（沙箱 iframe / file:// /
+ *     跨源重定向）是攻击标准形态，一律拒（评审三 P1-1a 曾因豁免被 RCE 复现）；
+ *   - Host 允许集：杀 DNS rebinding（Host=evil 域名 → 403）。
+ * 带凭证（Bearer / ?token= / join·share 的 /:token/ 路径）请求跳过——有效 token 本身
+ * 就是鉴权，无效 token 由 principalMiddleware 401 兜底；凭证无法被恶意网页伪造。
+ * 不带 Origin 的无凭证请求（curl / agent / 同源 GET）只过 Host 校验。
  */
 export function browserGuardMiddleware(): MiddlewareHandler {
   return async (c, next) => {
+    if (!env.trustLoopbackOwner) {
+      // 部署形态：principal 强制凭证已是安全边界，浏览器形态校验整体跳过
+      await next();
+      return;
+    }
+    const path = c.req.path;
+    const hasCredential =
+      /^\/(join|share)\/[A-Za-z0-9_-]+/.test(path) ||
+      bearerToken(c) !== null ||
+      (c.req.query("token")?.trim().length ?? 0) > 0;
+    if (hasCredential) {
+      await next();
+      return;
+    }
     const origin = c.req.header("Origin");
-    if (origin !== undefined && origin !== "null" && !allowedBrowserOrigins.has(origin)) {
+    if (origin !== undefined && !allowedBrowserOrigins.has(origin)) {
       return c.json({ error: "跨站请求被拒绝" }, 403);
     }
     const host = c.req.header("Host");

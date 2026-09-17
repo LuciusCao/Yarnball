@@ -736,10 +736,42 @@ describe("browserGuard（Origin 白名单 + Host 校验）", () => {
     expect((await call("/trips", { headers: { host: "[::1]:18788" } })).status).toBe(200);
   });
 
-  it("owner token 请求带非白名单 Origin 同样拒绝（防护对所有身份生效）", async () => {
+  it("带有效凭证的请求跳过浏览器校验（凭证即鉴权，恶意网页无法伪造 token）", async () => {
     const res = await remoteCall("/trips", {
       headers: { ...bearer(ownerToken), origin: "http://evil.example" },
     });
+    expect(res.status).toBe(200);
+  });
+
+  it("Origin: null 一律拒绝（评审三 P1-1a：沙箱 iframe / file:// 的攻击形态）", async () => {
+    const res = await call(
+      "/agents",
+      {
+        method: "POST",
+        headers: { origin: "null", "content-type": "text/plain" },
+        body: JSON.stringify({ label: "evil", command: "/bin/sh", args: ["-c", "id"] }),
+      },
+    );
     expect(res.status).toBe(403);
+  });
+
+  it("IPv6 loopback 同源 Origin 放行（评审三 P3）", async () => {
+    expect((await call("/trips", { headers: { origin: "http://[::1]:18788" } })).status).toBe(200);
+  });
+
+  it("部署形态（SERVER_HOST=0.0.0.0）下 guard 整体跳过：远程同伴的 LAN IP Host/Origin 不误杀（评审三 P1-1b）", async () => {
+    const prevHost = process.env.SERVER_HOST;
+    process.env.SERVER_HOST = "0.0.0.0";
+    try {
+      // 远程同伴视角：同源 Origin + LAN IP Host（此前被 Host 校验误杀 403）
+      const lanHeaders = { origin: "http://192.168.1.10:18788", host: "192.168.1.10:18788" };
+      // /api/config 是公开端点（前端启动配置）——部署形态必须可达
+      expect((await remoteCall("/config", { headers: lanHeaders })).status).toBe(200);
+      // share 公开端点（token 在路径）同样可达——用 tripB：tripA 的默认链接已被吊销用例消费
+      const shareRes = await remoteCall(`/share/${tripB.shareToken}`, { headers: lanHeaders });
+      expect(shareRes.status).toBe(200);
+    } finally {
+      process.env.SERVER_HOST = prevHost;
+    }
   });
 });
