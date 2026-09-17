@@ -305,6 +305,179 @@ describe("editor guest（Bearer editor token）", () => {
   });
 });
 
+// ---------- 3b. #20 复核补测：agent 面板/设置/分享管理/搜索/顺路只读族 ----------
+
+describe("边界复核（issue #20）：guest 对 owner 专属与读写族端点的完整矩阵", () => {
+  // viewer 凭证在 describe 8 会被吊销重建，这里独立建两条保证本组稳定
+  let viewer2 = "";
+  let editor2 = "";
+  beforeAll(async () => {
+    const v = await call(`/trips/${tripA.id}/access-links`, json({ role: "viewer" }));
+    viewer2 = ((await v.json()) as { link: { token: string } }).link.token;
+    const e = await call(`/trips/${tripA.id}/access-links`, json({ role: "editor" }));
+    editor2 = ((await e.json()) as { link: { token: string } }).link.token;
+  });
+
+  it("chat-sessions 全家对 viewer/editor 全 403（agent 面板边界，硬拒）", async () => {
+    for (const token of [viewer2, editor2]) {
+      const h = bearer(token);
+      // 创建会话（owner-only：spawn agent 子进程的入口）
+      expect(
+        (await call(`/trips/${tripA.id}/chat-sessions`, { ...json({ agentId: "any" }), headers: h }))
+          .status,
+      ).toBe(403);
+      // prompt / reconnect / permissions / allow-all / ui-context / messages / 删除
+      expect(
+        (await call("/chat-sessions/some-session/prompt", { ...json({ text: "hi" }), headers: h }))
+          .status,
+      ).toBe(403);
+      expect((await call("/chat-sessions/some-session/reconnect", { method: "POST", headers: h })).status).toBe(403);
+      expect(
+        (await call("/chat-sessions/some-session/permissions/r1", { ...json({ optionId: null }), headers: h }))
+          .status,
+      ).toBe(403);
+      expect(
+        (await call("/chat-sessions/some-session/allow-all", { ...json({ enabled: true }), headers: h }))
+          .status,
+      ).toBe(403);
+      expect(
+        (await call("/chat-sessions/some-session/ui-context", { ...json({ selectedPlaceId: null }), headers: h }))
+          .status,
+      ).toBe(403);
+      expect((await call("/chat-sessions/some-session/messages", { headers: h })).status).toBe(403);
+      expect((await call("/chat-sessions/some-session", { method: "DELETE", headers: h })).status).toBe(403);
+    }
+  });
+
+  it("agents 写端点对 viewer/editor 403（POST / PATCH / DELETE；RCE 面）", async () => {
+    for (const token of [viewer2, editor2]) {
+      const h = bearer(token);
+      expect(
+        (await call("/agents", { ...json({ label: "x", command: "curl", args: [] }), headers: h }))
+          .status,
+      ).toBe(403);
+      expect(
+        (await call("/agents/any", {
+          method: "PATCH",
+          headers: { ...h, "content-type": "application/json" },
+          body: JSON.stringify({ label: "x" }),
+        })).status,
+      ).toBe(403);
+      expect((await call("/agents/any", { method: "DELETE", headers: h })).status).toBe(403);
+    }
+  });
+
+  it("settings PUT / owner-token 重置对 viewer/editor 403", async () => {
+    for (const token of [viewer2, editor2]) {
+      const h = bearer(token);
+      expect(
+        (await call("/settings", {
+          method: "PUT",
+          headers: { ...h, "content-type": "application/json" },
+          body: JSON.stringify({ amapServerKey: "k" }),
+        })).status,
+      ).toBe(403);
+      expect((await call("/owner-token/reset", { method: "POST", headers: h })).status).toBe(403);
+    }
+  });
+
+  it("access-links 管理（建/改/吊销）对 viewer/editor 403（列表含 token 明文）", async () => {
+    for (const token of [viewer2, editor2]) {
+      const h = bearer(token);
+      expect(
+        (await call(`/trips/${tripA.id}/access-links`, { ...json({ role: "viewer" }), headers: h }))
+          .status,
+      ).toBe(403);
+      expect(
+        (await call("/access-links/any", {
+          method: "PATCH",
+          headers: { ...h, "content-type": "application/json" },
+          body: JSON.stringify({ label: "x" }),
+        })).status,
+      ).toBe(403);
+      expect((await call("/access-links/any", { method: "DELETE", headers: h })).status).toBe(403);
+    }
+  });
+
+  it("搜索（editor 能力）：viewer 403 / editor 200", async () => {
+    expect((await call(`/trips/${tripA.id}/search?keyword=x`, { headers: bearer(viewer2) })).status).toBe(403);
+    const ok = await call(`/trips/${tripA.id}/search?keyword=x`, { headers: bearer(editor2) });
+    expect([200, 502]).toContain(ok.status); // 鉴权层放行（200；上游故障不在本测试范围）
+  });
+
+  it("顺路只读族对 viewer 过鉴权（不 403；用不存在的天规避真实路由请求）", async () => {
+    const h = bearer(viewer2);
+    const placeId = viewerPlace!.id;
+    // dayIndex=999：guard 先行放行，业务层 ensureDay 抛 404 —— 证明鉴权层不挡 viewer，
+    // 同时避免 suggest-order/analyze-detour 内部打真实上游（provider 路由矩阵）拖慢/超时测试
+    const suggest = await call(`/trips/${tripA.id}/suggest-order?dayIndex=999`, { headers: h });
+    expect(suggest.status).not.toBe(403);
+    const detour = await call(
+      `/trips/${tripA.id}/analyze-detour?placeId=${placeId}&dayIndex=999`,
+      { headers: h },
+    );
+    expect(detour.status).not.toBe(403);
+  });
+
+  it("城市重定位（写端点）：viewer 403（owner 的行程自愈路径不开放给只读同伴）", async () => {
+    expect(
+      (await call(`/trips/${tripA.id}/resolve-city`, { method: "POST", headers: bearer(viewer2) }))
+        .status,
+    ).toBe(403);
+  });
+
+  it("实体级写端点族对 viewer 403：entry 移动/删除、day summary、leg mode、酒店选定", async () => {
+    const h = bearer(viewer2);
+    // 拿真实实体 id（beforeAll 排过 day1；响应形态 { bundle: {...} }）
+    const res = await call(`/trips/${tripA.id}`, { headers: h });
+    const body = (await res.json()) as {
+      bundle: {
+        entries: Array<{ id: string }>;
+        days: Array<{ id: string }>;
+        legs: Array<{ id: string }>;
+      };
+    };
+    const entry = body.bundle.entries[0];
+    const day = body.bundle.days[0];
+    const leg = body.bundle.legs[0] ?? body.bundle.entries[0];
+    expect(entry).toBeTruthy();
+    expect(day).toBeTruthy();
+    expect(
+      (await call(`/entries/${entry.id}/move`, { ...json({ dayIndex: 1, position: 0 }), headers: h }))
+        .status,
+    ).toBe(403);
+    expect((await call(`/entries/${entry.id}`, { method: "DELETE", headers: h })).status).toBe(403);
+    expect(
+      (await call(`/days/${day.id}/summary`, {
+        method: "PATCH",
+        headers: { ...h, "content-type": "application/json" },
+        body: JSON.stringify({ summary: "viewer 不该写" }),
+      })).status,
+    ).toBe(403);
+    expect(
+      (await call(`/legs/${leg.id}/mode`, {
+        method: "PATCH",
+        headers: { ...h, "content-type": "application/json" },
+        body: JSON.stringify({ mode: "walk" }),
+      })).status,
+    ).toBe(403);
+    expect(
+      (await call(`/trips/${tripA.id}/select-hotel`, { ...json({ candidateId: null }), headers: h }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await call(`/trips/${tripA.id}/unselect-hotel`, { ...json({ candidateId: "any" }), headers: h }))
+        .status,
+    ).toBe(403);
+    expect(
+      (await call(`/trips/${tripA.id}/hotel-candidates`, {
+        ...json({ name: "viewer 的酒店", location: { lng: 120.1, lat: 30.24 } }),
+        headers: h,
+      })).status,
+    ).toBe(403);
+  });
+});
+
 // ---------- 4. 吊销与无效 token ----------
 
 describe("吊销与无效 token", () => {
