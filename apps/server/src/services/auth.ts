@@ -230,20 +230,25 @@ function buildBrowserAllowlist(): void {
 buildBrowserAllowlist();
 
 /**
- * 浏览器攻击面防护中间件（**仅桌面形态生效**，评审三 P1-1a/P1-1b 修正）：
+ * 浏览器攻击面防护中间件（**仅桌面形态生效**，评审四 P1 修正）：
  *
  * 分层依据：drive-by / rebinding 的攻击前提是「loopback 免凭证 = owner」，这只存在于
  * 桌面形态（trustLoopbackOwner=true）。部署形态（绑非 loopback）下 loopback 来源不再
  * 免凭证、敏感操作全部强制 token（principal 即安全边界），Origin/Host 校验在那里零收益
  * 纯误杀（同伴的 Origin/Host 是 LAN IP / tailscale IP / 反代域名，无法穷举白名单）。
  *
- * 桌面形态下对**无凭证**请求做两层校验：
+ * 桌面形态下对**无 Bearer 凭证**的请求做两层校验：
  *   - Origin 白名单：浏览器跨站/simple request 必带 Origin；"null"（沙箱 iframe / file:// /
- *     跨源重定向）是攻击标准形态，一律拒（评审三 P1-1a 曾因豁免被 RCE 复现）；
+ *     跨源重定向）是攻击标准形态，一律拒（评审三 P1-1a）；
  *   - Host 允许集：杀 DNS rebinding（Host=evil 域名 → 403）。
- * 带凭证（Bearer / ?token= / join·share 的 /:token/ 路径）请求跳过——有效 token 本身
- * 就是鉴权，无效 token 由 principalMiddleware 401 兜底；凭证无法被恶意网页伪造。
- * 不带 Origin 的无凭证请求（curl / agent / 同源 GET）只过 Host 校验。
+ *
+ * 「凭证」只认 Authorization Bearer（评审四 P1）：浏览器 JS 无法对跨源请求设置
+ * Authorization 头（非 CORS-safelisted，设置即触发 preflight 被 CORS 拦）——它才是
+ * 恶意网页无法伪造的凭证形态。?token= query / join·share 路径 token 是 JS 可控的
+ * URL 内容，垃圾值即可伪造，**不能**作为跳过依据（曾因此被绕过：guard 区的
+ * principalMiddleware 不解析 query token，无效值静默落回 loopback owner = RCE）。
+ * SSE 端点的合法 query token 由 sseAuth 自行解析与兜底，无需在此放行。
+ * 不带 Origin 的请求（curl / agent / 同源 GET）只过 Host 校验。
  */
 export function browserGuardMiddleware(): MiddlewareHandler {
   return async (c, next) => {
@@ -252,12 +257,8 @@ export function browserGuardMiddleware(): MiddlewareHandler {
       await next();
       return;
     }
-    const path = c.req.path;
-    const hasCredential =
-      /^\/(join|share)\/[A-Za-z0-9_-]+/.test(path) ||
-      bearerToken(c) !== null ||
-      (c.req.query("token")?.trim().length ?? 0) > 0;
-    if (hasCredential) {
+    if (bearerToken(c) !== null) {
+      // Authorization Bearer：恶意网页无法设置的凭证形态，交 principal 鉴权（无效 → 401）
       await next();
       return;
     }

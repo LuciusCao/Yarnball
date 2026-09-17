@@ -743,6 +743,26 @@ describe("browserGuard（Origin 白名单 + Host 校验）", () => {
     expect(res.status).toBe(200);
   });
 
+  it("垃圾 ?token= 不能骗过 guard（评审四 P1：query 是 JS 可控的，非凭证）——恶意 Origin + ?token=x 打 guard 区 REST 必拒", async () => {
+    const res = await call(
+      "/agents?token=x",
+      {
+        method: "POST",
+        headers: { origin: "http://evil.example", "content-type": "text/plain" },
+        body: JSON.stringify({ label: "evil", command: "/bin/sh", args: ["-c", "id"] }),
+      },
+    );
+    expect(res.status).toBe(403);
+    const { agents } = (await (await call("/agents")).json()) as { agents: Array<{ command: string }> };
+    expect(agents.some((a) => a.command === "/bin/sh")).toBe(false);
+  });
+
+  it("垃圾 ?token= + rebinding Host 同样必拒（评审四 P1 读面场景）", async () => {
+    expect(
+      (await call("/trips?token=x", { headers: { host: "evil.example:18788" } })).status,
+    ).toBe(403);
+  });
+
   it("Origin: null 一律拒绝（评审三 P1-1a：沙箱 iframe / file:// 的攻击形态）", async () => {
     const res = await call(
       "/agents",
