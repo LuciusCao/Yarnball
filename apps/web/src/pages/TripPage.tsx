@@ -27,12 +27,19 @@ import {
   Star,
   Trash2,
   TriangleAlert,
+  UsersRound,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatMoney, formatVisitDuration, isDomesticOsmTrip, type BudgetSummary, type ChatSessionDto, type PlaceDto } from "@yarnball/shared";
 import { api } from "../api/client";
 import { api as uxApi } from "../lib/api";
+import { GUEST_KICKED_EVENT } from "../lib/http";
+import {
+  credentialByTripId,
+  usePrincipalStore,
+  type GuestCredential,
+} from "../lib/principal";
 import { useTripStore } from "../stores/tripStore";
 import { Badge } from "../components/ui/badge";
 import { MapCanvas } from "../features/map/MapCanvas";
@@ -94,6 +101,26 @@ function urlHost(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** 被主人撤销链接的整页提示（guest-kicked）：文案与 JoinPage 的「已被撤销」错误页对齐 */
+function GuestKickedScreen({ displayName }: { displayName: string }) {
+  return (
+    <div className="flex h-full items-center justify-center bg-slate-100">
+      <div className="mx-4 flex max-w-sm flex-col items-center gap-3 rounded-3xl border border-slate-200/80 bg-white/80 px-8 py-10 text-center shadow-sm backdrop-blur">
+        <div className="flex size-12 items-center justify-center rounded-full bg-amber-500/12">
+          <TriangleAlert className="size-6 text-amber-500" />
+        </div>
+        <h1 className="text-base font-semibold text-slate-900">链接已被主人撤销</h1>
+        <p className="text-sm leading-relaxed text-slate-500">
+          {displayName}，行程主人已撤销这个协作链接，你已退出该行程。需要继续协作请联系主人重新生成链接。
+        </p>
+        <Link to="/" className="text-sm font-medium text-blue-600 underline-offset-2 hover:underline">
+          返回首页
+        </Link>
+      </div>
+    </div>
+  );
 }
 
 /** 信息卡描述文本（M82）：默认 line-clamp-3 截断；用 scrollHeight vs clientHeight 检测截断是否真实发生，
@@ -164,6 +191,33 @@ export function TripPage() {
       模式复刻 ChatPanel（issue #4 同款修复）——compositionstart 置位、compositionend 延迟一宏任务复位 */
   const titleImeComposingRef = useRef(false);
   const titleImeResetTimerRef = useRef<number | null>(null);
+
+  // ---------- guest 模式（issue #18）：同伴经 /join/:token 进入时的身份落地 ----------
+  // 凭证激活：JoinPage 激活后 store.active 已就位（SSE 订阅在下方 effect 用得上）；
+  // 直接刷新 /trip/:id 时 active 为空——挂载时按 tripId 从 localStorage 恢复。
+  const guest = usePrincipalStore((s) => s.active);
+  const activateCredential = usePrincipalStore((s) => s.activate);
+  const deactivateCredential = usePrincipalStore((s) => s.deactivate);
+  useEffect(() => {
+    if (!tripId) return;
+    const saved = credentialByTripId(tripId);
+    // 本机 owner（无该行程的 guest 凭证）什么都不做——store.active 恒为 null，所有请求零变化
+    if (saved) activateCredential(saved);
+    // 卸载时取消生效：离开 guest 上下文即停止 Bearer 注入（凭证留在 localStorage，刷新可恢复）
+    return () => deactivateCredential();
+  }, [tripId, activateCredential, deactivateCredential]);
+
+  // 链接被吊销/失效（apiFetch 收到 401 广播）：整页切「已被撤销」提示（凭证已清，不再注入）。
+  // kicked 是 latch 态：踢出后 active 已被清空（guest 变 null），昵称用 ref 记住供提示页展示
+  const [guestKicked, setGuestKicked] = useState(false);
+  const kickedNameRef = useRef<string | null>(null);
+  if (guest) kickedNameRef.current = guest.displayName;
+  useEffect(() => {
+    if (!guest) return;
+    const onKicked = () => setGuestKicked(true);
+    window.addEventListener(GUEST_KICKED_EVENT, onKicked);
+    return () => window.removeEventListener(GUEST_KICKED_EVENT, onKicked);
+  }, [guest]);
 
   useEffect(() => {
     if (!tripId) return;
@@ -416,16 +470,22 @@ export function TripPage() {
     }
   }
 
+  // guest 模式（issue #18）：agent 面板对同伴不可见（服务端 chat-sessions 全家 403，#16 已挡），
+  // 前端不发无谓请求，chatSessions 恒为空 → 下方 agent 面板整块不渲染（右侧让位给地图）
   const refreshSessions = useCallback(async () => {
-    if (!tripId) return;
+    if (!tripId || guest) return;
     const { sessions } = await api.chatSessions(tripId);
     setChatSessions(sessions);
-  }, [tripId]);
+  }, [tripId, guest]);
 
   useEffect(() => {
     void refreshSessions();
   }, [refreshSessions]);
 
+  // 链接被吊销：优先于一切错误态展示（此时凭证已清，后续请求都会 401，裸报错没有意义）
+  if (guestKicked) {
+    return <GuestKickedScreen displayName={kickedNameRef.current ?? "同伴"} />;
+  }
   if (error) {
     return <div className="flex h-full items-center justify-center text-sm text-red-500">{error}</div>;
   }
@@ -452,6 +512,10 @@ export function TripPage() {
       : null;
   const toolPanels = Object.entries(TOOL_PANEL_META) as [ToolPanel, { label: string; Icon: LucideIcon }][];
   const activeToolMeta = toolPanel != null ? TOOL_PANEL_META[toolPanel] : null;
+  /** guest 模式（issue #18）：agent 面板/标题编辑/分享导出/设置入口等 owner 专属 UI 不渲染。
+   *  bundle/SSE 已按 Bearer 凭证拿到真实 id，行程编辑能力（加地点/排天/预算/须知等）全量可用——
+   *  本 issue 只收敛「进得来且一切正常工作」，更细的功能边界收敛在 #20。 */
+  const isGuest = guest != null;
 
   return (
     <div className="relative h-full overflow-hidden">
@@ -466,7 +530,7 @@ export function TripPage() {
           selectedLegId={selectedLegId}
           placeFocus={placeFocus}
           onSelectPlace={selectPlace}
-          onOpenSettings={openSettings}
+          onOpenSettings={isGuest ? undefined : openSettings}
         />
       </div>
 
@@ -477,13 +541,24 @@ export function TripPage() {
       <div className="pointer-events-none absolute left-4 right-[404px] top-4 z-10 flex items-start gap-3">
       {/* shrink-0：信息条不被 flex 挤压（分段条区域 min-w-0 flex-1 先让）；标题 max-w+truncate 兜底长标题把分段条挤出可视区 */}
       <header className="glass panel-in pointer-events-auto flex shrink-0 items-center gap-2.5 rounded-2xl px-4 py-2">
+        {/* 返回：guest 的去向是公开首页（行程列表是 owner-only 端点，guest 进不去也看不到） */}
         <Link
           to="/"
           className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-700"
-          title="返回行程列表"
+          title={isGuest ? "返回首页" : "返回行程列表"}
         >
           ‹
         </Link>
+        {/* guest 身份徽章：同伴填的昵称 + 角色，替代 owner 的标题编辑入口 */}
+        {isGuest && (
+          <span
+            className="flex items-center gap-1 rounded-full bg-blue-500/12 px-2.5 py-0.5 text-[11px] font-medium text-blue-700"
+            title={`${guest!.displayName}（${guest!.role === "editor" ? "可编辑" : "只读"}同伴）——链接即身份，凭证保存在本浏览器`}
+          >
+            <UsersRound className="size-3" />
+            {guest!.displayName}
+          </span>
+        )}
         {/* 标题（issue #12）：点击进入行内编辑；Enter/✓ 保存，Esc/✕ 取消；空标题或与原标题一致不发请求 */}
         {editingTitle ? (
           <span className="flex items-center gap-1">
@@ -544,12 +619,16 @@ export function TripPage() {
           </span>
         ) : (
           <h1
-            className="glass-text max-w-64 cursor-pointer truncate rounded-lg px-1 text-sm font-semibold transition-colors hover:bg-slate-900/8"
-            title={`${trip.title}（点击修改标题）`}
-            onClick={() => {
-              setTitleDraft(trip.title);
-              setEditingTitle(true);
-            }}
+            className="glass-text max-w-64 truncate rounded-lg px-1 text-sm font-semibold transition-colors"
+            title={trip.title}
+            {...(isGuest
+              ? {}
+              : {
+                  onClick: () => {
+                    setTitleDraft(trip.title);
+                    setEditingTitle(true);
+                  },
+                })}
           >
             {trip.title}
           </h1>
@@ -592,24 +671,29 @@ export function TripPage() {
         >
           <Crosshair className="size-3.5" />
         </button>
-        <Link
-          to={`/share/${trip.shareToken}`}
-          target="_blank"
-          title="打开只读分享页"
-          className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
-        >
-          <Link2 className="size-3" />
-          分享
-        </Link>
-        {/* 导出入口（M97，issue #7）：预览弹层 → 保存为 PDF（Tauri 壳内走原生直存，浏览器回退 window.print） */}
-        <button
-          onClick={() => setExportOpen(true)}
-          title="导出行程为 PDF（便于打印/离线查看）"
-          className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
-        >
-          <Printer className="size-3" />
-          导出
-        </button>
+        {/* 分享（跳只读页）与导出（M97）是 owner 侧入口：分享按钮区由 #17 改造成协作面板，导出走 owner 的
+            Tauri 壳/打印能力——guest 一律不渲染 */}
+        {!isGuest && (
+          <>
+            <Link
+              to={`/share/${trip.shareToken}`}
+              target="_blank"
+              title="打开只读分享页"
+              className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
+            >
+              <Link2 className="size-3" />
+              分享
+            </Link>
+            <button
+              onClick={() => setExportOpen(true)}
+              title="导出行程为 PDF（便于打印/离线查看）"
+              className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
+            >
+              <Printer className="size-3" />
+              导出
+            </button>
+          </>
+        )}
       </header>
 
       {/* 工具面板分段切换条（行程/候选/添加，M61 从原左下 dock 标签条迁来）：点击 tab 向下展开浮层，再点当前 tab 收起。
@@ -985,35 +1069,38 @@ export function TripPage() {
       )}
 
       {/* 右侧主面板：纯 agent 对话 ===== */}
-      {panelMode === "hidden" ? (
-        <button
-          onClick={() => setPanelMode("expanded")}
-          className="glass panel-in absolute right-4 top-4 z-20 flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
-        >
-          <PanelRightOpen className="size-3.5" />
-          显示 Agent 面板
-        </button>
-      ) : (
-        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
-          {/* 收起把手：面板右上角内侧（会话头已用 pr-11 让位） */}
+      {/* guest 模式（issue #18）：agent 面板是 owner 专属（对话与 agent 子进程均 owner-only），
+          整块不渲染——右侧空间还给地图；agent 面板的完整功能边界收敛在 #20 */}
+      {!isGuest &&
+        (panelMode === "hidden" ? (
           <button
-            onClick={() => setPanelMode("hidden")}
-            title="收起面板"
-            className="absolute right-2 top-2 z-30 flex size-7 items-center justify-center rounded-full text-slate-400 transition-all hover:bg-slate-900/8 hover:text-slate-700"
+            onClick={() => setPanelMode("expanded")}
+            className="glass panel-in absolute right-4 top-4 z-20 flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
           >
-            <PanelRightClose className="size-4" />
+            <PanelRightOpen className="size-3.5" />
+            显示 Agent 面板
           </button>
+        ) : (
+          <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
+            {/* 收起把手：面板右上角内侧（会话头已用 pr-11 让位） */}
+            <button
+              onClick={() => setPanelMode("hidden")}
+              title="收起面板"
+              className="absolute right-2 top-2 z-30 flex size-7 items-center justify-center rounded-full text-slate-400 transition-all hover:bg-slate-900/8 hover:text-slate-700"
+            >
+              <PanelRightClose className="size-4" />
+            </button>
 
-          <div className="glass-text min-h-0 flex-1 bg-white/40">
-            <ChatPanel
-              trip={trip}
-              sessions={chatSessions}
-              onSessionsChanged={() => void refreshSessions()}
-              selectedPlaceId={selectedPlaceId}
-            />
-          </div>
-        </aside>
-      )}
+            <div className="glass-text min-h-0 flex-1 bg-white/40">
+              <ChatPanel
+                trip={trip}
+                sessions={chatSessions}
+                onSessionsChanged={() => void refreshSessions()}
+                selectedPlaceId={selectedPlaceId}
+              />
+            </div>
+          </aside>
+        ))}
 
       {/* 导出打印预览弹层（M97，portal 挂 body，打印时只留该浮层参与分页） */}
       <ExportPrintDialog bundle={bundle} open={exportOpen} onClose={() => setExportOpen(false)} />
