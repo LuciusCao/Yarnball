@@ -2,7 +2,7 @@
   "version": "6",
   "dialect": "sqlite",
   "id": "1ea94209-f3c3-43e0-993a-30a198192fa0",
-  "prevId": "a3aabafd-1895-4605-8d0b-5f9137e6a214",
+  "prevId": "fd3e595b-9bd9-4505-be27-ac6066d2f3ad",
   "tables": {
     "agent_registry": {
       "name": "agent_registry",
