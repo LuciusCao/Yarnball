@@ -16,6 +16,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
+# issue #15：壳内外链统一走系统默认浏览器（opener 默认权限集允许 http/https/mailto/tel）
+tauri-plugin-opener = "2"
+# issue #22：单实例——二实例聚焦首实例后退出，避免双壳互杀共享 sidecar
+tauri-plugin-single-instance = "2"
 # M104 壳内「保存为 PDF」：直调 WKWebView printOperation 静默写盘（无打印面板）。
 # 四个 crate 均已在依赖树中（wry 的 macOS 依赖，版本锁定一致），仅开启所需 feature，无额外编译成本。
 # NSApplication/NSWindow/NSView/NSGraphics/NSRunningApplication + WKWebViewConfiguration
