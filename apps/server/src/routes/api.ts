@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
-import { and, asc, eq, ne } from "drizzle-orm";
+import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -43,11 +43,11 @@ import type { AcpSessionManager } from "../acp/sessionManager.js";
 import { JoinLinkError, PossibleDuplicateError, ServiceError, type TripService } from "../services/tripService.js";
 import { getProvider } from "../services/geo.js";
 import { getTripWeather } from "../services/weather.js";
-import { amapConfigured, getSettings, updateSettings, getOwnerTokenStatus, resetOwnerToken } from "../services/settings.js";
+import { amapConfigured, getSettings, updateSettings, getOwnerTokenStatus, resetOwnerToken, ownerTokenConfigured } from "../services/settings.js";
 import { toAgentDto, toChatSessionDto } from "../services/mappers.js";
 import { listChatMessages } from "../services/chatStore.js";
 import { findExecutable } from "../services/processEnv.js";
-import { principalMiddleware, rejectNonOwner, requireOwner, tripReadGuard, tripWriteGuard, AuthError, getPrincipal, resolvePrincipal, type Principal } from "../services/auth.js";
+import { principalMiddleware, rejectNonOwner, requireOwner, tripReadGuard, tripWriteGuard, AuthError, getPrincipal, resolvePrincipal, hashToken, getOwnerTokenHash, type Principal } from "../services/auth.js";
 
 /**
  * 分享包 id 脱敏：把 bundle 内所有真实 id（含 tripId/placeId/dayId/entryId 等引用字段）
@@ -255,11 +255,17 @@ export function createApi(
       return c.json({ error: "分享链接无效或已被撤销" }, 404);
     }
     return streamSSE(c, async (stream) => {
-      const unsubscribers = [tripChannel(tripId), TRIPS_CHANNEL].map((ch) =>
-        bus.subscribe(ch, (event) => {
-          void stream.writeSSE({ data: JSON.stringify(aliasShareEvent(event, token)) });
-        }),
-      );
+      // 吊销即断流（Codex P1）：share token 就是 access-link token，吊销后该流必须关闭；
+      // revoked 事件无 id，过脱敏包装原样放行后仍能触发这里的关流判定
+      const revokeUnsub = bus.subscribe(tripChannel(tripId), (event) => {
+        if ((event as { type?: string }).type === "revoked") void stream.close();
+      });
+      // 只订阅本行程频道（评审 P0-1）：不订 TRIPS_CHANNEL——那是全局频道，created/deleted 事件
+      // 携带其他行程的完整 DTO（含 shareToken，等于其他行程的 viewer 凭证）。deleted 事件
+      // 同时发布在 tripChannel(tripId) 上（tripService.deleteTrip），删除通知不受影响。
+      const unsubscribe = bus.subscribe(tripChannel(tripId), (event) => {
+        void stream.writeSSE({ data: JSON.stringify(aliasShareEvent(event, token)) });
+      });
       // 分享页订阅者也进在线名单：脱敏标签「访客」（不带 guest 昵称，公开分享链接无身份语义）
       const presenceHandle = presence.join(
         tripId,
@@ -272,7 +278,8 @@ export function createApi(
       stream.onAbort(() => {
         clearInterval(heartbeat);
         presenceHandle.leave();
-        for (const u of unsubscribers) u();
+        revokeUnsub();
+        unsubscribe();
       });
       await new Promise<void>((resolve) => stream.onAbort(resolve));
     });
@@ -313,11 +320,21 @@ export function createApi(
     if (denied) return denied;
     const tripId = c.req.param("tripId");
     return streamSSE(c, async (stream) => {
-      const unsubscribers = [tripChannel(tripId), TRIPS_CHANNEL].map((ch) =>
-        bus.subscribe(ch, (event) => {
-          void stream.writeSSE({ data: JSON.stringify(event) });
-        }),
-      );
+      // 只订阅本行程频道（评审 P0-1）：不订 TRIPS_CHANNEL——guest 流不脱敏直转，created 事件
+      // 会携带其他行程的完整 DTO（含 shareToken）。deleted 同时发布在 tripChannel(tripId)，
+      // 本行程删除通知不受影响。
+      const unsubscribe = bus.subscribe(tripChannel(tripId), (event) => {
+        void stream.writeSSE({ data: JSON.stringify(event) });
+      });
+      // 吊销即断流（Codex P1）：本流若凭 access-link token 建立（guest），revoked 事件到达时
+      // 主动关闭——否则吊销后仍持续收到 bundle（含真实 id）。owner（本机 loopback / owner token）
+      // 不受影响：revoked 只在 access-link 吊销时发，owner 无需断。
+      const revokeUnsub =
+        principal.kind === "guest"
+          ? bus.subscribe(tripChannel(tripId), (event) => {
+              if ((event as { type?: string }).type === "revoked") void stream.close();
+            })
+          : null;
       // 在线名单（issue #19）：owner 显示「主人」，guest 显示昵称；连接断开时 leave 并广播
       const presenceHandle = presence.join(
         tripId,
@@ -326,13 +343,24 @@ export function createApi(
           : { label: "主人", kind: "human" },
         (tid, event) => bus.publish(tripChannel(tid), event),
       );
+      // 心跳 + 凭证复验（Codex P1 延伸）：owner token 重置后，凭旧 token 建立的流不会收到
+      // revoked 事件（reset 不属于 access-link 吊销），靠心跳周期性重验补上——无效即关流，
+      // 前端 EventSource 重连拿 401 停止。guest 流有 revoked 即时断流，这里顺带复验作双保险。
+      const streamToken = c.req.query("token")?.trim() || bearerTokenOf(c);
       const heartbeat = setInterval(() => {
-        void stream.writeSSE({ data: "", event: "ping" });
+        void (async () => {
+          if (streamToken && !(await tokenStillValid(streamToken))) {
+            void stream.close();
+            return;
+          }
+          await stream.writeSSE({ data: "", event: "ping" });
+        })();
       }, 25_000);
       stream.onAbort(() => {
         clearInterval(heartbeat);
         presenceHandle.leave();
-        for (const u of unsubscribers) u();
+        if (revokeUnsub) revokeUnsub();
+        unsubscribe();
       });
       // 挂到断连
       await new Promise<void>((resolve) => stream.onAbort(resolve));
@@ -348,8 +376,16 @@ export function createApi(
       const unsubscribe = bus.subscribe(channel, (event) => {
         void stream.writeSSE({ data: JSON.stringify(event) });
       });
+      // 心跳 + 凭证复验（Codex P1 延伸）：owner token 重置后旧 token 的流靠这里周期性断开
+      const streamToken = c.req.query("token")?.trim() || bearerTokenOf(c);
       const heartbeat = setInterval(() => {
-        void stream.writeSSE({ data: "", event: "ping" });
+        void (async () => {
+          if (streamToken && !(await tokenStillValid(streamToken))) {
+            void stream.close();
+            return;
+          }
+          await stream.writeSSE({ data: "", event: "ping" });
+        })();
       }, 25_000);
       stream.onAbort(() => {
         clearInterval(heartbeat);
@@ -768,6 +804,11 @@ export function createApi(
    */
   guarded.post("/owner-token/verify", (c) => {
     const p = getPrincipal(c);
+    if (p.kind === "guest") {
+      // 协作链接 token 不是主人凭证（Codex P2）：明确 403 防止 LoginPage 把 guest token
+      // 存成 owner 凭证——那会渲染全套 owner UI 但所有 owner 操作 403
+      return c.json({ error: "这是协作链接 token，不是主人凭证。请粘贴「设置 → 远程访问凭证」生成的 owner token" }, 403);
+    }
     if (p.kind === "anonymous") {
       return c.json(
         { error: "远程访问凭证无效或尚未生成——请先在本机「设置 → 远程访问凭证」生成，再粘贴到此处" },
@@ -1109,6 +1150,27 @@ export function createApi(
     if (principal.kind === "anonymous") return { denied: c.json({ error: "需要访问凭证" }, 401), principal };
     if (principal.tripId !== tripId) return { denied: c.json({ error: "无权订阅该行程的事件流" }, 403), principal };
     return { denied: null, principal }; // viewer/editor 都可订阅本行程事件流（读端点）
+  }
+
+  /** 请求携带的 Bearer token（无则 null）：SSE 心跳复验用（与 sseAuth 的解析优先级一致） */
+  function bearerTokenOf(c: Parameters<typeof resolvePrincipal>[0]): string | null {
+    return c.req.header("Authorization")?.startsWith("Bearer ")
+      ? c.req.header("Authorization")!.slice("Bearer ".length).trim() || null
+      : null;
+  }
+
+  /**
+   * token 是否仍然有效（owner token 未被重置 / access-link 未被吊销）。
+   * SSE 长连接的心跳复验用（Codex P1 延伸）：已建立的流不会自动感知凭证失效——
+   * guest 流靠 revoked 事件即时断，owner token 重置没有对应事件，靠这里周期性补上。
+   */
+  async function tokenStillValid(token: string): Promise<boolean> {
+    if (ownerTokenConfigured() && hashToken(token) === getOwnerTokenHash()) return true;
+    const [link] = await db
+      .select({ id: schema.tripAccessLinks.id })
+      .from(schema.tripAccessLinks)
+      .where(and(eq(schema.tripAccessLinks.token, token), isNull(schema.tripAccessLinks.revokedAt)));
+    return link != null;
   }
 
   /**

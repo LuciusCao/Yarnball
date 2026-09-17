@@ -192,13 +192,21 @@ describe("动态流（trip_activity）", () => {
 interface SseSession {
   events: unknown[];
   close: () => Promise<void>;
+  /** 等待服务端主动关流（读循环 done）；timeout 毫秒后 resolve(false) */
+  waitForClose: (timeout: number) => Promise<boolean>;
+  /** 连接响应（断言状态码用） */
+  res?: Response;
 }
 
 /** 打开一个 SSE 订阅并开始收集事件（读到期望数量或超时后可关闭） */
 async function openSse(path: string): Promise<{ res: Response; session: SseSession }> {
   const controller = new AbortController();
   const res = await app.request(`/api${path}`, { signal: controller.signal }, loopback as never);
-  if (!res.ok || !res.body) return { res, session: { events: [], close: async () => {} } };
+  if (!res.ok || !res.body)
+    return {
+      res,
+      session: { events: [], close: async () => {}, waitForClose: async () => false, res },
+    };
   const events: unknown[] = [];
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -234,6 +242,18 @@ async function openSse(path: string): Promise<{ res: Response; session: SseSessi
   })();
   const session: SseSession = {
     events,
+    res,
+    waitForClose: (timeout: number) =>
+      new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), timeout);
+        pump.then(() => {
+          clearTimeout(timer);
+          resolve(true);
+        }).catch(() => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      }),
     close: async () => {
       controller.abort();
       try {
@@ -307,6 +327,37 @@ describe("GET /share/:token/events（鉴权与脱敏）", () => {
     expect(activityEvent.activity.tripId).toMatch(/^[0-9a-f]{16}$/);
     expect(activityEvent.activity.tripId).not.toBe(tripId);
     expect(activityEvent.activity.summary).toContain("activity 脱敏点");
+    await session.close();
+  });
+
+  // 评审 P0-1 回归锁：跨行程事件（created，含其他行程 shareToken）绝不能流入 share 流
+  it("其他行程的 created/deleted 事件不外泄（TRIPS_CHANNEL 不进 share 流）", async () => {
+    const { session } = await openSse(`/share/${shareToken}/events`);
+    // owner 新建另一个行程 + 删除它：TRIPS_CHANNEL 会广播 created/deleted（含该行程 DTO 与 shareToken）
+    const mk = await call("/trips", json({ title: "其他行程", destinationCity: "上海" }));
+    const other = ((await mk.json()) as { trip: { id: string; shareToken: string } }).trip;
+    await call(`/trips/${other.id}`, { method: "DELETE" });
+    // 等本行程频道静默一小段（created/deleted 走 TRIPS_CHANNEL，若误订阅此刻已写入）
+    await new Promise((r) => setTimeout(r, 300));
+    const raw = JSON.stringify(session.events);
+    expect(raw).not.toContain(other.id);
+    expect(raw).not.toContain(other.shareToken);
+    expect(session.events.some(eventType("created"))).toBe(false);
+    await session.close();
+  });
+
+  // 评审 P0-1 回归锁：guest 的 trips events 流同样不得收到跨行程事件
+  it("guest SSE 流不外泄其他行程事件（未脱敏直转路径）", async () => {
+    const { session } = await openSse(`/trips/${tripId}/events?token=${editorToken}`);
+    expect(session.res?.status ?? 200).toBe(200);
+    const mk = await call("/trips", json({ title: "另一行程", destinationCity: "北京" }));
+    const other = ((await mk.json()) as { trip: { id: string; shareToken: string } }).trip;
+    await call(`/trips/${other.id}`, { method: "DELETE" });
+    await new Promise((r) => setTimeout(r, 300));
+    const raw = JSON.stringify(session.events);
+    expect(raw).not.toContain(other.id);
+    expect(raw).not.toContain(other.shareToken);
+    expect(session.events.some(eventType("created"))).toBe(false);
     await session.close();
   });
 });
@@ -388,5 +439,28 @@ describe("GET /share/:token/weather（公开端点）", () => {
       expect(raw).not.toContain(tripId);
       expect(raw).not.toContain("shareToken");
     }
+  });
+});
+
+// ---------- 5. 吊销即断流（Codex P1，放最后：本用例会吊销 editorToken 使其失效） ----------
+
+describe("吊销链接切断已建立的 SSE 流", () => {
+  it("revoked 事件后服务端主动关流（guest 流不再收到后续 bundle）", async () => {
+    const { session } = await openSse(`/trips/${tripId}/events?token=${editorToken}`);
+    expect(session.res?.status ?? 200).toBe(200);
+    await waitFor(session.events, eventType("presence"));
+    // 找到 editorToken 对应的 link id（列表端点 owner-only，loopback 直调）
+    const { links } = (await (await call(`/trips/${tripId}/access-links`)).json()) as {
+      links: Array<{ token: string; id: string }>;
+    };
+    const link = links.find((l) => l.token === editorToken);
+    expect(link).toBeTruthy();
+    await call(`/access-links/${link!.id}`, { method: "DELETE" });
+    // 服务端应主动关流：读流在有限时间内结束（而非持续挂着收后续 bundle）
+    const closed = await session.waitForClose(3000);
+    expect(closed).toBe(true);
+    // 吊销后的新订阅也被拒（REST 侧已有用例，这里补 SSE 侧）
+    const retry = await openSse(`/trips/${tripId}/events?token=${editorToken}`);
+    expect(retry.res.status).toBe(401);
   });
 });

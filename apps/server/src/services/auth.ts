@@ -5,6 +5,7 @@ import type { AccessLinkRole } from "@yarnball/shared";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { ownerTokenConfigured } from "./settings.js";
+import { env } from "../env.js";
 
 /**
  * 访问控制（v0.4 多人协作地基，issue #16）。
@@ -12,7 +13,8 @@ import { ownerTokenConfigured } from "./settings.js";
  * 身份解析规则（每请求一次，详见 resolvePrincipal）：
  *   1. 带 Bearer token 的请求一律按 token 身份处理（loopback 来源也不静默升为 owner——
  *      这样才能在本机用 curl 自测 guest 路径）：access-link token → guest，owner token → owner
- *   2. 无 token：来源 loopback → owner（本机桌面应用形态，存量行为零变化）；否则 → 匿名
+ *   2. 无 token：来源 loopback 且未被代理暴露（SERVER_HOST 为 loopback，桌面形态）→ owner；
+ *      绑定非 loopback 时 loopback 来源不再免凭证（同机代理回源防提权，Codex P1）；否则 → 匿名
  *
  * 匿名只放行公开区（/api/share/:token、/api/config），其余 401。
  * /api/trips/:tripId/events 与 /api/chat-sessions/:sessionId/events 额外接受 ?token= query param
@@ -120,8 +122,11 @@ export async function resolvePrincipal(c: Context, db: Db, tokenOverride?: strin
     }
     throw new AuthError(401, "无效或已失效的访问令牌");
   }
-  // 3. 无 token：loopback = owner（桌面应用形态）；远程匿名只进公开区
-  if (isLoopbackAddress(remoteAddress(c))) return { kind: "owner" };
+  // 3. 无 token：loopback = owner（桌面应用形态）；远程匿名只进公开区。
+  //    代理提权防护（Codex P1）：绑定非 loopback（已开放远程访问）时，loopback 来源不再
+  //    免凭证视为 owner——cloudflared/tailscale 等同机代理的远程流量 socket peer 也是
+  //    127.0.0.1。此形态下本机浏览器同样走登录（/login）或 owner token。
+  if (isLoopbackAddress(remoteAddress(c)) && env.trustLoopbackOwner) return { kind: "owner" };
   return { kind: "anonymous" };
 }
 
@@ -135,6 +140,11 @@ export function setOwnerTokenHashCache(hash: string | null): void {
 }
 
 function currentOwnerTokenHash(): string | null {
+  return ownerTokenHashCache;
+}
+
+/** SSE 心跳复验用（api.ts 的 tokenStillValid）：当前生效的 owner token hash（未配置为 null） */
+export function getOwnerTokenHash(): string | null {
   return ownerTokenHashCache;
 }
 

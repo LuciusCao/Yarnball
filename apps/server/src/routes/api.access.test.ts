@@ -557,11 +557,15 @@ describe("owner token（远程来源的 owner）", () => {
   });
 
   // issue #32：远程主人登录页的校验端点——候选 token 作 Bearer，principalMiddleware 完成校验
-  it("verify 端点：有效 token 200 / 无效 401 / 远程匿名 403 引导（issue #32）", async () => {
+  it("verify 端点：有效 token 200 / 无效 401 / guest token 403（Codex P2）/ 远程匿名 403 引导", async () => {
     expect((await remoteCall("/owner-token/verify", { method: "POST", headers: bearer(ownerToken) })).status).toBe(200);
     expect(
       (await remoteCall("/owner-token/verify", { method: "POST", headers: bearer("definitely-invalid") })).status,
     ).toBe(401);
+    // guest token（viewer/editor）不是主人凭证：明确 403，防 LoginPage 误存（Codex P2）
+    const guestVerify = await remoteCall("/owner-token/verify", { method: "POST", headers: bearer(viewerToken) });
+    expect(guestVerify.status).toBe(403);
+    expect(((await guestVerify.json()) as { error: string }).error).toContain("协作链接");
     const anon = await remoteCall("/owner-token/verify", { method: "POST" });
     expect(anon.status).toBe(403);
     expect(((await anon.json()) as { error: string }).error).toContain("远程访问凭证");

@@ -189,7 +189,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 ## 已知边界（v0.4）
 
 - 多人协作已支持（v0.4 里程碑 #16-#21）：owner 本机编辑 + 协作链接同伴（viewer 只读 / editor 可编辑）+ 只读分享链接（`/share/:token`），实时体验含 SSE 同步 / 在线名单 / 动态流；并发编辑语义为 last-write-wins，无 CRDT（留待 v2）
-- 远程访问（局域网 / 公网隧道）的部署形态与安全口径见 README「让同伴访问」；web 界面暂无 owner token 登录入口，主人远程用 UI 时推荐以同伴协作链接形态浏览
+- 远程访问（局域网 / 公网隧道）的部署形态与安全口径见 README「让同伴访问」；主人远程用 UI 走 `/login` 粘贴 owner token（#32），本机 loopback 免登录；同机代理回源（cloudflared 等）部署须改绑非 loopback 或设 YARNBALL_TRUST_LOOPBACK，防远程流量被误判为本机主人
 - 海外公交走 transitous（MOTIS 2）真实换乘：覆盖城市命中真实线路/方式/分段；未覆盖（如部分小城返回空 itineraries）、超时或错误时降级为估算（真实驾车路由时长 × 1.25 + 换乘惩罚），transitous 为社区 best-effort 服务无 SLA。国内公交：高德引擎行程走高德真实数据，开源引擎回退行程（M113）为估算（transitous 国内 GTFS 无覆盖）；transitous 未命中时的渡轮仍按直线水域航线估算（含候船缓冲）
 - Photon / OSRM / transitous 是社区免费服务，高频使用应自托管（代码里换 base URL 即可）；transitous usage policy 要求 UA 带联系方式 + UI 署名 transitous.org（已在设置抽屉底部，改动时不得删除）
 - ACP `session/load` 直连与 `session/cancel` 通知通道待 SDK（ActiveSession 封装）暴露后补

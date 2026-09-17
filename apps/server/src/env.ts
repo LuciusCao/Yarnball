@@ -24,6 +24,26 @@ export const env = {
     const v = process.env.YARNBALL_ALLOW_REMOTE?.trim().toLowerCase();
     return v === "1" || v === "true";
   },
+  /**
+   * loopback 来源是否信任为 owner（Codex P1，防代理提权）：
+   * HTTP 层无法可靠区分「本机直连」与「同机代理回源」（X-Forwarded-For 可伪造），采用
+   * 绑定形态判定 + 显式逃生阀的组合：
+   * - SERVER_HOST 为 loopback（默认，Tauri 壳/dev/纯本机形态）：信任（存量零回归）。
+   *   注意：cloudflared `--url localhost:18788` 这类同机隧道回源也属此形态——该部署下
+   *   远程流量会以 owner 身份直通！README「让同伴访问」已要求隧道部署改绑 0.0.0.0。
+   * - 绑定非 loopback（开放远程访问）：不信任——同机代理回源与本机直连无法区分时，
+   *   一律要求凭证（本机浏览器走 /login）。此形态下 loopback 代理回源最多降为匿名。
+   * - YARNBALL_TRUST_LOOPBACK=1：显式信任（边角场景自担代理过滤责任）。
+   *   YARNBALL_TRUST_LOOPBACK=0：显式不信任（哪怕绑定 loopback，本机也要求凭证——
+   *   给「loopback 绑定 + 不想被同机隧道回源提权」的部署用，如 cloudflared 快速隧道）。
+   */
+  get trustLoopbackOwner() {
+    const explicit = process.env.YARNBALL_TRUST_LOOPBACK?.trim().toLowerCase();
+    if (explicit === "1" || explicit === "true") return true;
+    if (explicit === "0" || explicit === "false") return false;
+    const host = this.serverHost;
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  },
   /** agent 子进程访问 MCP 端点的基址。agent 与服务端同机，默认 loopback。 */
   get serverBaseUrl() {
     return process.env.SERVER_BASE_URL ?? `http://127.0.0.1:${this.serverPort}`;

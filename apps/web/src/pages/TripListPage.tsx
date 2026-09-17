@@ -217,8 +217,9 @@ export function TripListPage() {
 
   useEffect(() => {
     refresh().catch((err) => {
-      // 远程未登录（401）：切登录引导态；其余错误保持原空态（创建时会再报）
-      if (err instanceof ApiError && err.status === 401) setNeedLogin(true);
+      // 远程未登录（401）或凭证不是主人身份（403，如误把协作链接 token 存成了 owner 凭证）：
+      // 切登录引导态；其余错误保持原空态（创建时会再报）
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) setNeedLogin(true);
     });
   }, []);
 

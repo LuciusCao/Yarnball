@@ -204,7 +204,8 @@ export function ShareCollabDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] w-full max-w-sm flex-col overflow-hidden p-0">
+      {/* 面板宽度：max-w-sm(384px) 放链接列表/活跃时间偏窄（验收反馈），加宽 1.2 倍 → 28rem(448px) */}
+      <DialogContent className="flex max-h-[85vh] w-full max-w-[28rem] flex-col overflow-hidden p-0">
         {/* 头部 */}
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
           <DialogTitle className="text-base font-semibold text-slate-900">分享与协作</DialogTitle>

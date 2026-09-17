@@ -103,8 +103,10 @@ YARNBALL_ALLOW_REMOTE=1    # 显式确认暴露给其他主机（不设则启动
   cloudflared tunnel --url http://localhost:18788
   ```
 
-  它会给出一个 `https://<随机名>.trycloudflare.com` 地址，发给同伴即可（server 保持默认 `127.0.0.1` 监听即可，cloudflared 在本机回源）。Cloudflare 边缘提供 HTTPS，链路加密。
-- **frp 等自建转发**：可用，但你必须**自备 TLS**（在 frp 前面挂反向代理签证书，或用 frp 的 https2http 插件），否则落到公网的就是明文 HTTP。
+  它会给出一个 `https://<随机名>.trycloudflare.com` 地址，发给同伴即可。Cloudflare 边缘提供 HTTPS，链路加密。
+
+  **安全必读（同机回源提权）**：cloudflared 与 server 同机时，公网流量经它回源，server 看到的来源是本机——若不处理，任何打开隧道地址的人都会被当成主人。因此该形态**必须**同时设置 `SERVER_HOST=0.0.0.0`（或局域网 IP）+ `YARNBALL_ALLOW_REMOTE=1`：绑定非 loopback 后，本机回源来源不再免凭证，公网访客须持协作链接 token，你自己在其他设备上走 `/login` 登录。保持 `127.0.0.1` 监听 + 代理回源是**不安全**的组合（如确需该形态并自担代理过滤责任，显式设 `YARNBALL_TRUST_LOOPBACK=1`；反之 `YARNBALL_TRUST_LOOPBACK=0` 可在 loopback 绑定下也要求凭证）。
+- **frp 等自建转发**：可用，但你必须**自备 TLS**（在 frp 前面挂反向代理签证书，或用 frp 的 https2http 插件），否则落到公网的就是明文 HTTP；同机转发同样适用上面的回源提权注意（改绑 `0.0.0.0` 或局域网 IP）。
 
 > **为什么强调 TLS**：纯 HTTP 公网下，协作链接 token / owner token 都以明文经过链路，任何中间节点都能窃听、甚至原样重放。鉴权再严也防不住明文传输——公网请务必走 HTTPS。
 
@@ -135,7 +137,7 @@ pnpm verify   # 提交前质量门：build（tsc + vite）+ smoke 端到端冒�
 ## 已知边界
 
 - 多人协作已支持（可编辑链接实时同改），但同一字段的并发编辑是「后写覆盖」而非逐字合并（CRDT 留待 v2）；页面刷新即取最新快照
-- 远程（局域网 / 隧道）场景下，主人在其他设备上需用 owner token 访问 API；web 界面暂无「粘贴 owner token 登录」入口，日常远程浏览推荐用同伴协作链接
+- 远程（局域网 / 隧道）场景下，主人在其他设备上用 `/login` 粘贴 owner token 登录（#32；本机 loopback 免登录）；误粘协作链接 token 会被明确提示
 - 海外公交路线为估算值（免费公交路由服务不存在）；国内公交走高德真实数据
 - Photon / OSRM 是社区免费服务，高频使用建议自托管（代码里换 base URL 即可）
 - 未配高德 key 时国内降级：路线按直线距离估算、POI 搜索不可用；海外不受影响

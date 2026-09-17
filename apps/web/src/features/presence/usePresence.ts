@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { PresenceEntry, PresenceEvent, TripEvent } from "@yarnball/shared";
 import { api as libApi } from "../../lib/api";
-import { usePrincipalStore } from "../../lib/principal";
+import { sseTokenParam } from "../../api/client";
 
 // ---------- 行程频道 SSE 多路复用（issue #19） ----------
 //
@@ -19,15 +19,11 @@ interface MuxEntry {
 
 const tripEventMux = new Map<string, MuxEntry>();
 
-/** 订阅行程频道（guest 凭 ?token=，与 tripStore 的 subscribeTrip 同规则）；返回退订函数 */
+/** 订阅行程频道（凭证 ?token= 与 subscribeTrip 同规则：owner token 优先 / guest 次之，Codex P1）；返回退订函数 */
 export function subscribeTripEvents(tripId: string, onEvent: TripEventListener): () => void {
   let entry = tripEventMux.get(tripId);
   if (!entry) {
-    const token = usePrincipalStore.getState().active?.token;
-    const url = token
-      ? `/api/trips/${tripId}/events?token=${encodeURIComponent(token)}`
-      : `/api/trips/${tripId}/events`;
-    const es = new EventSource(url);
+    const es = new EventSource(`/api/trips/${tripId}/events${sseTokenParam()}`);
     entry = { es, listeners: new Set() };
     tripEventMux.set(tripId, entry);
     es.onmessage = (e) => {
