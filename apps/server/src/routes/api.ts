@@ -255,15 +255,17 @@ export function createApi(
       return c.json({ error: "分享链接无效或已被撤销" }, 404);
     }
     return streamSSE(c, async (stream) => {
-      // 吊销即断流（Codex P1）：share token 就是 access-link token，吊销后该流必须关闭；
-      // revoked 事件无 id，过脱敏包装原样放行后仍能触发这里的关流判定
+      // 吊销即断流（Codex P1 + 评审二 P3-1）：只关 token 匹配本流的吊销（share token 就是
+      // access-link token），其他链接被吊销不误伤本流。revoked 不下发前端（内部信号）。
       const revokeUnsub = bus.subscribe(tripChannel(tripId), (event) => {
-        if ((event as { type?: string }).type === "revoked") void stream.close();
+        const e = event as { type?: string; token?: string };
+        if (e.type === "revoked" && e.token === token) void stream.close();
       });
       // 只订阅本行程频道（评审 P0-1）：不订 TRIPS_CHANNEL——那是全局频道，created/deleted 事件
       // 携带其他行程的完整 DTO（含 shareToken，等于其他行程的 viewer 凭证）。deleted 事件
       // 同时发布在 tripChannel(tripId) 上（tripService.deleteTrip），删除通知不受影响。
       const unsubscribe = bus.subscribe(tripChannel(tripId), (event) => {
+        if ((event as { type?: string }).type === "revoked") return;
         void stream.writeSSE({ data: JSON.stringify(aliasShareEvent(event, token)) });
       });
       // 分享页订阅者也进在线名单：脱敏标签「访客」（不带 guest 昵称，公开分享链接无身份语义）
@@ -297,7 +299,9 @@ export function createApi(
     try {
       return c.json({ weather: await getTripWeather(bundle) });
     } catch (err) {
-      return c.json({ error: `天气服务暂不可用：${(err as Error).message}` }, 502);
+      // 上游错误细节不下发（评审二 P3-5：原始 message 可能含内部 URL/超时信息），日志留线索
+      console.warn("[api] weather upstream failed:", (err as Error).message);
+      return c.json({ error: "天气服务暂不可用，请稍后重试" }, 502);
     }
   });
 
@@ -322,17 +326,19 @@ export function createApi(
     return streamSSE(c, async (stream) => {
       // 只订阅本行程频道（评审 P0-1）：不订 TRIPS_CHANNEL——guest 流不脱敏直转，created 事件
       // 会携带其他行程的完整 DTO（含 shareToken）。deleted 同时发布在 tripChannel(tripId)，
-      // 本行程删除通知不受影响。
+      // 本行程删除通知不受影响。revoked 是服务端内部信号（吊销断流用），不下发前端。
       const unsubscribe = bus.subscribe(tripChannel(tripId), (event) => {
+        if ((event as { type?: string }).type === "revoked") return;
         void stream.writeSSE({ data: JSON.stringify(event) });
       });
-      // 吊销即断流（Codex P1）：本流若凭 access-link token 建立（guest），revoked 事件到达时
-      // 主动关闭——否则吊销后仍持续收到 bundle（含真实 id）。owner（本机 loopback / owner token）
-      // 不受影响：revoked 只在 access-link 吊销时发，owner 无需断。
+      // 吊销即断流（Codex P1 + 评审二 P3-1 精确化）：本流凭 access-link token 建立（guest）
+      // 且被吊销的正是本流的链接（linkId 比对——不比对会误伤同行程其他链接的无辜流）→
+      // 主动关闭；owner（本机 loopback / owner token）不受影响（access-link 吊销与它无关）。
       const revokeUnsub =
         principal.kind === "guest"
           ? bus.subscribe(tripChannel(tripId), (event) => {
-              if ((event as { type?: string }).type === "revoked") void stream.close();
+              const e = event as { type?: string; linkId?: string };
+              if (e.type === "revoked" && e.linkId === principal.linkId) void stream.close();
             })
           : null;
       // 在线名单（issue #19）：owner 显示「主人」，guest 显示昵称；连接断开时 leave 并广播
@@ -656,7 +662,9 @@ export function createApi(
       return c.json({ weather: await getTripWeather(bundle) });
     } catch (err) {
       // 上游整体故障不拖垮行程页：502 + 明确文案，前端按「天气暂不可用」展示
-      return c.json({ error: `天气服务暂不可用：${(err as Error).message}` }, 502);
+      // 上游错误细节不下发（评审二 P3-5：原始 message 可能含内部 URL/超时信息），日志留线索
+      console.warn("[api] weather upstream failed:", (err as Error).message);
+      return c.json({ error: "天气服务暂不可用，请稍后重试" }, 502);
     }
   });
 

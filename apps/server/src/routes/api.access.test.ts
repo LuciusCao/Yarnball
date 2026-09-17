@@ -27,6 +27,7 @@ import { EventBus } from "../events.js";
 import { TripService } from "../services/tripService.js";
 import { AcpSessionManager } from "../acp/sessionManager.js";
 import { createApi } from "./api.js";
+import { browserGuardMiddleware } from "../services/auth.js";
 import { initSettingsCache, resetOwnerToken } from "../services/settings.js";
 import { insertMigration } from "./testMigrations.js";
 
@@ -40,6 +41,8 @@ const sessions = new AcpSessionManager(db, bus);
 // 与 main.ts 相同的组装方式（含 CORS，验证 preflight 不被 guard 拦截）
 const api = createApi(db, bus, tripService, sessions);
 const app = new Hono();
+// 与 main.ts 同构：browserGuard（Origin 白名单 + Host 校验，评审二 P1-1）先于 CORS
+app.use("/api/*", browserGuardMiddleware());
 app.use("/api/*", cors({ origin: "http://localhost:15173" }));
 app.route("/api", api);
 
@@ -690,5 +693,53 @@ describe("建行程即落默认 viewer 链接（shareToken 镜像模式）", () 
     expect(deflt!.label).toBe("只读分享");
     expect((await remoteCall(`/share/${trip.shareToken}`)).status).toBe(200);
     await call(`/trips/${trip.id}`, { method: "DELETE" });
+  });
+});
+
+// ---------- 9. 浏览器攻击面防护（评审二 P1-1：drive-by RCE / DNS rebinding） ----------
+
+describe("browserGuard（Origin 白名单 + Host 校验）", () => {
+  it("不带 Origin/Host 的请求（curl / agent）不受影响：loopback owner 照旧全通", async () => {
+    expect((await call("/trips")).status).toBe(200);
+  });
+
+  it("白名单 Origin 放行：WEB_ORIGIN（vite dev）与 loopback 同源（生产 webview）", async () => {
+    expect((await call("/trips", { headers: { origin: "http://localhost:15173" } })).status).toBe(200);
+    expect(
+      (await call("/trips", { headers: { origin: "http://127.0.0.1:18788" } })).status,
+    ).toBe(200);
+  });
+
+  it("恶意 Origin 拒绝：loopback 无 token + text/plain simple request 打 /api/agents 被 403（drive-by RCE 场景）", async () => {
+    const res = await call(
+      "/agents",
+      {
+        method: "POST",
+        headers: { origin: "http://evil.example", "content-type": "text/plain" },
+        body: JSON.stringify({ label: "evil", command: "/bin/sh", args: ["-c", "id"] }),
+      },
+    );
+    expect(res.status).toBe(403);
+    // 侧效应未发生：恶意 agent 没被注册
+    const { agents } = (await (await call("/agents")).json()) as { agents: Array<{ command: string }> };
+    expect(agents.some((a) => a.command === "/bin/sh")).toBe(false);
+  });
+
+  it("DNS rebinding 防护：非白名单 Host 头拒绝", async () => {
+    const res = await call("/trips", { headers: { host: "evil.example:18788" } });
+    expect(res.status).toBe(403);
+  });
+
+  it("Host 允许集：loopback 变体（127.0.0.1 / localhost / [::1]，带端口）放行", async () => {
+    expect((await call("/trips", { headers: { host: "127.0.0.1:18788" } })).status).toBe(200);
+    expect((await call("/trips", { headers: { host: "localhost:18788" } })).status).toBe(200);
+    expect((await call("/trips", { headers: { host: "[::1]:18788" } })).status).toBe(200);
+  });
+
+  it("owner token 请求带非白名单 Origin 同样拒绝（防护对所有身份生效）", async () => {
+    const res = await remoteCall("/trips", {
+      headers: { ...bearer(ownerToken), origin: "http://evil.example" },
+    });
+    expect(res.status).toBe(403);
   });
 });

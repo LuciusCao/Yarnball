@@ -1134,9 +1134,16 @@ export const TripEventSchema = z.discriminatedUnion("type", [
   // 在线名单（issue #19）：SSE 连接建立/断开时广播（kind=join/leave，viewers 为当前全量名单）
   z.object({ type: z.literal("presence"), presence: PresenceEventSchema }),
   // 访问凭证吊销（Codex P1）：access-link 吊销时广播，服务端 SSE handler 据此切断该行程的
-  // 全部活跃流（否则已连接的 guest 在吊销后仍持续收到 bundle 全量快照，含真实 id）；
-  // 前端 EventSource 自动重连会拿 401 停止。scope 标记吊销范围（access_link=协作链接族）
-  z.object({ type: z.literal("revoked"), scope: z.literal("access_link") }),
+  // 活跃流（否则已连接的 guest 在吊销后仍持续收到 bundle 全量快照，含真实 id）；
+  // 前端 EventSource 自动重连会拿 401 停止。scope 标记吊销范围（access_link=协作链接族）。
+  // linkId/token 标识被吊销的具体链接：SSE handler 比对后只关持有该凭证的流（评审二
+  // P3-1——不比对会把同行程其他链接的无辜流一并切断），无关流不透传该事件。
+  z.object({
+    type: z.literal("revoked"),
+    scope: z.literal("access_link"),
+    linkId: z.string(),
+    token: z.string(),
+  }),
 ]);
 export type TripEvent = z.infer<typeof TripEventSchema>;
 

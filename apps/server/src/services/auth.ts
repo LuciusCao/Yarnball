@@ -176,6 +176,83 @@ export function principalMiddleware(db: Db): MiddlewareHandler {
   };
 }
 
+// ---------- 浏览器攻击面防护（评审二 P1-1：drive-by RCE / DNS rebinding） ----------
+//
+// 威胁模型：桌面形态（loopback=owner 免凭证）下，受害者开着 app 期间浏览器访问恶意网页：
+//   1. 恶意 JS 用 simple request（text/plain，绕过 CORS 预检）POST /api/agents + chat-sessions
+//      ——hono 不校验 content-type，副作用已发生（注册任意命令 + spawn），等价用户权限 RCE；
+//   2. DNS rebinding：服务端不校验 Host，恶意域 A 记录重绑 127.0.0.1 后请求变「同源」，
+//      CORS 完全失效，可读全部 /api（含 access-links 明文 token）。
+//
+// 防护（两层，均为中间件形态，不碰业务 handler）：
+//   - originGuard：带 Origin 头（浏览器发起的跨站请求必带）但不在白名单 → 403。
+//     白名单 = WEB_ORIGIN（dev 的 vite）+ loopback 变体（壳内 webview / 生产同源页面 /
+//     本机浏览器直开）。curl/agent 不带 Origin，不受影响。
+//   - hostGuard：Host 头的 host 部分（去端口）不在允许集 → 403。允许集 = loopback 变体 +
+//     WEB_ORIGIN 的 host + SERVER_HOST（部署形态同伴用 LAN IP / 域名访问）。杀 rebinding。
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+function hostOf(header: string): string {
+  // Host 头形如 "127.0.0.1:18788"；IPv6 字面量带端口时是 "[::1]:18788"
+  const h = header.trim().toLowerCase();
+  if (h.startsWith("[")) {
+    const end = h.indexOf("]");
+    return end === -1 ? h : h.slice(0, end + 1);
+  }
+  const colon = h.lastIndexOf(":");
+  return colon === -1 ? h : h.slice(0, colon);
+}
+
+/** Origin / Host 防护的允许集（进程内缓存：启动时定格，env 不会运行中变） */
+const allowedBrowserOrigins = new Set<string>();
+const allowedHosts = new Set<string>();
+
+function buildBrowserAllowlist(): void {
+  const port = String(env.serverPort);
+  // Origin 白名单：vite dev、生产同源（loopback 全变体）、显式 SERVER_HOST 部署形态
+  allowedBrowserOrigins.add(env.webOrigin);
+  for (const scheme of ["http"]) {
+    for (const host of ["127.0.0.1", "localhost"]) {
+      allowedBrowserOrigins.add(`${scheme}://${host}:${port}`);
+    }
+  }
+  if (!env.trustLoopbackOwner) {
+    // 绑定非 loopback（LAN/隧道部署）：Origin 可能是 http://<lan-ip>:<port> 或反代域名
+    allowedBrowserOrigins.add(`http://${env.serverHost}:${port}`);
+  }
+  // Host 允许集：loopback 变体 + WEB_ORIGIN 的 host + SERVER_HOST（部署形态）
+  for (const h of LOOPBACK_HOSTS) allowedHosts.add(h);
+  try {
+    allowedHosts.add(new URL(env.webOrigin).hostname.toLowerCase());
+  } catch {
+    // WEB_ORIGIN 非法时忽略（env 校验另有兜底）
+  }
+  if (!LOOPBACK_HOSTS.has(env.serverHost.toLowerCase())) {
+    allowedHosts.add(env.serverHost.toLowerCase());
+  }
+}
+buildBrowserAllowlist();
+
+/**
+ * 浏览器攻击面防护中间件：Origin 白名单 + Host 校验。
+ * 挂在全部 /api 路径最前（含公开区——恶意网页同样可以打 share/join 端点做探测与滥用）。
+ * 不带 Origin 的请求（curl / agent / Tauri 壳的 fetch 若不带）直接放行，桌面零回归。
+ */
+export function browserGuardMiddleware(): MiddlewareHandler {
+  return async (c, next) => {
+    const origin = c.req.header("Origin");
+    if (origin !== undefined && origin !== "null" && !allowedBrowserOrigins.has(origin)) {
+      return c.json({ error: "跨站请求被拒绝" }, 403);
+    }
+    const host = c.req.header("Host");
+    if (host !== undefined && !allowedHosts.has(hostOf(host))) {
+      return c.json({ error: "无效的 Host 头" }, 403);
+    }
+    await next();
+  };
+}
+
 /** 从 context 取 principal（principalMiddleware 之后的 handler 里用） */
 export function getPrincipal(c: Context): Principal {
   const p = c.get("principal") as Principal | undefined;

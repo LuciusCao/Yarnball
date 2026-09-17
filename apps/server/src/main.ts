@@ -9,7 +9,7 @@ import { EventBus } from "./events.js";
 import { env } from "./env.js";
 import { TripService } from "./services/tripService.js";
 import { amapConfigured, initSettingsCache } from "./services/settings.js";
-import { isLoopbackAddress } from "./services/auth.js";
+import { browserGuardMiddleware, isLoopbackAddress } from "./services/auth.js";
 import { AcpSessionManager } from "./acp/sessionManager.js";
 import { createMcpApp } from "./mcp/app.js";
 import { createApi } from "./routes/api.js";
@@ -32,6 +32,10 @@ const acpSessions = new AcpSessionManager(db, bus);
 
 const app = new Hono();
 
+// 浏览器攻击面防护（评审二 P1-1，先于 CORS）：Origin 白名单（杀恶意网页 drive-by——simple
+// request 绕得过 CORS 预检但绕不过 Origin 检查）+ Host 校验（杀 DNS rebinding 读面）。
+// 不带 Origin 的调用方（curl / agent 子进程 / 壳内非浏览器 fetch）不受影响。
+app.use("/api/*", browserGuardMiddleware());
 app.use("/api/*", cors({ origin: env.webOrigin }));
 
 const api = createApi(db, bus, tripService, acpSessions);

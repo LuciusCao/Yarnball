@@ -1162,10 +1162,16 @@ export class TripService {
       .update(schema.tripAccessLinks)
       .set({ revokedAt: new Date() })
       .where(eq(schema.tripAccessLinks.id, linkId));
-    // 切断该行程的活跃 SSE 流（Codex P1）：吊销只挡新请求，已建立的流若不主动断开，
+    // 切断持有该链接的活跃 SSE 流（Codex P1）：吊销只挡新请求，已建立的流若不主动断开，
     // 被吊销的 guest 会继续收到 bundle 全量快照（含真实 id）直到自己断线。
-    // revoked 事件走行程频道，SSE handler 收到即关流；前端 EventSource 重连时被 401 拒绝。
-    this.bus.publish(tripChannel(existing.tripId), { type: "revoked", scope: "access_link" });
+    // 事件带 linkId/token 供流端比对（评审二 P3-1）：只关持有被吊销凭证的流，
+    // 不误伤同行程其他链接的无辜连接；无关流不下发该事件（handler 拦截）。
+    this.bus.publish(tripChannel(existing.tripId), {
+      type: "revoked",
+      scope: "access_link",
+      linkId: existing.id,
+      token: existing.token,
+    });
   }
 
   // ---------- 同伴入口（issue #18：公开端点，token 在 URL 即凭证，不走 principal 鉴权） ----------
