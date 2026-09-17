@@ -12,6 +12,8 @@ import {
   type CreateTripNoteInput,
   type DayDto,
   type EntryDto,
+  type JoinActivateResult,
+  type JoinInfo,
   type OwnerTokenStatus,
   type PlaceDto,
   type PlaceStatus,
@@ -31,21 +33,23 @@ import {
   type UpdateTripInput,
   type UpdateTripNoteInput,
 } from "@yarnball/shared";
+import { ApiError, apiFetch } from "./http";
 
 /**
  * UX 重构新增端点的客户端契约（单点）。
  * 设置页（M2）/ 候选（M3）/ 时间轴（M4）一律从这里消费；
  * 既有端点仍在 ../api/client.ts，新代码不要在那里加方法。
+ * 底层 fetch 走 lib/http.ts 的 apiFetch（guest 凭证存在时统一注入 Bearer，issue #18）。
  */
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await apiFetch(`/api${path}`, {
     headers: { "content-type": "application/json" },
     ...init,
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `HTTP ${res.status}`);
+    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+    throw new ApiError(body.error ?? `HTTP ${res.status}`, res.status, body.code);
   }
   return res.json() as Promise<T>;
 }
@@ -99,7 +103,7 @@ export const api = {
    * 确认是不同地点后传 allowDuplicate: true 重试强制创建。
    */
   createPlace: async (tripId: string, input: CreatePlaceInput) => {
-    const res = await fetch(`/api/trips/${tripId}/places`, {
+    const res = await apiFetch(`/api/trips/${tripId}/places`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
@@ -278,6 +282,25 @@ export const api = {
   /** 吊销链接（DELETE /api/access-links/:linkId）：持该 token 的同伴下次请求即 401 */
   revokeAccessLink: (linkId: string) =>
     request<{ ok: true }>(`/access-links/${linkId}`, { method: "DELETE" }),
+
+  // ---------- 同伴入口（issue #18：/join/:token 公开端点，token 在 URL 即凭证） ----------
+
+  /**
+   * 链接信息（GET /api/join/:token/info）：行程标题 / 角色 / 已填昵称。
+   * 无效/已吊销抛 ApiError（code=join_link_not_found | join_link_revoked，
+   * JoinPage 据此出「链接无效」vs「已被主人撤销」的不同文案）。
+   */
+  getJoinInfo: (token: string) => request<JoinInfo>(`/join/${token}/info`),
+
+  /**
+   * 激活链接（POST /api/join/:token/activate）：写昵称，返回 tripId/role/displayName。
+   * token 不回传（就在 URL 里）；调用方把 token 与返回值组装成 guest 凭证存入 principal store。
+   */
+  activateJoinLink: (token: string, displayName: string) =>
+    request<JoinActivateResult>(`/join/${token}/activate`, {
+      method: "POST",
+      body: JSON.stringify({ displayName }),
+    }),
 
   // ---------- agent 注册 ----------
 

@@ -6,9 +6,10 @@
  */
 
 import type { UnschedulePlaceResult } from "@yarnball/shared";
+import { apiFetch } from "../../lib/http";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await apiFetch(`/api${path}`, {
     headers: { "content-type": "application/json" },
     ...init,
   });
