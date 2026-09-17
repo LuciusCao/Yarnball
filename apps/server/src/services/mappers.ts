@@ -6,6 +6,7 @@ import type {
   HotelCandidateDto,
   PlaceDto,
   TransportLegDto,
+  TripAccessLinkDto,
   TripDto,
   TripNoteDto,
   TripStop,
@@ -21,6 +22,7 @@ type HotelRow = typeof t.hotelCandidates.$inferSelect;
 type ChatSessionRow = typeof t.chatSessions.$inferSelect;
 type AgentRow = typeof t.agentRegistry.$inferSelect;
 type TripNoteRow = typeof t.tripNotes.$inferSelect;
+type TripAccessLinkRow = typeof t.tripAccessLinks.$inferSelect;
 
 const iso = (d: Date | string): string =>
   d instanceof Date ? d.toISOString() : new Date(d).toISOString();
@@ -191,5 +193,20 @@ export function toAgentDto(row: AgentRow): AgentRegistryDto {
     args: (row.args as string[]) ?? [],
     enabled: row.enabled,
     createdAt: iso(row.createdAt),
+  };
+}
+
+/** 访问链接 DTO（owner-only 端点用，token 明文返回供 owner 复制） */
+export function toAccessLinkDto(row: TripAccessLinkRow): TripAccessLinkDto {
+  return {
+    id: row.id,
+    tripId: row.tripId,
+    token: row.token,
+    role: row.role as TripAccessLinkDto["role"],
+    label: row.label ?? null,
+    displayName: row.displayName ?? null,
+    revokedAt: row.revokedAt ? iso(row.revokedAt) : null,
+    createdAt: iso(row.createdAt),
+    lastSeenAt: row.lastSeenAt ? iso(row.lastSeenAt) : null,
   };
 }

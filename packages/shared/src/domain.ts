@@ -164,6 +164,16 @@ export const CHAT_SESSION_STATUSES = [
 ] as const;
 export type ChatSessionStatus = (typeof CHAT_SESSION_STATUSES)[number];
 
+/**
+ * 行程访问链接角色（v0.4 多人协作，issue #16）：
+ * viewer=只读同伴（行程读端点：bundle/weather/budget/SSE）
+ * editor=可编辑同伴（viewer 之上加全部行程编辑端点：places/entries/notes/legs/hotels/budget 写、
+ * search、analyze/suggest 只读族）。
+ * owner-only 端点（删行程/agents/settings/chat-sessions/access-links/owner-token）对 guest 一律 403。
+ */
+export const ACCESS_LINK_ROLES = ["viewer", "editor"] as const;
+export type AccessLinkRole = (typeof ACCESS_LINK_ROLES)[number];
+
 export const CHAT_MESSAGE_KINDS = [
   "user_text",
   "agent_text",
@@ -887,6 +897,61 @@ export const AgentAvailabilitySchema = AgentRegistryDtoSchema.extend({
   available: z.boolean(),
 });
 export type AgentAvailability = z.infer<typeof AgentAvailabilitySchema>;
+
+// ---------- 访问链接与 owner token（issue #16：多人协作地基） ----------
+
+/**
+ * 行程访问链接（GET /api/trips/:tripId/access-links，owner-only）。
+ * 含 token 明文：该端点仅 owner 可达，owner 需要随时重新复制完整链接发给同伴
+ * （token 在 DB 也是明文存储，见 schema 注释；hash 方案会把「找回」变成「吊销重建」）。
+ */
+export const TripAccessLinkDtoSchema = z.object({
+  id: z.string(),
+  tripId: z.string(),
+  /** 访问令牌（Bearer 或 SSE ?token=）；同伴入口 URL 的组成部分 */
+  token: z.string(),
+  role: z.enum(ACCESS_LINK_ROLES),
+  /** owner 给链接的备注名（如「给小红的」）；null = 未填 */
+  label: z.string().nullable(),
+  /** 同伴打开链接时填的昵称（#18 同伴入口写入）；null = 尚未填写 */
+  displayName: z.string().nullable(),
+  /** 吊销时间；非空 = 已失效（吊销即终态） */
+  revokedAt: z.string().nullable(),
+  createdAt: z.string(),
+  /** 同伴最近一次鉴权成功时间（写入有 60s 节流）；null = 从未使用 */
+  lastSeenAt: z.string().nullable(),
+});
+export type TripAccessLinkDto = z.infer<typeof TripAccessLinkDtoSchema>;
+
+/** 创建访问链接（POST /api/trips/:tripId/access-links，owner-only） */
+export const CreateAccessLinkInputSchema = z.object({
+  role: z.enum(ACCESS_LINK_ROLES),
+  /** 备注名缺省为「只读分享」/「可编辑链接」按角色给默认 */
+  label: z.string().trim().min(1).max(60).nullable().optional(),
+});
+export type CreateAccessLinkInput = z.infer<typeof CreateAccessLinkInputSchema>;
+
+/** 更新访问链接（PATCH /api/access-links/:linkId，owner-only）：目前仅改备注名 */
+export const UpdateAccessLinkInputSchema = z.object({
+  label: z.string().trim().min(1).max(60).nullable().optional(),
+});
+export type UpdateAccessLinkInput = z.infer<typeof UpdateAccessLinkInputSchema>;
+
+/** owner token 状态（GET /api/owner-token，owner-only）：明文永不回显，只报配置态 */
+export const OwnerTokenStatusSchema = z.object({
+  /** true = 已设置（存在有效 owner token） */
+  configured: z.boolean(),
+});
+export type OwnerTokenStatus = z.infer<typeof OwnerTokenStatusSchema>;
+
+/**
+ * 生成/重置 owner token（POST /api/owner-token/reset，owner-only）。
+ * token 明文仅此一次返回（DB 只存 sha256 hash）；重置后旧 token 立即失效。
+ */
+export const OwnerTokenResetResultSchema = z.object({
+  token: z.string(),
+});
+export type OwnerTokenResetResult = z.infer<typeof OwnerTokenResetResultSchema>;
 
 // ---------- SSE 事件 ----------
 
