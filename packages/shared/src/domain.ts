@@ -953,6 +953,53 @@ export const OwnerTokenResetResultSchema = z.object({
 });
 export type OwnerTokenResetResult = z.infer<typeof OwnerTokenResetResultSchema>;
 
+// ---------- 同伴入口（issue #18：/join/:token 打开 → 填昵称 → 进入行程） ----------
+
+/**
+ * join 端点的可区分错误码（HTTP 状态 + code 双保险，前端据此出不同文案）：
+ *   not_found —— token 不存在（链接打错/从未存在）→ 404
+ *   revoked   —— 链接已被行程主人吊销（终态）→ 410
+ */
+export const JOIN_LINK_ERROR_CODES = ["join_link_not_found", "join_link_revoked"] as const;
+export type JoinLinkErrorCode = (typeof JOIN_LINK_ERROR_CODES)[number];
+
+/**
+ * 链接信息（GET /api/join/:token/info，公开端点：token 在 URL 即凭证）。
+ * 刻意只给标题/角色/已填昵称——不泄 bundle、不泄 owner 信息、不泄真实 tripId
+ * （tripId 在 activate 成功后才返回，用于前端重定向）。
+ */
+export const JoinInfoSchema = z.object({
+  /** 行程标题（同伴确认「这是不是那个行程」的唯一线索） */
+  tripTitle: z.string(),
+  /** 链接角色：editor=可编辑同伴 / viewer=只读同伴 */
+  role: z.enum(ACCESS_LINK_ROLES),
+  /** 该链接已填过的昵称（null = 从未激活）；同伴改昵称重进时的预填值 */
+  displayName: z.string().nullable(),
+});
+export type JoinInfo = z.infer<typeof JoinInfoSchema>;
+
+/** 激活链接（POST /api/join/:token/activate）：昵称即可，无密码 */
+export const JoinActivateInputSchema = z.object({
+  displayName: z
+    .string()
+    .trim()
+    .min(1, "昵称不能为空")
+    .max(30, "昵称最长 30 个字符"),
+});
+export type JoinActivateInput = z.infer<typeof JoinActivateInputSchema>;
+
+/**
+ * 激活结果（POST /api/join/:token/activate）。
+ * token 不回传（同伴手里已经有——就在 URL 里）；tripId 此时才下发，用于前端按角色重定向：
+ * editor → /trip/:tripId（guest 模式），viewer → /share/:token（只读页）。
+ */
+export const JoinActivateResultSchema = z.object({
+  tripId: z.string(),
+  role: z.enum(ACCESS_LINK_ROLES),
+  displayName: z.string(),
+});
+export type JoinActivateResult = z.infer<typeof JoinActivateResultSchema>;
+
 // ---------- SSE 事件 ----------
 
 export const TripEventSchema = z.discriminatedUnion("type", [
