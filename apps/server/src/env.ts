@@ -9,9 +9,20 @@ export const env = {
   get serverPort() {
     return Number(process.env.SERVER_PORT ?? 18788);
   },
-  /** 监听地址，默认仅 loopback（/api 无鉴权，绑全接口会暴露 LAN）。LAN 调试显式设 0.0.0.0 */
+  /**
+   * 监听地址，默认仅 loopback（推荐保持）。v0.4 起 /api 已按 principal 鉴权，绑定非
+   * loopback 不再是无条件 RCE，但最小暴露原则不变：局域网/隧道部署见 README「让同伴访问」。
+   */
   get serverHost() {
     return process.env.SERVER_HOST ?? "127.0.0.1";
+  },
+  /**
+   * SERVER_HOST 非 loopback 时的显式确认（issue #21）：=1 表示「我知道我在把服务暴露给
+   * 其他主机」。未设置时启动打显著警告并指向部署文档——自托管工具不硬阻断。
+   */
+  get allowRemote() {
+    const v = process.env.YARNBALL_ALLOW_REMOTE?.trim().toLowerCase();
+    return v === "1" || v === "true";
   },
   /** agent 子进程访问 MCP 端点的基址。agent 与服务端同机，默认 loopback。 */
   get serverBaseUrl() {
