@@ -1,6 +1,7 @@
 import {
   POSSIBLE_DUPLICATE_CODE,
   PossibleDuplicatePayloadSchema,
+  type AccessLinkRole,
   type AddEntryInput,
   type AgentAvailability,
   type AgentRegistryDto,
@@ -11,6 +12,7 @@ import {
   type CreateTripNoteInput,
   type DayDto,
   type EntryDto,
+  type OwnerTokenStatus,
   type PlaceDto,
   type PlaceStatus,
   type SelectHotelInput,
@@ -18,6 +20,7 @@ import {
   type SetLegModeInput,
   type SuggestDayClustersResult,
   type TransportMode,
+  type TripAccessLinkDto,
   type TripDto,
   type TripNoteDto,
   type TripWeather,
@@ -237,6 +240,44 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(input),
     }),
+
+  // ---------- owner token（issue #16：远程访问凭证，仅设置页用） ----------
+
+  /**
+   * owner token 配置态（GET /api/owner-token）。明文永不回显（server 只存 sha256 hash），
+   * 生成/重置时一次性展示（resetOwnerToken 的返回值）。
+   */
+  getOwnerTokenStatus: () => request<OwnerTokenStatus>("/owner-token"),
+
+  /**
+   * 生成/重置 owner token（POST /api/owner-token/reset）。
+   * token 明文仅此响应一次返回；重置后旧 token 立即失效。
+   */
+  resetOwnerToken: () => request<{ token: string }>("/owner-token/reset", { method: "POST" }),
+
+  // ---------- 行程访问链接（issue #16：链接管理面板 UI 在 #17，此处先落契约） ----------
+
+  /** 行程的全部访问链接（含已吊销；token 明文供 owner 复制）（GET /api/trips/:tripId/access-links） */
+  listAccessLinks: (tripId: string) =>
+    request<{ links: TripAccessLinkDto[] }>(`/trips/${tripId}/access-links`),
+
+  /** 创建访问链接（POST /api/trips/:tripId/access-links）；label 缺省按角色给默认 */
+  createAccessLink: (tripId: string, role: AccessLinkRole, label?: string | null) =>
+    request<{ link: TripAccessLinkDto }>(`/trips/${tripId}/access-links`, {
+      method: "POST",
+      body: JSON.stringify({ role, ...(label != null ? { label } : {}) }),
+    }),
+
+  /** 更新链接备注名（PATCH /api/access-links/:linkId） */
+  updateAccessLink: (linkId: string, label: string | null) =>
+    request<{ link: TripAccessLinkDto }>(`/access-links/${linkId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ label }),
+    }),
+
+  /** 吊销链接（DELETE /api/access-links/:linkId）：持该 token 的同伴下次请求即 401 */
+  revokeAccessLink: (linkId: string) =>
+    request<{ ok: true }>(`/access-links/${linkId}`, { method: "DELETE" }),
 
   // ---------- agent 注册 ----------
 

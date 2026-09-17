@@ -4,12 +4,14 @@ import {
   asc,
   eq,
   inArray,
+  isNull,
   or,
   sql,
 } from "drizzle-orm";
 import type {
   Actor,
   AddEntryInput,
+  CreateAccessLinkInput,
   CreateHotelCandidateInput,
   CreatePlaceInput,
   CreateTripInput,
@@ -25,9 +27,11 @@ import type {
   SuggestDayClustersResult,
   TransitSegment,
   TransportMode,
+  TripAccessLinkDto,
   TripBundle,
   TripNoteDto,
   TripStop,
+  UpdateAccessLinkInput,
   UpdateEntryInput,
   UpdatePlaceInput,
   UpdateTripInput,
@@ -38,6 +42,7 @@ import { TRIPS_CHANNEL, tripChannel, type EventBus } from "../events.js";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import {
+  toAccessLinkDto,
   toDayDto,
   toEntryDto,
   toHotelDto,
@@ -49,6 +54,7 @@ import {
 import { amap, currencyForCountry, drivingMatrixBatched, fallbackRoute, ferryRouteEstimate, getProvider, haversineM, isChinaCountry, osm } from "./geo.js";
 import { insertionIncrements, kMedoids, optimizeLoopOrder, optimizeOrder, optimizePathOrder, orderTotalDuration } from "./routing.js";
 import { amapConfigured } from "./settings.js";
+import { mintAccessToken } from "./auth.js";
 
 const uuid = () => randomUUID();
 
@@ -421,6 +427,11 @@ export class TripService {
         shareToken,
       })
       .returning();
+    // 访问链接权威数据在 trip_access_links（issue #16）：建行程即落一条 viewer 链接（token 同 shareToken），
+    // shareToken 列保留为该「默认只读分享链接」的兼容镜像（同 destinationCity vs stops 模式）
+    await this.db
+      .insert(schema.tripAccessLinks)
+      .values({ id: uuid(), tripId: id, token: shareToken, role: "viewer", label: "只读分享" });
     const dto = toTripDto(row);
     this.bus.publish(TRIPS_CHANNEL, { type: "created", trip: dto });
     return dto;
@@ -512,10 +523,20 @@ export class TripService {
     return row;
   }
 
+  /**
+   * 只读分享链接解析（GET /api/share/:token）。
+   * M114 起权威数据在 trip_access_links（含吊销态），按 token 查未吊销的 viewer 链接；
+   * trips.share_token 是建行程时那条「默认只读分享链接」的兼容镜像。
+   */
   async getTripByShareToken(token: string) {
-    const [row] = await this.db.select().from(schema.trips).where(eq(schema.trips.shareToken, token));
-    if (!row) throw new ServiceError(404, "share link not found");
-    return row;
+    const [link] = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(
+        and(eq(schema.tripAccessLinks.token, token), isNull(schema.tripAccessLinks.revokedAt)),
+      );
+    if (!link) throw new ServiceError(404, "share link not found");
+    return this.getTrip(link.tripId);
   }
 
   async deleteTrip(tripId: string) {
@@ -949,6 +970,76 @@ export class TripService {
     await this.db.delete(schema.tripNotes).where(eq(schema.tripNotes.id, noteId));
     await this.touchTrip(existing.tripId);
     await this.publishBundle(existing.tripId);
+  }
+
+  // ---------- 访问链接（trip_access_links，issue #16：owner-only 管理） ----------
+
+  /** 行程的全部访问链接（含已吊销，管理面板展示用；token 明文供 owner 复制） */
+  async listAccessLinks(tripId: string): Promise<TripAccessLinkDto[]> {
+    await this.getTrip(tripId);
+    const rows = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(eq(schema.tripAccessLinks.tripId, tripId))
+      .orderBy(asc(schema.tripAccessLinks.createdAt));
+    return rows.map(toAccessLinkDto);
+  }
+
+  /**
+   * 创建访问链接。缺省 label 按角色给默认（「只读分享」/「可编辑链接」）。
+   * 刻意不与 trips.shareToken 联动：镜像列只对应建行程时的那条默认 viewer 链接
+   * （迁移回填同口径），后续新建链接是独立凭证，不写回镜像列。
+   */
+  async createAccessLink(tripId: string, input: CreateAccessLinkInput): Promise<TripAccessLinkDto> {
+    await this.getTrip(tripId);
+    const [row] = await this.db
+      .insert(schema.tripAccessLinks)
+      .values({
+        id: uuid(),
+        tripId,
+        token: mintAccessToken(),
+        role: input.role,
+        label: input.label ?? (input.role === "viewer" ? "只读分享" : "可编辑链接"),
+      })
+      .returning();
+    return toAccessLinkDto(row);
+  }
+
+  /** 更新链接（目前仅改备注名；role 不可改——角色变化 = 新建链接 + 吊销旧的，语义更清晰） */
+  async updateAccessLink(linkId: string, input: UpdateAccessLinkInput): Promise<TripAccessLinkDto> {
+    const [existing] = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(eq(schema.tripAccessLinks.id, linkId));
+    if (!existing) throw new ServiceError(404, `access link ${linkId} not found`);
+    const patch: Partial<typeof schema.tripAccessLinks.$inferInsert> = {};
+    if (input.label !== undefined) patch.label = input.label ?? null;
+    if (Object.keys(patch).length > 0) {
+      await this.db.update(schema.tripAccessLinks).set(patch).where(eq(schema.tripAccessLinks.id, linkId));
+    }
+    const [updated] = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(eq(schema.tripAccessLinks.id, linkId));
+    return toAccessLinkDto(updated);
+  }
+
+  /**
+   * 吊销链接（软删：置 revoked_at，行保留作审计记录；吊销即终态）。
+   * 吊销的是「默认只读分享链接」（token == trips.shareToken）时不改镜像列——
+   * 镜像列只承载 token 值本身，吊销态的权威判定在表。
+   */
+  async revokeAccessLink(linkId: string): Promise<void> {
+    const [existing] = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(eq(schema.tripAccessLinks.id, linkId));
+    if (!existing) throw new ServiceError(404, `access link ${linkId} not found`);
+    if (existing.revokedAt) return; // 幂等：重复吊销安全
+    await this.db
+      .update(schema.tripAccessLinks)
+      .set({ revokedAt: new Date() })
+      .where(eq(schema.tripAccessLinks.id, linkId));
   }
 
   /**
