@@ -12,9 +12,10 @@ import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 
 /**
- * 预算条 —— 横切关注点：常驻左面板顶部，跨 住宿/美食/门票 汇总。
+ * 预算条 —— 横切关注点：常驻左面板顶部，跨 住宿/美食/门票/交通 汇总。
  * 收起时一行摘要（总花费/预算/剩余 + 未定价警示），展开显示分类条与编辑。
- * 口径：住宿 = 每晚价 × 晚数（不按人数计）；美食/门票只计已加入行程的地点 × 人数。
+ * 口径：住宿 = 每晚价 × 晚数（不按人数计）；美食/门票只计已加入行程的地点 × 人数；
+ * 交通 = transit entry 的 priceCny 总价求和（大交通，不按人数计；市内交通因人而异不计，issue #14）。
  */
 export function BudgetStrip({
   tripId,
@@ -86,6 +87,11 @@ export function BudgetStrip({
             <Info className="size-3.5 text-amber-500" />
           </span>
         )}
+        {summary.transitUnpricedCount > 0 && (
+          <span title={`${summary.transitUnpricedCount} 段大交通未填费用`}>
+            <Info className="size-3.5 text-teal-500" />
+          </span>
+        )}
         <ChevronDown
           className={`ml-auto size-4 shrink-0 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`}
         />
@@ -117,10 +123,24 @@ export function BudgetStrip({
             color="bg-blue-400"
             max={Math.max(summary.totalCny, summary.budgetCny ?? 0)}
           />
+          <BudgetRow
+            label="交通"
+            detail="大交通 · 总价合计"
+            value={formatMoney(summary.transitCny, cur)}
+            color="bg-teal-400"
+            max={Math.max(summary.totalCny, summary.budgetCny ?? 0)}
+          />
           {summary.unpricedCount > 0 && (
             <p className="flex items-start gap-1.5 rounded-lg bg-amber-100/60 px-2 py-1 text-[11px] text-amber-700">
               <Info className="mt-0.5 size-3 shrink-0" />
               {summary.unpricedCount} 个地点未定价，交通费未计入——实际花费可能更高。
+            </p>
+          )}
+          {summary.transitUnpricedCount > 0 && (
+            <p className="flex items-start gap-1.5 rounded-lg bg-amber-100/60 px-2 py-1 text-[11px] text-amber-700">
+              <Info className="mt-0.5 size-3 shrink-0" />
+              {summary.transitUnpricedCount} 段大交通未填费用（机票/火车票等）——请让 agent
+              用 update_entry 回填 priceCny（总价口径），否则交通行会低估。
             </p>
           )}
           {/* 编辑 */}

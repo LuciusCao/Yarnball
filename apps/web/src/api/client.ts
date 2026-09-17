@@ -1,4 +1,5 @@
 import type {
+  BudgetSummary,
   ChatMessageDto,
   ChatSessionDto,
   PoiCandidate,
@@ -106,21 +107,7 @@ export const api = {
 
   // 预算
   getBudget: (tripId: string) =>
-    request<{
-      summary: {
-        currency: string;
-        budgetCny: number | null;
-        travelerCount: number;
-        nights: number;
-        hotelSelected: boolean;
-        hotelCny: number | null;
-        diningCny: number;
-        ticketsCny: number;
-        totalCny: number;
-        remainingCny: number | null;
-        unpricedCount: number;
-      };
-    }>(`/trips/${tripId}/budget`),
+    request<{ summary: BudgetSummary }>(`/trips/${tripId}/budget`),
   updateBudget: (
     tripId: string,
     input: { budgetCny?: number | null; travelerCount?: number; currency?: string },
