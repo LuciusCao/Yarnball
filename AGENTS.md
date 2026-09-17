@@ -32,6 +32,11 @@ Hono Server (apps/server, :18788)               │
   - 每日概要（#9）：`days.summary` 列 + `PATCH /api/days/:dayId/summary` + MCP `set_day_summary`；未撰写时 bundle 层自动生成兜底（`summaryAuto=true`，当日区域/多数派城市 + 主景点 3-4 个，不落库实时重算）
   - 行程级注意事项（#11）：`trip_notes` 表（独立表不挂 trips json 列——逐条 CRUD 有稳定 id，与 places/entries 同构），分类 7 值 communication/climate/power/visa/currency/transport/other（`TRIP_NOTE_CATEGORIES`），REST CRUD `/api/trips/:tripId/notes` + `/api/notes/:noteId` + MCP `add_trip_note/update_trip_note/remove_trip_note`，随 bundle 全量下发
   - title 收敛：`UpdateTripInputSchema` 加 `title`（通用 PATCH 端点），独立 `PATCH /trips/:tripId/title` 保留兼容（前端 renameTrip 未动），内部同走 `tripService.updateTrip`
+- **协作实时体验**（#19，issue #19）：
+  - SharePage 实时化：订阅公开端点 `GET /api/share/:token/events`（token 即凭证、服务端内部解析 tripId，与 GET /share/:token 同模式；bundle/activity 事件过 `aliasShareBundleIds` 同套脱敏——访客拿不到真实 tripId 无法直连 trips/:id/events，故必须 share 专用端点）；天气走 `GET /api/share/:token/weather`（react-query，`useShareWeather`，响应无 id 可泄）
+  - 在线名单（presence）：SSE 连接建立/断开（`stream.onAbort`）→ `PresenceRegistry`（events.ts）→ 行程频道广播 presence 事件（join/leave 携带全量 viewers，前端整包替换）。owner=「主人」、guest=昵称（displayName ?? label，60s 缓存）、share 订阅者=「访客」（脱敏）；同一页面多组件（PresenceBar/ActivityFeed/协作面板）经 `subscribeTripEvents` 多路复用共享一条 EventSource，避免重复连接把名单算重。`GET /trips/:id/presence` 快照端点供首屏；#17 面板的 90s 近似保留为 presence 不可用时兜底
+  - 动态流（谁改了什么）：`trip_activity` 表（id/trip_id cascade/actor_kind/actor_label/action/summary/created_at），`TripService.recordActivity` 在写操作完成后落库 + 滚动保留最近 50 条（超删旧）+ SSE 推 activity 事件；summary 完整句子服务端生成（三端一致），`Actor` 扩展为 `"human" | "agent" | { guest: 昵称 }`（DB 列 createdBy 等仍是二值，guest 归属只记在 trip_activity）；只记结构性变更（增删地点/排程/酒店/须知/概要/行程/预算），字段级微调（update_place/set_leg_mode）刻意不记防刷屏。REST 拉取 `GET /trips/:id/activity`（owner+guest 可读）
+  - 编辑防冲突：SSE 整包替换 vs 编辑中表单——`useSyncedInput`（web lib）受控草稿在 focus/IME 组合期间跳过外部同化，失焦后照常对齐；DaySummaryRow/NoteRow/TransitRow 的 React key 去掉可变内容（旧 key 含 summary/时刻文本，bundle 刷新即重挂载卸掉编辑中的 input）
 
 ## 代码组织
 
@@ -51,28 +56,38 @@ apps/server
                   set_day_summary（排天时撰写每日概要）、add_trip_note/update_trip_note/remove_trip_note
                   （行程级注意事项，按目的地/日期预填与维护）、get_weather（按天天气预报））、
                   app.ts（HTTP 端点）
-  src/services/   tripService.ts（编排/顺路算法核心；含每日概要兜底生成、trip_notes CRUD）、
+  src/services/   tripService.ts（编排/顺路算法核心；含每日概要兜底生成、trip_notes CRUD、
+                  trip_activity 动态流记录与滚动清理 #19）、
                   geo.ts（provider 抽象；overseasFetch 为全部零 key 海外上游的统一出口）、
                   weather.ts（Open-Meteo 按天预报，内存短缓存 30min）、settings.ts（全局设置：
                   高德 key 的 DB 覆盖 + env 兜底，/api/settings 响应掩码 amapServerKey）、
                   routing.ts、mappers.ts（DB 行 → DTO）、chatStore.ts
-  src/routes/     api.ts（REST + SSE 全部端点）
-  src/db/         schema.ts（drizzle 表定义）、client.ts、migrate.ts
+  src/routes/     api.ts（REST + SSE 全部端点；含 #19 的 /share/:token/events|weather 公开端点、
+                  /trips/:id/activity|presence 读端点、SSE presence 上报与 actor 注入）、
+                  api.collab.test.ts（#19 协作实时体验测试）
+  src/db/         schema.ts（drizzle 表定义；含 #19 的 trip_activity 表）、client.ts、migrate.ts
+  src/events.ts   EventBus（发布-订阅）+ PresenceRegistry（#19 在线名单注册表：SSE 连接
+                  join/leave → 行程频道广播 presence 事件）
   drizzle/        迁移 SQL（随库提交；注意被 .gitignore 的是根 /drizzle/，apps/server/drizzle/ 正常跟踪）
   scripts/        fake-acp-agent.mjs（可脚本化假 agent）、smoke.ts（端到端冒烟）
 apps/web
   src/features/   map（amapRenderer + maplibreRenderer 双渲染器 + 途经地标记层）、chat、
                   itinerary（时间轴；stops.ts 多城市 day→stop 推导/环线闭合；
-                  intensity.ts 每日强度标签推导；weather.tsx 天气徽章 + useTripWeather）、
+                  intensity.ts 每日强度标签推导；weather.tsx 天气徽章 + useTripWeather/useShareWeather）、
                   candidates（候选池：candidate/joined 状态机；多城市按 cityName 分桶）、
                   settings（设置抽屉：密钥 + agent CLI）、
                   notes（行程级注意事项面板，7 类结构化增删改）、
+                  presence（#19 在线名单：usePresence + SSE 多路复用 subscribeTripEvents）、
+                  activity（#19 动态流「谁改了什么」：react-query + SSE 增量）、
                   budget —— 按领域划分
-  src/pages/      TripListPage / TripPage / SharePage（/share/:token 只读分享）
+  src/pages/      TripListPage / TripPage / SharePage（/share/:token 只读分享；#19 起订阅
+                  /api/share/:token/events 实时刷新 + share 天气）
   src/components/ui/  Radix + CVA 的 shadcn 风格基础组件
   src/stores/     tripStore.ts（zustand：bundle 全量快照 + SSE 增量合并）
-  src/lib/api.ts  新端点客户端契约单点（设置 / agent 注册 / 候选状态机 / 时间轴），
-                  既有端点在 src/api/client.ts，新代码不要往那里加
+  src/lib/api.ts  新端点客户端契约单点（设置 / agent 注册 / 候选状态机 / 时间轴 /
+                  #19 activity/presence/share-weather），既有端点在 src/api/client.ts，新代码不要往那里加
+  src/lib/useSyncedInput.ts  #19 编辑防冲突：受控输入草稿在 focus/IME 组合期间跳过外部同化
+                              （SSE 全量刷新不冲掉正在编辑的表单）
 packages/shared/src/domain.ts   枚举 / DTO / 请求体 / SSE 事件 / 格式化工具（zod schema）
 ```
 
