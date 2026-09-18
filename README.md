@@ -110,6 +110,8 @@ YARNBALL_ALLOW_REMOTE=1    # 显式确认暴露给其他主机（不设则启动
 
 > **为什么强调 TLS**：纯 HTTP 公网下，协作链接 token / owner token 都以明文经过链路，任何中间节点都能窃听、甚至原样重放。鉴权再严也防不住明文传输——公网请务必走 HTTPS。
 
+> **自建反向代理注意 SSE 缓冲**：毛线团的实时同步（地图/时间轴刷新、在线名单、动态流）依赖 SSE（Server-Sent Events）长连接推送。若你在 server 前面挂了自建反代（nginx 等），需禁用响应缓冲，否则推送会被代理攒着不吐、实时性退化成分钟级：nginx 配 `proxy_buffering off;`（必要时再加 `proxy_read_timeout` 调长）。cloudflared 自带流式处理无需任何配置；frp 裸 TCP 转发不碰 HTTP 层也不受影响。
+
 ### Agent 手册（MCP 工具）
 
 agent 接入后经 MCP 自动发现全部工具，无需人工配置。每个会话一个 scoped token，agent 只能操作当前会话绑定的行程。能力面：
