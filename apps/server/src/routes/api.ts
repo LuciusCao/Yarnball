@@ -173,11 +173,18 @@ export function createApi(
     return "human";
   }
 
-  /** guest 昵称解析：linkId → displayName ?? label ?? "同伴"（缓存 60s，避免每请求查库） */
+  /**
+   * guest 昵称解析：linkId → displayName ?? label ?? "同伴"（缓存 60s，避免每请求查库）。
+   * 评审 P3：缓存只增不删会让吊销/删除的链接条目永占内存——写入时超上限（1000）
+   * 先清过期条目，仍超限则按时间淘汰最旧一半。单机规模下形同虚设，纯防长年累积。
+   */
+  const GUEST_LABEL_TTL_MS = 60_000;
+  const GUEST_LABEL_MAP_MAX = 1000;
   const guestLabelCache = new Map<string, { label: string; at: number }>();
   function guestLabelOf(linkId: string): string {
     const hit = guestLabelCache.get(linkId);
-    if (hit && Date.now() - hit.at < 60_000) return hit.label;
+    const now = Date.now();
+    if (hit && now - hit.at < GUEST_LABEL_TTL_MS) return hit.label;
     let label = "同伴";
     try {
       const [row] = db
@@ -190,7 +197,18 @@ export function createApi(
     } catch {
       // 查不到不阻塞请求（activity 是旁路数据）
     }
-    guestLabelCache.set(linkId, { label, at: Date.now() });
+    if (guestLabelCache.size > GUEST_LABEL_MAP_MAX) {
+      for (const [k, v] of guestLabelCache) {
+        if (now - v.at >= GUEST_LABEL_TTL_MS) guestLabelCache.delete(k);
+      }
+      if (guestLabelCache.size > GUEST_LABEL_MAP_MAX) {
+        const sorted = [...guestLabelCache.entries()].sort((a, b) => a[1].at - b[1].at);
+        for (let i = 0; i < sorted.length - Math.floor(GUEST_LABEL_MAP_MAX / 2); i++) {
+          guestLabelCache.delete(sorted[i][0]);
+        }
+      }
+    }
+    guestLabelCache.set(linkId, { label, at: now });
     return label;
   }
 

@@ -57,7 +57,26 @@ export function hashToken(token: string): string {
 
 /** last_seen_at 写入节流窗口：60s 内不重复写，避免每请求一次写放大 */
 const LAST_SEEN_THROTTLE_MS = 60_000;
+/**
+ * linkId → 上次写入时间。评审 P3：只增不删会让吊销/删除的链接条目永占内存——
+ * 写入时超上限（1000）先清窗口外的过期条目（吊销链接的节流记录早过期了），
+ * 仍超限则按时间淘汰最旧一半。单机自托管规模下上限形同虚设，纯防长年累积。
+ */
+const LAST_SEEN_MAP_MAX = 1000;
 const lastSeenWrittenAt = new Map<string, number>();
+
+function pruneLastSeenMap(now: number): void {
+  if (lastSeenWrittenAt.size <= LAST_SEEN_MAP_MAX) return;
+  for (const [k, v] of lastSeenWrittenAt) {
+    if (now - v >= LAST_SEEN_THROTTLE_MS) lastSeenWrittenAt.delete(k);
+  }
+  if (lastSeenWrittenAt.size <= LAST_SEEN_MAP_MAX) return;
+  // 过期清理后仍超限（理论上 = 大量近期活跃链接）：按时间淘汰最旧的一半
+  const sorted = [...lastSeenWrittenAt.entries()].sort((a, b) => a[1] - b[1]);
+  for (let i = 0; i < sorted.length - Math.floor(LAST_SEEN_MAP_MAX / 2); i++) {
+    lastSeenWrittenAt.delete(sorted[i][0]);
+  }
+}
 
 function shouldTouchLastSeen(linkId: string, lastSeenAt: Date | null): boolean {
   const now = Date.now();
@@ -65,6 +84,7 @@ function shouldTouchLastSeen(linkId: string, lastSeenAt: Date | null): boolean {
   // 上次 DB 值距现在不足窗口且近期写过 → 跳过（防多实例下时钟漂移误判，两条件都查）
   if (lastSeenAt && now - lastSeenAt.getTime() < LAST_SEEN_THROTTLE_MS) return false;
   if (lastWrite && now - lastWrite < LAST_SEEN_THROTTLE_MS) return false;
+  pruneLastSeenMap(now);
   lastSeenWrittenAt.set(linkId, now);
   return true;
 }
