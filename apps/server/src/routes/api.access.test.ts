@@ -28,6 +28,7 @@ import { TripService } from "../services/tripService.js";
 import { AcpSessionManager } from "../acp/sessionManager.js";
 import { createApi } from "./api.js";
 import { browserGuardMiddleware } from "../services/auth.js";
+import { env } from "../env.js";
 import { initSettingsCache, resetOwnerToken } from "../services/settings.js";
 import { insertMigration } from "./testMigrations.js";
 
@@ -705,8 +706,10 @@ describe("browserGuard（Origin 白名单 + Host 校验）", () => {
 
   it("白名单 Origin 放行：WEB_ORIGIN（vite dev）与 loopback 同源（生产 webview）", async () => {
     expect((await call("/trips", { headers: { origin: "http://localhost:15173" } })).status).toBe(200);
+    // 白名单按 env.serverPort 生成（worktree 隔离端口 18789 / 默认 18788 都成立）——
+    // 断言与实现同源，测试不硬编码端口
     expect(
-      (await call("/trips", { headers: { origin: "http://127.0.0.1:18788" } })).status,
+      (await call("/trips", { headers: { origin: `http://127.0.0.1:${env.serverPort}` } })).status,
     ).toBe(200);
   });
 
@@ -776,7 +779,7 @@ describe("browserGuard（Origin 白名单 + Host 校验）", () => {
   });
 
   it("IPv6 loopback 同源 Origin 放行（评审三 P3）", async () => {
-    expect((await call("/trips", { headers: { origin: "http://[::1]:18788" } })).status).toBe(200);
+    expect((await call("/trips", { headers: { origin: `http://[::1]:${env.serverPort}` } })).status).toBe(200);
   });
 
   it("部署形态（SERVER_HOST=0.0.0.0）下 guard 整体跳过：远程同伴的 LAN IP Host/Origin 不误杀（评审三 P1-1b）", async () => {
