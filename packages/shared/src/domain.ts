@@ -492,6 +492,52 @@ export const TripBundleSchema = z.object({
 });
 export type TripBundle = z.infer<typeof TripBundleSchema>;
 
+// ---------- 行程数据包（issue #34：离线分享，导出加密快照 + 密码导入） ----------
+//
+// 比协作更轻的分享路径：bundle 全量 → JSON → 密码加密的 `.yarnball` 信封文件；
+// 接收方在自己 yarnball 里输密码导入，得到行程完整副本（全新 ID，无协作链接/动态流）。
+// 包内剥离 shareToken（对原行程有效的凭证绝不进文件）；geoProvider 与坐标成对保留
+//（GCJ-02/WGS84 不混用纪律）；legs 直接复制保真（真实路由/公交分段），导入不重算。
+
+/** 密钥派生参数随包携带（versioned，未来可调优而不破坏旧包兼容） */
+export const TRIP_PACKAGE_KDF_SCHEMA = z.object({
+  algo: z.literal("scrypt"),
+  /** 盐（hex） */
+  salt: z.string(),
+  n: z.number().int(),
+  r: z.number().int(),
+  p: z.number().int(),
+});
+
+export const TripPackageEnvelopeSchema = z.object({
+  format: z.literal("yarnball-trip-package"),
+  version: z.literal(1),
+  kdf: TRIP_PACKAGE_KDF_SCHEMA,
+  cipher: z.object({
+    algo: z.literal("aes-256-gcm"),
+    /** 初始向量（hex） */
+    iv: z.string(),
+    /** 认证标签（hex）——错密码在此校验失败 */
+    tag: z.string(),
+  }),
+  /** 密文（bundle JSON 的 base64） */
+  payload: z.string(),
+});
+export type TripPackageEnvelope = z.infer<typeof TripPackageEnvelopeSchema>;
+
+/** 导出请求体：密码 6-128 位（scrypt 派生密钥，包的机密性完全由密码强度决定） */
+export const ExportTripPackageInputSchema = z.object({
+  password: z.string().min(6, "密码至少 6 位").max(128),
+});
+export type ExportTripPackageInput = z.infer<typeof ExportTripPackageInputSchema>;
+
+/** 导入请求体：package = 信封文件全文（JSON 文本） */
+export const ImportTripPackageInputSchema = z.object({
+  package: z.string().min(1),
+  password: z.string().min(1, "请输入密码"),
+});
+export type ImportTripPackageInput = z.infer<typeof ImportTripPackageInputSchema>;
+
 // ---------- REST 请求体 ----------
 
 /**

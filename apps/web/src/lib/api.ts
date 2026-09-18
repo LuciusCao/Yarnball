@@ -25,8 +25,10 @@ import {
   type TransportMode,
   type TripAccessLinkDto,
   type TripActivityDto,
+  type TripBundle,
   type TripDto,
   type TripNoteDto,
+  type TripPackageEnvelope,
   type TripWeather,
   type UpdateAgentInput,
   type UpdateEntryInput,
@@ -355,5 +357,21 @@ export const api = {
   reconnectChatSession: (sessionId: string) =>
     request<{ ok: true; session: ChatSessionDto }>(`/chat-sessions/${sessionId}/reconnect`, {
       method: "POST",
+    }),
+
+  // ---------- 行程数据包（issue #34：离线分享） ----------
+
+  /** 导出加密数据包（owner-only）：返回信封 JSON，调用方落 .yarnball 文件 */
+  exportTripPackage: (tripId: string, password: string) =>
+    request<{ package: TripPackageEnvelope }>(`/trips/${tripId}/package`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+
+  /** 导入数据包（owner-only）：文件全文 + 密码 → 新行程 bundle（前端跳转） */
+  importTripPackage: (packageText: string, password: string) =>
+    request<{ bundle: TripBundle }>("/trips/import-package", {
+      method: "POST",
+      body: JSON.stringify({ package: packageText, password }),
     }),
 };

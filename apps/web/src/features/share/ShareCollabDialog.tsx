@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Copy, ExternalLink, Link2, Link2Off, Plus, Users, X } from "lucide-react";
+import { Check, Copy, ExternalLink, Link2, Link2Off, Package, PackageOpen, Plus, Users, X } from "lucide-react";
 import { toast } from "sonner";
 import type { AccessLinkRole, TripAccessLinkDto } from "@yarnball/shared";
 import { cn } from "../../lib/utils";
@@ -85,11 +85,14 @@ function isOnline(link: TripAccessLinkDto, onlineLabels: Set<string>): boolean {
 
 export function ShareCollabDialog({
   tripId,
+  tripTitle,
   shareToken,
   open,
   onOpenChange,
 }: {
   tripId: string;
+  /** 行程标题（离线数据包的文件名用） */
+  tripTitle: string;
   /** trips.shareToken：老只读分享链接的 token（面板据此在链接列表里识别那条迁移/镜像记录） */
   shareToken: string;
   open: boolean;
@@ -107,6 +110,37 @@ export function ShareCollabDialog({
   const [highlightId, setHighlightId] = useState<string | null>(null);
   /** 最近一次成功复制的对象 key（行级「已复制」反馈，2s 后还原） */
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // 离线数据包（issue #34）：输密码 → 导出信封 → 浏览器下载 .yarnball 文件
+  const [pkgFormOpen, setPkgFormOpen] = useState(false);
+  const [pkgPassword, setPkgPassword] = useState("");
+  const [pkgBusy, setPkgBusy] = useState(false);
+  const [pkgError, setPkgError] = useState<string | null>(null);
+
+  async function exportPackage() {
+    if (pkgBusy || pkgPassword.length < 6) return;
+    setPkgBusy(true);
+    setPkgError(null);
+    try {
+      const { package: envelope } = await api.exportTripPackage(tripId, pkgPassword);
+      // 文件名用行程标题（去除路径不安全字符），不含任何 token
+      const safeTitle = tripTitle.replace(/[\\/:*?"<>|]/g, "").trim() || "行程";
+      const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${safeTitle}.yarnball`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setPkgFormOpen(false);
+      setPkgPassword("");
+      toast.success("数据包已导出——把文件和密码一起发给对方即可");
+    } catch (err) {
+      setPkgError((err as Error).message);
+    } finally {
+      setPkgBusy(false);
+    }
+  }
 
   // 精确在线名单（issue #19 升级 #17 的 90s 近似）：SSE presence 事件驱动，
   // 名单拿不到（SSE 未就绪/断线）时 isOnline 自动退回 last_seen_at 兜底
@@ -489,6 +523,56 @@ export function ShareCollabDialog({
               >
                 <Plus />
                 新建协作链接
+              </Button>
+            )}
+          </section>
+
+          {/* ---------- 离线数据包（issue #34）：不需要对方在线/可联网的分享形态 ---------- */}
+          <section>
+            <div className="mb-1 flex items-center gap-2">
+              <Package className="size-4 text-slate-400" />
+              <h2 className="text-sm font-semibold text-slate-800">离线数据包</h2>
+            </div>
+            <p className="mb-2.5 text-xs leading-relaxed text-slate-400">
+              把行程打包成加密文件（.yarnball）发给对方；对方在毛线团行程列表「导入行程」里
+              输入密码即可获得完整副本。无需对方在线，也不占用协作链接。
+            </p>
+            {pkgFormOpen ? (
+              <div className="space-y-2.5 rounded-xl border border-slate-200/80 bg-white/80 px-3 py-2.5">
+                <label className="text-xs font-medium text-slate-600" htmlFor="pkg-password">
+                  包密码（至少 6 位，导入时需要）
+                </label>
+                <Input
+                  id="pkg-password"
+                  type="password"
+                  autoFocus
+                  value={pkgPassword}
+                  placeholder="设一个密码"
+                  disabled={pkgBusy}
+                  onChange={(e) => {
+                    setPkgPassword(e.target.value);
+                    setPkgError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing && pkgPassword.length >= 6) {
+                      void exportPackage();
+                    }
+                  }}
+                />
+                {pkgError && <p className="text-xs leading-relaxed text-red-500">{pkgError}</p>}
+                <div className="flex justify-end gap-2">
+                  <Button variant="ghost" size="sm" onClick={() => setPkgFormOpen(false)}>
+                    取消
+                  </Button>
+                  <Button size="sm" onClick={() => void exportPackage()} disabled={pkgBusy || pkgPassword.length < 6}>
+                    {pkgBusy ? "打包中…" : "打包下载"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button variant="outline" size="sm" className="w-full" onClick={() => { setPkgPassword(""); setPkgError(null); setPkgFormOpen(true); }}>
+                <PackageOpen />
+                导出离线数据包
               </Button>
             )}
           </section>

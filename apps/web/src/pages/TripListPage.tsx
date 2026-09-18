@@ -5,6 +5,7 @@ import {
   Globe2,
   LogIn,
   MapPin,
+  PackageSearch,
   MoreHorizontal,
   Plus,
   Route,
@@ -22,6 +23,7 @@ import { ApiError, GUEST_KICKED_EVENT } from "../lib/http";
 import { useOwnerAuth } from "../lib/principal";
 import { OnboardingBanner } from "../features/settings/OnboardingBanner";
 import { SettingsDrawer, type SettingsSection } from "../features/settings/SettingsDrawer";
+import { ImportPackageDialog } from "../features/share/ImportPackageDialog";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import {
@@ -137,6 +139,8 @@ export function TripListPage() {
   const [deleting, setDeleting] = useState(false);
   // 设置抽屉 + 引导条（抽屉关闭后递增 refreshKey 让引导条重新检测）
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 导入行程数据包（issue #34）：.yarnball 文件 + 密码 → 新行程副本 */
+  const [importOpen, setImportOpen] = useState(false);
   const [bannerRefreshKey, setBannerRefreshKey] = useState(0);
   // 引导条步骤点击传入，抽屉打开后定位到对应分区
   const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
@@ -326,15 +330,17 @@ export function TripListPage() {
       <div className="mx-auto max-w-4xl px-6 py-12">
         {/* 头部 */}
         <header className="relative mb-8">
-          <Button
-            variant="outline"
-            size="sm"
-            className="absolute right-0 top-0"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <Settings />
-            设置
-          </Button>
+          <div className="absolute right-0 top-0 flex gap-2">
+            {/* 导入行程（issue #34 离线数据包）：选 .yarnball 文件 + 密码 → 新行程副本 */}
+            <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+              <PackageSearch />
+              导入行程
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+              <Settings />
+              设置
+            </Button>
+          </div>
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-200/70 bg-blue-100/60 px-3 py-1 text-xs font-medium text-blue-700">
             <Sparkles className="size-3.5" />
             Agent-native 行程编辑器
@@ -563,6 +569,8 @@ export function TripListPage() {
       </div>
 
       {/* 设置抽屉 */}
+      {/* 导入行程数据包（issue #34，portal 挂 body） */}
+      <ImportPackageDialog open={importOpen} onOpenChange={setImportOpen} />
       <SettingsDrawer
         open={settingsOpen}
         focusSection={settingsSection}

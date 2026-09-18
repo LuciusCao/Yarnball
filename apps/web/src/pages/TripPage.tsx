@@ -1196,6 +1196,7 @@ export function TripPage() {
       {caps.canManageShare && (
         <ShareCollabDialog
           tripId={trip.id}
+          tripTitle={trip.title}
           shareToken={trip.shareToken}
           open={shareOpen}
           onOpenChange={setShareOpen}

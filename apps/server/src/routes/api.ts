@@ -13,6 +13,8 @@ import {
   CreatePlaceInputSchema,
   CreateTripInputSchema,
   CreateTripNoteInputSchema,
+  ExportTripPackageInputSchema,
+  ImportTripPackageInputSchema,
   JoinActivateInputSchema,
   POSSIBLE_DUPLICATE_CODE,
   ReorderDayInputSchema,
@@ -832,6 +834,23 @@ export function createApi(
     const tripId = c.req.param("tripId");
     requireOwner(c); // 链接列表含 token 明文，绝不下发给 guest
     return c.json({ links: await tripService.listAccessLinks(tripId) });
+  });
+
+  // ---------- 行程数据包（issue #34：离线分享，owner-only） ----------
+
+  /** 导出加密数据包（信封 JSON 一次返回，前端落 .yarnball 文件）；包内剥离一切凭证 */
+  guarded.post("/trips/:tripId/package", async (c) => {
+    const tripId = c.req.param("tripId");
+    requireOwner(c);
+    const input = ExportTripPackageInputSchema.parse(await c.req.json());
+    return c.json({ package: await tripService.exportTripPackage(tripId, input.password) });
+  });
+
+  /** 导入数据包（文件全文 + 密码）：解密 → ID 重映射 → 新行程；返回新 bundle 供前端跳转 */
+  guarded.post("/trips/import-package", async (c) => {
+    requireOwner(c);
+    const input = ImportTripPackageInputSchema.parse(await c.req.json());
+    return c.json({ bundle: await tripService.importTripPackage(input.package, input.password) }, 201);
   });
 
   guarded.post("/trips/:tripId/access-links", async (c) => {

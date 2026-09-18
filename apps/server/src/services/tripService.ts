@@ -2956,4 +2956,192 @@ export class TripService {
       ...(notes.length > 0 ? { note: notes.join("；") } : {}),
     };
   }
+
+  // ---------- 行程数据包（issue #34：离线分享，导出加密快照 + 密码导入） ----------
+
+  /**
+   * 导出数据包：bundle 全量。凭证剥离只针对 shareToken（对原行程有效的唯一凭证）与
+   * trip.id（空串占位，导入时新造）；实体 id **保留**——它们是 UUID、跨库无语义、
+   * 不构成凭证，且是导入 ID 重映射的锚点（抹掉会让全部实体共享同一映射撞主键，
+   * api.package.test 实测教训）。
+   */
+  async exportTripPackage(tripId: string, password: string) {
+    const bundle = await this.getBundle(tripId);
+    const stripped: TripBundle = {
+      ...bundle,
+      trip: { ...bundle.trip, id: "", shareToken: "", selectedHotelCandidateId: null },
+      // 实体自身 id 保留（导入重映射的锚点），但 tripId 引用抹掉——原库 trip UUID 不进包
+      places: bundle.places.map((p) => ({ ...p, tripId: "" })),
+      days: bundle.days.map((d) => ({ ...d, tripId: "" })),
+      entries: bundle.entries.map((e) => ({ ...e, tripId: "" })),
+      legs: bundle.legs.map((l) => ({ ...l, tripId: "" })),
+      hotelCandidates: bundle.hotelCandidates.map((h) => ({ ...h, tripId: "" })),
+      notes: bundle.notes.map((n) => ({ ...n, tripId: "" })),
+    };
+    const { encryptTripBundle } = await import("./tripPackage.js");
+    return encryptTripBundle(stripped, password);
+  }
+
+  /**
+   * 导入数据包：解密 → 全量 ID 重映射（新 UUID，实体间引用一并对齐）→ 落库为新行程。
+   * 引擎成对保留（geoProvider + 坐标原样复制，GCJ-02/WGS84 不混用）；legs 直接复制
+   * 保真（真实路由/公交分段），不重算不依赖上游；新行程自动落默认只读分享链接
+   * （createTrip 同款），无协作链接、无动态流历史。
+   */
+  async importTripPackage(packageText: string, password: string): Promise<TripBundle> {
+    const { decryptTripPackage } = await import("./tripPackage.js");
+    const pkg = decryptTripPackage(packageText, password);
+    const t = pkg.trip;
+    const newTripId = uuid();
+    const newShareToken = randomBytes(16).toString("hex");
+    // ID 重映射表：placeId/dayId/entryId/hotelId/noteId → 新 UUID
+    const placeMap = new Map<string, string>();
+    for (const p of pkg.places) placeMap.set(p.id, uuid());
+    const dayMap = new Map<string, string>();
+    for (const d of pkg.days) dayMap.set(d.id, uuid());
+    const entryMap = new Map<string, string>();
+    for (const e of pkg.entries) entryMap.set(e.id, uuid());
+    const hotelMap = new Map<string, string>();
+    for (const h of pkg.hotelCandidates) hotelMap.set(h.id, uuid());
+    const noteMap = new Map<string, string>();
+    for (const n of pkg.notes) noteMap.set(n.id, uuid());
+    const mapPlace = (id: string | null) => (id != null && placeMap.has(id) ? placeMap.get(id)! : null);
+
+    const [tripRow] = await this.db
+      .insert(schema.trips)
+      .values({
+        id: newTripId,
+        title: t.title,
+        destinationCity: t.destinationCity,
+        cityAdcode: t.cityAdcode,
+        geoProvider: t.geoProvider,
+        country: t.country,
+        cityCenterLng: t.location ? t.location.lng : null,
+        cityCenterLat: t.location ? t.location.lat : null,
+        stops: t.stops,
+        startDate: t.startDate,
+        endDate: t.endDate,
+        budgetCny: t.budgetCny,
+        travelerCount: t.travelerCount,
+        currency: t.currency,
+        shareToken: newShareToken,
+      })
+      .returning();
+    await this.db
+      .insert(schema.tripAccessLinks)
+      .values({ id: uuid(), tripId: newTripId, token: newShareToken, role: "viewer", label: "只读分享" });
+
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.places.length > 0)
+      await this.db.insert(schema.places).values(
+      pkg.places.map((p) => ({
+        id: placeMap.get(p.id)!,
+        tripId: newTripId,
+        name: p.name,
+        category: p.category,
+        lng: p.location.lng,
+        lat: p.location.lat,
+        address: p.address,
+        website: p.website,
+        bookingUrl: p.bookingUrl,
+        phone: p.phone,
+        cityName: p.cityName,
+        amapPoiId: p.amapPoiId,
+        sourceType: p.sourceType,
+        sourceUrl: p.sourceUrl,
+        notes: p.notes,
+        durationMin: p.durationMin ?? p.visitDurationMin ?? null,
+        visitDurationMin: p.visitDurationMin ?? p.durationMin ?? null,
+        priceCny: p.priceCny,
+        bookingInfo: p.bookingInfo,
+        openingHours: p.openingHours,
+        bookingStatus: p.bookingStatus,
+        createdBy: p.createdBy,
+        status: p.status,
+      })),
+    );
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.days.length > 0)
+      await this.db.insert(schema.days).values(
+      pkg.days.map((d) => ({
+        id: dayMap.get(d.id)!,
+        tripId: newTripId,
+        dayIndex: d.dayIndex,
+        date: d.date,
+        // 自动兜底概要不落库（summaryAuto 的口径），只导入人工/agent 撰写值
+        summary: d.summaryAuto ? null : d.summary,
+      })),
+    );
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.entries.length > 0)
+      await this.db.insert(schema.entries).values(
+      pkg.entries.map((e) => ({
+        id: entryMap.get(e.id)!,
+        tripId: newTripId,
+        dayId: dayMap.get(e.dayId)!,
+        placeId: mapPlace(e.placeId),
+        entryType: e.entryType,
+        position: e.position,
+        startTime: e.startTime,
+        durationMin: e.durationMin,
+        note: e.note,
+        departTime: e.departTime,
+        arriveTime: e.arriveTime,
+        fromPlaceId: mapPlace(e.fromPlaceId),
+        toPlaceId: mapPlace(e.toPlaceId),
+        fromName: e.fromName,
+        toName: e.toName,
+        transitMode: e.transitMode,
+        priceCny: e.priceCny,
+      })),
+    );
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.legs.length > 0)
+      await this.db.insert(schema.transportLegs).values(
+      pkg.legs.map((l) => ({
+        id: uuid(),
+        tripId: newTripId,
+        dayId: dayMap.get(l.dayId)!,
+        fromEntryId: l.fromEntryId != null && entryMap.has(l.fromEntryId) ? entryMap.get(l.fromEntryId)! : null,
+        toEntryId: l.toEntryId != null && entryMap.has(l.toEntryId) ? entryMap.get(l.toEntryId)! : null,
+        fromPlaceId: mapPlace(l.fromPlaceId),
+        toPlaceId: mapPlace(l.toPlaceId),
+        seq: l.seq,
+        mode: l.mode,
+        modeOverride: l.modeOverride,
+        distanceM: l.distanceM,
+        durationS: l.durationS,
+        polyline: l.polyline,
+        transitDetail: l.transitDetail,
+      })),
+    );
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.hotelCandidates.length > 0)
+      await this.db.insert(schema.hotelCandidates).values(
+      pkg.hotelCandidates.map((h) => ({
+        id: hotelMap.get(h.id)!,
+        tripId: newTripId,
+        placeId: placeMap.get(h.placeId)!,
+        pricePerNight: h.pricePerNight,
+        notes: h.notes,
+        selected: h.selected,
+        checkInDay: h.checkInDay,
+        checkOutDay: h.checkOutDay,
+      })),
+    );
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.notes.length > 0)
+      await this.db.insert(schema.tripNotes).values(
+      pkg.notes.map((n) => ({
+        id: noteMap.get(n.id)!,
+        tripId: newTripId,
+        category: n.category,
+        content: n.content,
+        position: n.position,
+      })),
+    );
+    const dto = toTripDto(tripRow);
+    this.bus.publish(TRIPS_CHANNEL, { type: "created", trip: dto });
+    return this.getBundle(newTripId);
+  }
 }
