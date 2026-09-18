@@ -9,6 +9,7 @@ import { EventBus } from "./events.js";
 import { env } from "./env.js";
 import { TripService } from "./services/tripService.js";
 import { amapConfigured, initSettingsCache } from "./services/settings.js";
+import { browserGuardMiddleware, isLoopbackAddress } from "./services/auth.js";
 import { AcpSessionManager } from "./acp/sessionManager.js";
 import { createMcpApp } from "./mcp/app.js";
 import { createApi } from "./routes/api.js";
@@ -18,6 +19,11 @@ import { mountWebStatic } from "./services/staticWeb.js";
  * 毛线团（Yarnball）server —— 组装：DB / 事件总线 / TripService / MCP 工具面 / ACP 会话 / REST + SSE。
  */
 
+/** 监听地址是否 loopback（127.x / ::1；localhost 域名解析后必为 loopback，不单独特判） */
+function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || isLoopbackAddress(host) || host.startsWith("127.");
+}
+
 const { db, sqlite } = createDb(env.databaseUrl);
 const bus = new EventBus();
 const tripService = new TripService(db, bus);
@@ -26,6 +32,10 @@ const acpSessions = new AcpSessionManager(db, bus);
 
 const app = new Hono();
 
+// 浏览器攻击面防护（评审二 P1-1，先于 CORS）：Origin 白名单（杀恶意网页 drive-by——simple
+// request 绕得过 CORS 预检但绕不过 Origin 检查）+ Host 校验（杀 DNS rebinding 读面）。
+// 不带 Origin 的调用方（curl / agent 子进程 / 壳内非浏览器 fetch）不受影响。
+app.use("/api/*", browserGuardMiddleware());
 app.use("/api/*", cors({ origin: env.webOrigin }));
 
 const api = createApi(db, bus, tripService, acpSessions);
@@ -73,6 +83,30 @@ async function seedAgents() {
 const server = serve({ fetch: app.fetch, port: env.serverPort, hostname: env.serverHost }, async (info) => {
   console.log(`[yarnball] server listening on http://${env.serverHost}:${info.port}`);
   if (webDistDir) console.log(`[yarnball] serving web dist: ${webDistDir}`);
+  // 非 loopback 绑定 = 暴露给局域网/公网（issue #16 鉴权 / #21 收敛）：需 YARNBALL_ALLOW_REMOTE=1
+  // 显式确认。自托管工具不硬阻断——未确认时打显著警告并指向部署文档，确认后正常起（保留一行提示可见性）。
+  if (!isLoopbackHost(env.serverHost)) {
+    if (env.allowRemote) {
+      console.log(
+        `[yarnball] YARNBALL_ALLOW_REMOTE=1：远程访问已确认（SERVER_HOST=${env.serverHost}）。` +
+          "鉴权按公网标准（本机/owner token=主人，协作链接 token=同伴）；" +
+          "未配 TLS 反代时传输为明文。部署指南见 README「让同伴访问」。",
+      );
+    } else {
+      console.warn("=".repeat(72));
+      console.warn(
+        `[安全警告] SERVER_HOST=${env.serverHost}：服务端已绑定非 loopback 地址，` +
+          "局域网/公网内的任何主机都可访问本服务，而本次启动没有拿到显式确认。\n" +
+          "  - /api 已按公网标准鉴权：敏感端点（agents / settings / chat-sessions / 行程删除）仅 owner 可用" +
+          "（本机访问即 owner，远程需 Bearer owner token，设置页生成）；\n" +
+          "    行程数据须持 access-link token（viewer 只读 / editor 可编辑，分享与协作面板发放，可吊销）。\n" +
+          "  - 未配 TLS 反代时传输层为明文 HTTP：token 会被链路窃听，公网暴露务必加 TLS。\n" +
+          "  - 确认要暴露：设置环境变量 YARNBALL_ALLOW_REMOTE=1 后重启（不硬阻断，仅提示）。\n" +
+          "  - 部署指南（局域网 / tailscale / cloudflared / frp）：README「让同伴访问」一节。",
+      );
+      console.warn("=".repeat(72));
+    }
+  }
   await initSettingsCache(db);
   await seedAgents();
   if (!amapConfigured()) {

@@ -276,8 +276,77 @@ export const settings = sqliteTable("settings", {
   amapJsKey: text("amap_js_key"),
   amapServerKey: text("amap_server_key"),
   amapJsSecret: text("amap_js_secret"),
+  /**
+   * owner token 的 sha256 hex（issue #16）：owner 本人在 LAN/公网远程访问时的身份凭证
+   * （loopback 无 token 即 owner，无需此值）。全权限凭证按 MCP token 惯例只存 hash，
+   * 明文仅在设置页生成/重置时一次性展示；null = 尚未生成。
+   */
+  ownerTokenHash: text("owner_token_hash"),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
 });
+
+/**
+ * 行程访问链接（v0.4 多人协作地基，issue #16）：owner 生成的同伴访问凭证，
+ * 一条链接绑定一个行程 + 一个角色（viewer 只读 / editor 可编辑）。
+ * token 明文存储（与 trips.share_token 同级敏感度）：
+ *   - 链接管理 UI（#17）需要 owner 随时重新查看/复制完整链接，hash 方案会把「找回」变成「吊销重建」；
+ *   - 存量 shareToken 迁移要求 token 沿用原值，原值本就是明文镜像；
+ *   - 能读到 SQLite 文件的攻击者已直接持有全部行程数据，明文 token 的边际风险趋近于零。
+ * 对比：owner token（settings.owner_token_hash）是全权限凭证，才按 MCP token 惯例存 hash。
+ * trips.shareToken 列保留为「默认只读分享链接」的兼容镜像（同 destinationCity vs stops 模式），
+ * 权威数据在本表（含吊销态）；/api/share/:token 只认本表未吊销记录。
+ */
+export const tripAccessLinks = sqliteTable(
+  "trip_access_links",
+  {
+    id: text("id").primaryKey(),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    /** 访问令牌：随机 32 字节 hex（64 字符）；存量迁移记录沿用原 shareToken 值（32 字符）保证老链接不失效 */
+    token: text("token").notNull(),
+    /** viewer=只读同伴 / editor=可编辑同伴（见 shared ACCESS_LINK_ROLES） */
+    role: text("role").notNull(),
+    /** owner 给链接的备注名（如「给小红的」），管理面板展示用 */
+    label: text("label"),
+    /** 同伴打开链接时填的昵称（#18 同伴入口写入；改动归属/在线名单展示用） */
+    displayName: text("display_name"),
+    /** 吊销时间；非空 = 链接失效（吊销即终态，不提供恢复） */
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
+    /** 同伴最近一次鉴权成功时间（在线状态/最后活跃展示；写入有 60s 节流） */
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }),
+  },
+  (t) => [
+    uniqueIndex("trip_access_links_token_uq").on(t.token),
+    index("trip_access_links_trip_idx").on(t.tripId),
+  ],
+);
+
+/**
+ * 行程动态流（issue #19「谁改了什么」）：tripService 写操作完成后落一行，
+ * 服务端生成完整 summary 句子（三端文案一致）。滚动保留最近 N 条（服务层删除超旧行），
+ * 不做翻页/检索（v1 边界）。随行程删除级联清理。
+ */
+export const tripActivity = sqliteTable(
+  "trip_activity",
+  {
+    id: text("id").primaryKey(),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    /** 变更者类别：human（本机主人）/ agent / guest（协作同伴），见 shared ACTOR_KINDS */
+    actorKind: text("actor_kind").notNull(),
+    /** 变更者展示标签：guest 昵称 / "agent" / "主人"（脱敏口径与 presence 一致） */
+    actorLabel: text("actor_label").notNull(),
+    /** 动作枚举（shared TRIP_ACTIVITY_ACTIONS），如 place_added */
+    action: text("action").notNull(),
+    /** 服务端生成的完整句子（如「小红 添加了地点 悉尼歌剧院」） */
+    summary: text("summary").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().defaultNow(),
+  },
+  (t) => [index("trip_activity_trip_idx").on(t.tripId)],
+);
 
 export const agentTokens = sqliteTable(
   "agent_tokens",

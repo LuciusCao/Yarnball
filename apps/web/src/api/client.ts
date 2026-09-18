@@ -6,19 +6,24 @@ import type {
   TripBundle,
   TripDto,
 } from "@yarnball/shared";
+import { apiFetch, ApiError } from "../lib/http";
+import { usePrincipalStore, currentOwnerToken } from "../lib/principal";
 
 /**
  * 前端 API 层 —— 全部走 Vite 代理（/api → server），无跨域。
+ * 底层 fetch 走 lib/http.ts 的 apiFetch：guest 凭证存在时统一注入 Bearer（issue #18）。
  */
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await apiFetch(`/api${path}`, {
     headers: { "content-type": "application/json" },
     ...init,
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error ?? `HTTP ${res.status}`);
+    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+    // 统一抛 ApiError（评审 P1-2）：调用方（如 TripListPage 的 401 登录引导）依赖
+    // instanceof ApiError + status 判定，普通 Error 会让他们失效
+    throw new ApiError(body.error ?? `HTTP ${res.status}`, res.status, body.code);
   }
   return res.json() as Promise<T>;
 }
@@ -157,17 +162,34 @@ export const api = {
     request<{ ok: true }>(`/chat-sessions/${sessionId}`, { method: "DELETE" }),
 };
 
-/** SSE 订阅（EventSource 自动重连；断线补拉由调用方处理） */
+/**
+ * 受保护 SSE 订阅的 token query param（Codex P1：远程 owner 登录后的 EventSource 也必须带凭证）。
+ * 优先级与 apiFetch 一致：owner token > guest 凭证；无凭证（本机 loopback owner）返回空串，
+ * URL 保持原样零回归。EventSource 无法带 header，?token= 是 #16 定下的通道。
+ */
+export function sseTokenParam(): string {
+  const owner = currentOwnerToken();
+  const guest = usePrincipalStore.getState().active?.token;
+  const token = owner ?? guest;
+  return token ? `?token=${encodeURIComponent(token)}` : "";
+}
+
+/**
+ * SSE 订阅（EventSource 自动重连；断线补拉由调用方处理）。
+ * EventSource 无法带自定义 header：凭证（owner token 优先 / guest 次之）附加为 ?token=
+ * query param（server 的 sseAuth 同规则解析，#16 已支持）；无凭证（本机 owner）URL 不变，零回归。
+ */
 export function subscribeTrip(tripId: string, onEvent: (event: unknown) => void): () => void {
-  const es = new EventSource(`/api/trips/${tripId}/events`);
+  const es = new EventSource(`/api/trips/${tripId}/events${sseTokenParam()}`);
   es.onmessage = (e) => {
     if (e.data) onEvent(JSON.parse(e.data));
   };
   return () => es.close();
 }
 
+/** chat 事件流是 owner-only：订阅者要么是本机 owner，要么是远程登录的 owner（token 必带，Codex P1）；guest 不会订阅 */
 export function subscribeChat(sessionId: string, onEvent: (event: unknown) => void): () => void {
-  const es = new EventSource(`/api/chat-sessions/${sessionId}/events`);
+  const es = new EventSource(`/api/chat-sessions/${sessionId}/events${sseTokenParam()}`);
   es.onmessage = (e) => {
     if (e.data) onEvent(JSON.parse(e.data));
   };

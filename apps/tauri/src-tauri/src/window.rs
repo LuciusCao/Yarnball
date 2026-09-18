@@ -2,7 +2,7 @@
 //! 抽出来是因为这些动作现在有多个调用方——setup、sidecar 崩溃恢复、
 //! single-instance 回调、RunEvent::Reopen——各自重建一份 builder 必然漂移。
 
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -10,8 +10,11 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 pub const MAIN_LABEL: &str = "main";
 
 /// 当前 server origin（launch 成功后记录）：Reopen 时无窗口按它重建；
-/// None = sidecar 还没起来（停 splash 阶段），重建回 splash 走启动流
-static CURRENT_ORIGIN: OnceLock<String> = OnceLock::new();
+/// None = sidecar 还没起来（停 splash 阶段），重建回 splash 走启动流。
+/// issue #30：OnceLock 的 set 二次调用静默丢弃——崩溃恢复 relaunch 换端口后
+/// 新 origin 不会被记录，关窗重开会导航到死端口白屏。改 Mutex<Option> 支持覆写，
+/// navigate_main 每次 launch/relaunch 后更新，reopen_main 读最新值。
+static CURRENT_ORIGIN: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn create_main(
     handle: &AppHandle,
@@ -45,9 +48,12 @@ pub fn create_main(
         .build()
 }
 
-/// 窗口导航到 server origin（launch/崩溃恢复共用），并记录 origin 供 Reopen 重建。
+/// 窗口导航到 server origin（launch/崩溃恢复共用），并覆写记录的 origin（issue #30：
+/// 崩溃恢复 relaunch 可能换端口，必须更新而不是只记第一次）供 Reopen 重建。
 pub fn navigate_main(handle: &AppHandle, origin: tauri::Url) -> tauri::Result<()> {
-    let _ = CURRENT_ORIGIN.set(origin.to_string());
+    if let Ok(mut guard) = CURRENT_ORIGIN.lock() {
+        *guard = Some(origin.to_string());
+    }
     match handle.get_webview_window(MAIN_LABEL) {
         Some(window) => window.navigate(origin),
         None => {
@@ -75,7 +81,7 @@ pub fn reopen_main(handle: &AppHandle) {
     if handle.get_webview_window(MAIN_LABEL).is_some() {
         return;
     }
-    let url = match CURRENT_ORIGIN.get() {
+    let url = match CURRENT_ORIGIN.lock().ok().and_then(|g| g.clone()) {
         Some(origin) => WebviewUrl::External(origin.parse().expect("记录过的 origin 必合法")),
         None => WebviewUrl::App("splash.html".into()),
     };

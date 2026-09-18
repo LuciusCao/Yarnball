@@ -9,6 +9,15 @@
 //!
 //! 线程纪律：对话框从主线程 blocking_show 改为后台线程 show（回调式）——
 //! blocking_show 虽经 rfd 无 parent 路径不死锁，但会泊住 setup（splash 渲染延后）。
+//!
+//! 非主线程调用的安全性论证（issue #29，防后人按 AGENTS.md 主线程纪律「好心改坏」）：
+//! tauri-plugin-dialog 2.7.3 的 `show()` / `blocking_show()` 内部本就走
+//! `handle.run_on_main_thread(...)` 分发（desktop.rs 的 show_message_dialog），
+//! 调用方线程无关紧要；rfd 无 parent 的 message dialog 走
+//! `CFUserNotificationDisplayAlert`（自带后台线程，不创建 NSAlert/NSPanel，
+//! 不依赖 AppKit 主线程）——与 M107 死锁的 NSSavePanel sheet 场景（必须主 run
+//! loop 驱动）机制不同。插件文档对 blocking_show 的告诫恰恰是「不要在主线程用」
+//! ——它就是为后台线程设计的。
 
 use std::path::PathBuf;
 

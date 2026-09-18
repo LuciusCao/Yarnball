@@ -27,13 +27,22 @@ import {
   Star,
   Trash2,
   TriangleAlert,
+  UsersRound,
   type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 import { formatMoney, formatVisitDuration, isDomesticOsmTrip, type BudgetSummary, type ChatSessionDto, type PlaceDto } from "@yarnball/shared";
 import { api } from "../api/client";
 import { api as uxApi } from "../lib/api";
+import { GUEST_KICKED_EVENT } from "../lib/http";
+import { useCapabilities } from "../lib/capabilities";
+import {
+  credentialByTripId,
+  usePrincipalStore,
+  type GuestCredential,
+} from "../lib/principal";
 import { useTripStore } from "../stores/tripStore";
+import { useSyncedInput } from "../lib/useSyncedInput";
 import { Badge } from "../components/ui/badge";
 import { MapCanvas } from "../features/map/MapCanvas";
 import { ItineraryPanel } from "../features/itinerary/ItineraryPanel";
@@ -52,6 +61,10 @@ import { SearchAddPanel } from "../features/map/SearchAddPanel";
 import { BudgetStrip } from "../features/budget/BudgetStrip";
 import { ExportPrintDialog } from "../features/export/ExportPrintDialog";
 import { TripNotesPanel } from "../features/notes/TripNotesPanel";
+import { ShareCollabDialog } from "../features/share/ShareCollabDialog";
+// 协作实时体验（issue #19）：在线名单 + 动态流，独立组件、挂载点最小化（guest 门控属 #20，此处不碰）
+import { PresenceBar } from "../features/presence/PresenceBar";
+import { ActivityFeed } from "../features/activity/ActivityFeed";
 
 /**
  * 行程页 —— macOS Tahoe（Liquid Glass）布局：地图全屏打底，一切 UI 都是玻璃浮层。
@@ -94,6 +107,26 @@ function urlHost(url: string): string {
   } catch {
     return url;
   }
+}
+
+/** 被主人撤销链接的整页提示（guest-kicked）：文案与 JoinPage 的「已被撤销」错误页对齐 */
+function GuestKickedScreen({ displayName }: { displayName: string }) {
+  return (
+    <div className="flex h-full items-center justify-center bg-slate-100">
+      <div className="mx-4 flex max-w-sm flex-col items-center gap-3 rounded-3xl border border-slate-200/80 bg-white/80 px-8 py-10 text-center shadow-sm backdrop-blur">
+        <div className="flex size-12 items-center justify-center rounded-full bg-amber-500/12">
+          <TriangleAlert className="size-6 text-amber-500" />
+        </div>
+        <h1 className="text-base font-semibold text-slate-900">链接已被主人撤销</h1>
+        <p className="text-sm leading-relaxed text-slate-500">
+          {displayName}，行程主人已撤销这个协作链接，你已退出该行程。需要继续协作请联系主人重新生成链接。
+        </p>
+        <Link to="/" className="text-sm font-medium text-blue-600 underline-offset-2 hover:underline">
+          返回首页
+        </Link>
+      </div>
+    </div>
+  );
 }
 
 /** 信息卡描述文本（M82）：默认 line-clamp-3 截断；用 scrollHeight vs clientHeight 检测截断是否真实发生，
@@ -153,6 +186,8 @@ export function TripPage() {
   const [panelMaximized, setPanelMaximized] = useState(false);
   /** 导出打印预览弹层（M97，issue #7） */
   const [exportOpen, setExportOpen] = useState(false);
+  /** 分享与协作面板（issue #17）：原「一个只读分享链接」升级为多链接管理（创建/复制/吊销） */
+  const [shareOpen, setShareOpen] = useState(false);
   /** 国内零配置降级横幅（M113）：osm 引擎国内行程的一次性提示，关闭后全局不再展示 */
   const [osmBannerDismissed, setOsmBannerDismissed] = useState(
     () => localStorage.getItem(DOMESTIC_OSM_BANNER_KEY) === "1",
@@ -165,12 +200,48 @@ export function TripPage() {
   const titleImeComposingRef = useRef(false);
   const titleImeResetTimerRef = useRef<number | null>(null);
 
+  // ---------- guest 模式（issue #18）：同伴经 /join/:token 进入时的身份落地 ----------
+  // 凭证激活：JoinPage 激活后 store.active 已就位（SSE 订阅在下方 effect 用得上）；
+  // 直接刷新 /trip/:id 时 active 为空——挂载时按 tripId 从 localStorage 恢复。
+  const guest = usePrincipalStore((s) => s.active);
+  const activateCredential = usePrincipalStore((s) => s.activate);
+  const deactivateCredential = usePrincipalStore((s) => s.deactivate);
+
+  // 功能开关单点（issue #20）：canEditTrip / canViewOnly / canUseAgent / canManageShare /
+  // canEditSettings / canDeleteTrip / canExport 全从这里派生（形状对齐服务端权限矩阵），
+  // 组件不各自判断 guest/role；owner（无凭证）全 true，本地体验零变化。
+  const caps = useCapabilities();
+  useEffect(() => {
+    if (!tripId) return;
+    const saved = credentialByTripId(tripId);
+    // 本机 owner（无该行程的 guest 凭证）什么都不做——store.active 恒为 null，所有请求零变化
+    if (saved) activateCredential(saved);
+    // 卸载时取消生效：离开 guest 上下文即停止 Bearer 注入（凭证留在 localStorage，刷新可恢复）
+    return () => deactivateCredential();
+  }, [tripId, activateCredential, deactivateCredential]);
+
+  // 链接被吊销/失效（apiFetch 收到 401 广播）：整页切「已被撤销」提示（凭证已清，不再注入）。
+  // kicked 是 latch 态：踢出后 active 已被清空（guest 变 null），昵称用 ref 记住供提示页展示
+  const [guestKicked, setGuestKicked] = useState(false);
+  const kickedNameRef = useRef<string | null>(null);
+  if (guest) kickedNameRef.current = guest.displayName;
+  useEffect(() => {
+    if (!guest) return;
+    const onKicked = () => setGuestKicked(true);
+    window.addEventListener(GUEST_KICKED_EVENT, onKicked);
+    return () => window.removeEventListener(GUEST_KICKED_EVENT, onKicked);
+  }, [guest]);
+
   useEffect(() => {
     if (!tripId) return;
     void load(tripId);
     const unsubscribe = subscribe(tripId);
     return unsubscribe;
   }, [tripId, load, subscribe]);
+
+  // 出发日期输入草稿（issue #19 防冲突）：聚焦期间 SSE 全量刷新不冲掉挑选中的日期；
+  // change 即提交（保持原行为），外部值在失焦后照常对齐
+  const startDateInput = useSyncedInput(bundle?.trip.startDate ?? "");
 
   useEffect(() => {
     void api.config().then((c) => {
@@ -202,10 +273,10 @@ export function TripPage() {
     await load(tripId);
   }, [tripId, load]);
 
-  // 城市定位自愈：行程没有中心坐标（创建时解析失败）→ 自动重解析一次
+  // 城市定位自愈：行程没有中心坐标（创建时解析失败）→ 自动重解析一次（editor 可写端点，viewer 跳过）
   const cityUnresolved = bundle != null && bundle.trip.location == null;
   useEffect(() => {
-    if (!tripId || !cityUnresolved) return;
+    if (!tripId || !cityUnresolved || !caps.canEditTrip) return;
     let cancelled = false;
     void api
       .resolveCity(tripId)
@@ -221,7 +292,7 @@ export function TripPage() {
     return () => {
       cancelled = true;
     };
-  }, [tripId, cityUnresolved]);
+  }, [tripId, cityUnresolved, caps.canEditTrip]);
 
   /** 出发日期修改（信息条 date input）：null = 清除，天标签退化为「Day N」；写后靠 SSE 全量刷新 + 主动 load 兜底 */
   async function updateStartDate(startDate: string | null) {
@@ -416,16 +487,22 @@ export function TripPage() {
     }
   }
 
+  // agent 面板是 owner 专属（caps.canUseAgent，issue #20 单点）：同伴（viewer/editor）不渲染
+  // agent 面板、不发无谓请求，chatSessions 恒为空 → 下方 agent 面板整块不渲染（右侧让位给地图）
   const refreshSessions = useCallback(async () => {
-    if (!tripId) return;
+    if (!tripId || !caps.canUseAgent) return;
     const { sessions } = await api.chatSessions(tripId);
     setChatSessions(sessions);
-  }, [tripId]);
+  }, [tripId, caps.canUseAgent]);
 
   useEffect(() => {
     void refreshSessions();
   }, [refreshSessions]);
 
+  // 链接被吊销：优先于一切错误态展示（此时凭证已清，后续请求都会 401，裸报错没有意义）
+  if (guestKicked) {
+    return <GuestKickedScreen displayName={kickedNameRef.current ?? "同伴"} />;
+  }
   if (error) {
     return <div className="flex h-full items-center justify-center text-sm text-red-500">{error}</div>;
   }
@@ -451,7 +528,25 @@ export function TripPage() {
       ? hotelStays.find((s) => s.candidateId === selectedHotelCand.id) ?? null
       : null;
   const toolPanels = Object.entries(TOOL_PANEL_META) as [ToolPanel, { label: string; Icon: LucideIcon }][];
-  const activeToolMeta = toolPanel != null ? TOOL_PANEL_META[toolPanel] : null;
+  /** guest 身份展示用（徽章/被踢提示页昵称）：能力开关一律走 caps（issue #20 单点推导），
+   *  不再在组件里判断 isGuest */
+  const isGuest = guest != null;
+  /** 工具面板可见集（issue #20）：行程/候选/须知对三种身份可见（viewer 只读态）；
+   *  「添加」是编辑入口（搜索 POI + 建点），viewer 不渲染该 tab。
+   *  viewer 停留在被记住的「添加」tab 时切回行程（只读视角的主信息面板）。
+   *  null 是合法的收起态（M61：再点当前 tab / 面板头 ✕ 都置 null）——只在「记住的
+   *  tab 不在可用集」时回退（viewer 的 search 被过滤），收起态不强制弹回（v0.4 回归修复） */
+  const availablePanels: ToolPanel[] = caps.canEditTrip
+    ? ["itinerary", "candidates", "search", "notes"]
+    : ["itinerary", "candidates", "notes"];
+  const effectiveToolPanel =
+    toolPanel == null || availablePanels.includes(toolPanel)
+      ? toolPanel
+      : availablePanels[0];
+  const effectiveToolMeta = effectiveToolPanel != null ? TOOL_PANEL_META[effectiveToolPanel] : null;
+  /** 浮层右缘：owner 恒为 right-[404px]（给 agent 面板让位，M67 不随面板收起变化）；
+   *  同伴没有 agent 面板（canUseAgent=false），右缘收窄到 right-4，浮层/分段条铺满更大自由区 */
+  const overlayRightClass = caps.canUseAgent ? "right-[404px]" : "right-4";
 
   return (
     <div className="relative h-full overflow-hidden">
@@ -466,25 +561,37 @@ export function TripPage() {
           selectedLegId={selectedLegId}
           placeFocus={placeFocus}
           onSelectPlace={selectPlace}
-          onOpenSettings={openSettings}
+          onOpenSettings={caps.canEditSettings ? openSettings : undefined}
         />
       </div>
 
       {/* 顶行（M61）：左上行程信息玻璃条 + 顶部工具分段切换条；分段条在信息条与右侧 agent
           面板之间的空闲区右对齐（M62：右缘与自由区右边界对齐，容器 pointer-events-none 让出地图交互）。
-          M67：容器右缘恒定 right-[404px]，不随 agent 面板收起变化——分段条（justify-end）锚在面板
-          左缘位置，收起面板时不再右移 */}
-      <div className="pointer-events-none absolute left-4 right-[404px] top-4 z-10 flex items-start gap-3">
+          M67：容器右缘 owner 恒定 right-[404px]，不随 agent 面板收起变化——分段条（justify-end）锚在面板
+          左缘位置，收起面板时不再右移；同伴没有 agent 面板，右缘收到 right-4（issue #20） */}
+      <div className={`pointer-events-none absolute left-4 ${overlayRightClass} top-4 z-10 flex items-start gap-3`}>
       {/* shrink-0：信息条不被 flex 挤压（分段条区域 min-w-0 flex-1 先让）；标题 max-w+truncate 兜底长标题把分段条挤出可视区 */}
       <header className="glass panel-in pointer-events-auto flex shrink-0 items-center gap-2.5 rounded-2xl px-4 py-2">
+        {/* 返回：guest 的去向是公开首页（行程列表是 owner-only 端点，guest 进不去也看不到） */}
         <Link
           to="/"
           className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-slate-700"
-          title="返回行程列表"
+          title={isGuest ? "返回首页" : "返回行程列表"}
         >
           ‹
         </Link>
-        {/* 标题（issue #12）：点击进入行内编辑；Enter/✓ 保存，Esc/✕ 取消；空标题或与原标题一致不发请求 */}
+        {/* guest 身份徽章：同伴填的昵称 + 角色，替代 owner 的标题编辑入口 */}
+        {isGuest && (
+          <span
+            className="flex items-center gap-1 rounded-full bg-blue-500/12 px-2.5 py-0.5 text-[11px] font-medium text-blue-700"
+            title={`${guest!.displayName}（${guest!.role === "editor" ? "可编辑" : "只读"}同伴）——链接即身份，凭证保存在本浏览器`}
+          >
+            <UsersRound className="size-3" />
+            {guest!.displayName}
+          </span>
+        )}
+        {/* 标题（issue #12）：点击进入行内编辑；Enter/✓ 保存，Esc/✕ 取消；空标题或与原标题一致不发请求。
+            编辑能力走 caps.canEditTrip（owner/editor 可改名，viewer 纯展示） */}
         {editingTitle ? (
           <span className="flex items-center gap-1">
             <input
@@ -544,12 +651,16 @@ export function TripPage() {
           </span>
         ) : (
           <h1
-            className="glass-text max-w-64 cursor-pointer truncate rounded-lg px-1 text-sm font-semibold transition-colors hover:bg-slate-900/8"
-            title={`${trip.title}（点击修改标题）`}
-            onClick={() => {
-              setTitleDraft(trip.title);
-              setEditingTitle(true);
-            }}
+            className="glass-text max-w-64 truncate rounded-lg px-1 text-sm font-semibold transition-colors"
+            title={trip.title}
+            {...(caps.canEditTrip
+              ? {
+                  onClick: () => {
+                    setTitleDraft(trip.title);
+                    setEditingTitle(true);
+                  },
+                }
+              : {})}
           >
             {trip.title}
           </h1>
@@ -561,6 +672,8 @@ export function TripPage() {
           {/* 多城市（M39）：信息条直接展示途经地链；单城市仍是目的地名 */}
           {trip.stops.length > 1 ? trip.stops.map((s) => s.name).join(" → ") : trip.destinationCity}
         </span>
+        {/* 在线名单（issue #19）：owner/guest 共用，SSE presence 事件驱动 */}
+        <PresenceBar tripId={trip.id} />
         {trip.geoProvider === "osm" && !isDomesticOsmTrip(trip) && (
           <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
             海外
@@ -572,72 +685,101 @@ export function TripPage() {
             开源引擎
           </span>
         )}
-        {/* 出发日期（可选）：设置后每天标签显示真实日期（D1 · 9/23 周三）；清空退回 Day N */}
-        <label
-          title="出发日期（可选）：设置后行程每天显示真实日期"
-          className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
-        >
-          <CalendarDays className="size-3" />
-          <input
-            type="date"
-            value={trip.startDate ?? ""}
-            onChange={(e) => void updateStartDate(e.target.value || null)}
-            className="w-[7.2rem] cursor-pointer bg-transparent outline-none"
-          />
-        </label>
-        <button
-          onClick={() => void relocate()}
-          title="重新定位到目的城市"
-          className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-blue-600"
-        >
-          <Crosshair className="size-3.5" />
-        </button>
-        <Link
-          to={`/share/${trip.shareToken}`}
-          target="_blank"
-          title="打开只读分享页"
-          className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
-        >
-          <Link2 className="size-3" />
-          分享
-        </Link>
+        {/* 出发日期（可选）：设置后每天标签显示真实日期（D1 · 9/23 周三）；清空退回 Day N。
+            写端点（PATCH 行程）→ viewer 降级为纯文本展示；
+            防冲突（issue #19）：date input 的 value 直接绑 bundle 快照，同伴的任何写操作都会推
+            新 bundle 重渲染——正在挑日期时会被外部值冲掉；useSyncedInput 在聚焦期间跳过同化 */}
+        {caps.canEditTrip ? (
+          <label
+            title="出发日期（可选）：设置后行程每天显示真实日期"
+            className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
+          >
+            <CalendarDays className="size-3" />
+            <input
+              type="date"
+              value={startDateInput.value}
+              onChange={(e) => {
+                startDateInput.onChange(e);
+                void updateStartDate(e.target.value || null);
+              }}
+              onFocus={startDateInput.onFocus}
+              onBlur={startDateInput.onBlur}
+              className="w-[7.2rem] cursor-pointer bg-transparent outline-none"
+            />
+          </label>
+        ) : (
+          trip.startDate && (
+            <span className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-500">
+              <CalendarDays className="size-3" />
+              {trip.startDate}
+            </span>
+          )
+        )}
+        {/* 重新定位（写端点 resolve-city）：owner/editor 可见，viewer 不渲染 */}
+        {caps.canEditTrip && (
+          <button
+            onClick={() => void relocate()}
+            title="重新定位到目的城市"
+            className="flex size-6 items-center justify-center rounded-full text-slate-400 transition-colors hover:bg-slate-900/8 hover:text-blue-600"
+          >
+            <Crosshair className="size-3.5" />
+          </button>
+        )}
+        {/* 分享与协作（issue #17）+ 边界（issue #20 单点）：按钮打开管理面板——老只读 /share 直链
+            保留在面板「只读分享」区，协作链接（/join/:token）可创建/复制/吊销；
+            分享与导出是 owner 侧入口（面板含 token 明文、导出走 owner 的 Tauri 壳/打印），同伴一律不渲染 */}
+        {caps.canManageShare && (
+          <button
+            onClick={() => setShareOpen(true)}
+            title="分享与协作：只读链接 / 协作链接管理"
+            className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
+          >
+            <Link2 className="size-3" />
+            分享
+          </button>
+        )}
         {/* 导出入口（M97，issue #7）：预览弹层 → 保存为 PDF（Tauri 壳内走原生直存，浏览器回退 window.print） */}
-        <button
-          onClick={() => setExportOpen(true)}
-          title="导出行程为 PDF（便于打印/离线查看）"
-          className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
-        >
-          <Printer className="size-3" />
-          导出
-        </button>
+        {caps.canExport && (
+          <button
+            onClick={() => setExportOpen(true)}
+            title="导出行程为 PDF（便于打印/离线查看）"
+            className="flex items-center gap-1 rounded-full bg-slate-900/8 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-900/15"
+          >
+            <Printer className="size-3" />
+            导出
+          </button>
+        )}
       </header>
 
       {/* 工具面板分段切换条（行程/候选/添加，M61 从原左下 dock 标签条迁来）：点击 tab 向下展开浮层，再点当前 tab 收起。
           M62：条在自由区内右对齐（justify-end），右缘与 agent 面板左缘（right-[404px]）对齐；min-w-0 flex-1 保留窄屏让位 */}
       <div className="flex min-w-0 flex-1 justify-end">
         <div className="glass panel-in pointer-events-auto flex items-center gap-1 rounded-full p-1.5">
-          {toolPanels.map(([key, meta]) => (
-            <button
-              key={key}
-              onClick={() => switchToolPanel(toolPanel === key ? null : key)}
-              title={toolPanel === key ? `收起${meta.label}面板` : `展开${meta.label}面板`}
-              className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-                toolPanel === key
-                  ? "bg-slate-900 text-white shadow-sm"
-                  : "text-slate-500 hover:bg-slate-900/5 hover:text-slate-800"
-              }`}
-            >
-              <meta.Icon className="size-3.5" />
-              {meta.label}
-            </button>
-          ))}
+          {toolPanels
+            .filter(([key]) => availablePanels.includes(key))
+            .map(([key, meta]) => (
+              <button
+                key={key}
+                onClick={() => switchToolPanel(effectiveToolPanel === key ? null : key)}
+                title={effectiveToolPanel === key ? `收起${meta.label}面板` : `展开${meta.label}面板`}
+                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                  effectiveToolPanel === key
+                    ? "bg-slate-900 text-white shadow-sm"
+                    : "text-slate-500 hover:bg-slate-900/5 hover:text-slate-800"
+                }`}
+              >
+                <meta.Icon className="size-3.5" />
+                {meta.label}
+              </button>
+            ))}
         </div>
       </div>
       </div>
 
       {/* 国内零配置降级横幅（M113）：osm 引擎的国内行程顶部一次性提示——数据质量低于高德，
-          可关闭并全局记住；去设置页配 key 只影响之后新建的行程（引擎建行程时定死） */}
-      {isDomesticOsmTrip(trip) && !osmBannerDismissed && (
+          可关闭并全局记住；去设置页配 key 只影响之后新建的行程（引擎建行程时定死）。
+          owner 专属（issue #20）：设置入口与文案都指向本机设置页，同伴（guest）不渲染 */}
+      {caps.canEditSettings && isDomesticOsmTrip(trip) && !osmBannerDismissed && (
         <div className="glass panel-in absolute left-4 top-16 z-10 flex max-w-md items-start gap-2 rounded-2xl px-4 py-2.5 text-xs leading-relaxed text-slate-600">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
           <p className="min-w-0 flex-1">
@@ -698,8 +840,8 @@ export function TripPage() {
                 agent 推荐
               </Badge>
             )}
-            {/* 预订状态徽章（M11）：所有 joined 地点可点选流转（含已排期，与候选一致） */}
-            {selectedPlace.status === "joined" ? (
+            {/* 预订状态徽章（M11）：joined 且可编辑时点选流转（含已排期，与候选一致）；viewer 纯展示 */}
+            {selectedPlace.status === "joined" && caps.canEditTrip ? (
               <button
                 title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
                 disabled={placeBusy}
@@ -717,6 +859,7 @@ export function TripPage() {
             ) : (
               bookingStatusOf(selectedPlace) !== "none" && (
                 <Badge variant={BOOKING_STATUS_META[bookingStatusOf(selectedPlace)].badgeVariant}>
+                  <CalendarCheck className="size-3" />
                   {BOOKING_STATUS_META[bookingStatusOf(selectedPlace)].label}
                 </Badge>
               )
@@ -792,7 +935,8 @@ export function TripPage() {
               {selectedPlace.bookingInfo}
             </p>
           )}
-          {/* 酒店住宿块：住宿区间展示/编辑 + 住宿维度的「加入住宿/移出住宿」操作（M59 从底部操作行拆上来，与日程维度的「移出日程」区分） */}
+          {/* 酒店住宿块：住宿区间展示/编辑 + 住宿维度的「加入住宿/移出住宿」操作（M59 从底部操作行拆上来，与日程维度的「移出日程」区分）。
+              viewer 只读态：区间降级为静态文本、无操作钮 */}
           {selectedHotelCand && (
             <div className="mt-1.5 rounded-lg bg-red-500/8 px-2 py-1.5 text-[11px] text-slate-600">
               <p className="flex items-center gap-1">
@@ -812,31 +956,34 @@ export function TripPage() {
                         label: bundle.places.find((p) => p.id === s.placeId)?.name,
                       }))}
                     disabled={placeBusy}
+                    readOnly={!caps.canEditTrip}
                     onChange={(range) => void updateHotelStayRange(selectedStay.candidateId, range)}
                   />
                 </div>
               )}
-              <button
-                title={
-                  selectedStay
-                    ? "移出住宿：取消该酒店的住宿区间，不再锚定每天首尾"
-                    : "加入住宿：自动分配未覆盖的最长连续住宿段，可再调整入离店天"
-                }
-                disabled={placeBusy}
-                onClick={() =>
-                  void (selectedStay
-                    ? unselectHotelStay(selectedHotelCand.id)
-                    : selectHotelStay(selectedHotelCand.id))
-                }
-                className={`mt-1 flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
-                  selectedStay
-                    ? "bg-hotelpin/10 text-hotelpin hover:bg-hotelpin/20"
-                    : "bg-slate-900/8 text-slate-600 hover:bg-slate-900/15"
-                }`}
-              >
-                <BedDouble className="size-3" />
-                {selectedStay ? "移出住宿" : "加入住宿"}
-              </button>
+              {caps.canEditTrip && (
+                <button
+                  title={
+                    selectedStay
+                      ? "移出住宿：取消该酒店的住宿区间，不再锚定每天首尾"
+                      : "加入住宿：自动分配未覆盖的最长连续住宿段，可再调整入离店天"
+                  }
+                  disabled={placeBusy}
+                  onClick={() =>
+                    void (selectedStay
+                      ? unselectHotelStay(selectedHotelCand.id)
+                      : selectHotelStay(selectedHotelCand.id))
+                  }
+                  className={`mt-1 flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                    selectedStay
+                      ? "bg-hotelpin/10 text-hotelpin hover:bg-hotelpin/20"
+                      : "bg-slate-900/8 text-slate-600 hover:bg-slate-900/15"
+                  }`}
+                >
+                  <BedDouble className="size-3" />
+                  {selectedStay ? "移出住宿" : "加入住宿"}
+                </button>
+              )}
             </div>
           )}
           {selectedPlace.notes && (
@@ -846,7 +993,9 @@ export function TripPage() {
           {/* 操作行（口径对齐候选）：酒店的住宿维度加入/移出已拆到上方住宿块（M59：「加入住宿/移出住宿」）；
               已排期地点给「移出」出口（unschedule 撤销日程）——酒店信息卡上为与住宿按钮区分改名「移出日程」，非酒店仍叫「移出行程」；
               未排期非酒店 POI 走 joined 开关。
-              图标与候选一致：joined 态显示 CalendarMinus（点击移出），候选态显示 CalendarPlus（点击加入） */}
+              图标与候选一致：joined 态显示 CalendarMinus（点击移出），候选态显示 CalendarPlus（点击加入）。
+              viewer 同伴（issue #20）：整行不渲染，信息卡退化为查看（对齐 SharePage 只读形态） */}
+          {caps.canEditTrip && (
           <div className="mt-2.5 flex items-center gap-1.5 border-t border-slate-900/8 pt-2.5">
             {scheduledPlaceIds.has(selectedPlace.id) ? (
               <button
@@ -897,12 +1046,13 @@ export function TripPage() {
               <Trash2 className="size-3" /> 删除
             </button>
           </div>
+          )}
         </div>
       )}
 
       {/* 顶部：工具浮层（行程/候选/添加，M61 从原左下 dock 迁来）。overlay 盖在地图上、不挤占布局，
-          点击分段条 tab 或浮层 ✕ 收起。容器恒为 left-4 → right-[404px]（M67：右缘不随 agent 面板收起
-          变化，浮层 ml-auto 锚定的右缘保持恒定），
+          点击分段条 tab 或浮层 ✕ 收起。容器 left-4 → 右缘 owner 恒为 right-[404px]（M67：不随 agent
+          面板收起变化，浮层 ml-auto 锚定的右缘保持恒定）；同伴无 agent 面板收窄到 right-4（issue #20）。
           两态布局在内部宽度/对齐上分流（M63 修正 M62 的误读——铺满只属于放大态）：
           两态都保持 ml-auto 右缘锚定（M66 修复：margin-left:auto 不可过渡，放大态丢失 ml-auto 会导致
           margin 瞬变、面板先跳到左缘再播宽度动画）；
@@ -913,8 +1063,8 @@ export function TripPage() {
             shrink-0 保证自由区不足时 400px 不被挤压，max-w 100vw-2rem 兜底极窄视口不溢出
           - 放大态（panelMaximized）：w-full 铺满自由区，右缘不动、左缘扩到与左上信息条左缘（left-4）对齐；
             宽度随自由区自适应，切换标签无宽度跳动 ===== */}
-      {toolPanel != null && activeToolMeta != null && (
-        <div className="pointer-events-none absolute bottom-4 left-4 right-[404px] top-[68px] z-20 flex items-stretch">
+      {effectiveToolPanel != null && effectiveToolMeta != null && (
+        <div className={`pointer-events-none absolute bottom-4 left-4 ${overlayRightClass} top-[68px] z-20 flex items-stretch`}>
         <div
           className={`glass-deep panel-in pointer-events-auto ml-auto flex flex-col overflow-hidden rounded-[22px] transition-all duration-300 ease-out ${
             panelMaximized
@@ -923,8 +1073,8 @@ export function TripPage() {
           }`}
         >
           <div className="flex items-center gap-2 border-b border-white/40 px-4 py-2.5">
-            <activeToolMeta.Icon className="size-3.5 text-slate-500" />
-            <span className="glass-text ml-1 text-xs font-semibold">{activeToolMeta.label}</span>
+            <effectiveToolMeta.Icon className="size-3.5 text-slate-500" />
+            <span className="glass-text ml-1 text-xs font-semibold">{effectiveToolMeta.label}</span>
             <button
               onClick={() => setPanelMaximized((v) => !v)}
               title={panelMaximized ? "恢复面板大小" : "放大面板"}
@@ -940,43 +1090,55 @@ export function TripPage() {
               ✕
             </button>
           </div>
-          {/* 预算条：跨类别（住宿/餐饮/门票）汇总，面板展开时常驻顶部 */}
+          {/* 预算条：跨类别（住宿/餐饮/门票）汇总，面板展开时常驻顶部（viewer 只读态隐藏编辑表单） */}
           <div className="glass-text flex min-h-0 flex-1 flex-col gap-3 bg-white/40 py-3">
             {budgetSummary && (
               <div className="px-3">
-                <BudgetStrip tripId={trip.id} summary={budgetSummary} onRefresh={refreshBudget} />
+                <BudgetStrip
+                  tripId={trip.id}
+                  summary={budgetSummary}
+                  onRefresh={refreshBudget}
+                  readOnly={!caps.canEditTrip}
+                />
               </div>
             )}
             <div className="min-h-0 flex-1">
-              {toolPanel === "itinerary" && (
+              {effectiveToolPanel === "itinerary" && (
                 <ItineraryPanel
                   tripId={trip.id}
                   bundle={bundle}
                   selectedPlaceId={selectedPlaceId}
                   onSelectPlace={selectPlace}
                   onDataChanged={() => void load(trip.id)}
+                  readOnly={!caps.canEditTrip}
                   visibleDay={visibleDay}
                   onVisibleDayChange={changeVisibleDay}
                   selectedLegId={selectedLegId}
                   onSelectLeg={setSelectedLegId}
                   onFocusPlace={focusPlace}
-                  onOpenCandidates={() => switchToolPanel("candidates")}
+                  onOpenCandidates={caps.canEditTrip ? () => switchToolPanel("candidates") : undefined}
                 />
               )}
-              {toolPanel === "candidates" && (
+              {effectiveToolPanel === "candidates" && (
                 <CandidatesPanel
                   tripId={trip.id}
                   bundle={bundle}
                   selectedPlaceId={selectedPlaceId}
                   onSelectPlace={selectPlace}
                   onDataChanged={() => void load(trip.id)}
+                  readOnly={!caps.canEditTrip}
                 />
               )}
-              {toolPanel === "search" && (
+              {effectiveToolPanel === "search" && (
                 <SearchAddPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
               )}
-              {toolPanel === "notes" && (
-                <TripNotesPanel tripId={trip.id} bundle={bundle} onDataChanged={() => void load(trip.id)} />
+              {effectiveToolPanel === "notes" && (
+                <TripNotesPanel
+                  tripId={trip.id}
+                  bundle={bundle}
+                  onDataChanged={() => void load(trip.id)}
+                  readOnly={!caps.canEditTrip}
+                />
               )}
             </div>
           </div>
@@ -985,38 +1147,61 @@ export function TripPage() {
       )}
 
       {/* 右侧主面板：纯 agent 对话 ===== */}
-      {panelMode === "hidden" ? (
-        <button
-          onClick={() => setPanelMode("expanded")}
-          className="glass panel-in absolute right-4 top-4 z-20 flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
-        >
-          <PanelRightOpen className="size-3.5" />
-          显示 Agent 面板
-        </button>
-      ) : (
-        <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
-          {/* 收起把手：面板右上角内侧（会话头已用 pr-11 让位） */}
+      {/* agent 面板是 owner 专属（caps.canUseAgent 单点，issue #20）：agent 子进程 spawn 在
+          owner 机器（RCE 面）、ACP 权限停靠也在 owner 浏览器——同伴（viewer/editor）整块不渲染，
+          右侧空间还给地图 */}
+      {caps.canUseAgent &&
+        (panelMode === "hidden" ? (
           <button
-            onClick={() => setPanelMode("hidden")}
-            title="收起面板"
-            className="absolute right-2 top-2 z-30 flex size-7 items-center justify-center rounded-full text-slate-400 transition-all hover:bg-slate-900/8 hover:text-slate-700"
+            onClick={() => setPanelMode("expanded")}
+            className="glass panel-in absolute right-4 top-4 z-20 flex items-center gap-1.5 rounded-full px-3.5 py-2 text-xs font-medium text-slate-600 transition-transform hover:scale-105"
           >
-            <PanelRightClose className="size-4" />
+            <PanelRightOpen className="size-3.5" />
+            显示 Agent 面板
           </button>
+        ) : (
+          <aside className="glass-deep panel-in absolute bottom-4 right-4 top-4 z-20 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[22px]">
+            {/* 收起把手：面板右上角内侧（会话头已用 pr-11 让位） */}
+            <button
+              onClick={() => setPanelMode("hidden")}
+              title="收起面板"
+              className="absolute right-2 top-2 z-30 flex size-7 items-center justify-center rounded-full text-slate-400 transition-all hover:bg-slate-900/8 hover:text-slate-700"
+            >
+              <PanelRightClose className="size-4" />
+            </button>
 
-          <div className="glass-text min-h-0 flex-1 bg-white/40">
-            <ChatPanel
-              trip={trip}
-              sessions={chatSessions}
-              onSessionsChanged={() => void refreshSessions()}
-              selectedPlaceId={selectedPlaceId}
-            />
-          </div>
-        </aside>
+            <div className="glass-text min-h-0 flex-1 bg-white/40">
+              <ChatPanel
+                trip={trip}
+                sessions={chatSessions}
+                onSessionsChanged={() => void refreshSessions()}
+                selectedPlaceId={selectedPlaceId}
+              />
+            </div>
+          </aside>
+        ))}
+
+      {/* 动态流（issue #19）：左下角轻量动态条「谁改了什么」；地点信息卡（z-30）打开时让位隐藏 */}
+      {!selectedPlace && <ActivityFeed tripId={trip.id} />}
+
+      {/* 导出打印预览弹层（M97，portal 挂 body，打印时只留该浮层参与分页）；
+          open 恒 false 的挂载不影响行为，但同伴（canExport=false）直接不渲染，
+          连组件挂载都省掉——弹层内部无数据请求，双保险 */}
+      {caps.canExport && (
+        <ExportPrintDialog bundle={bundle} open={exportOpen} onClose={() => setExportOpen(false)} />
       )}
 
-      {/* 导出打印预览弹层（M97，portal 挂 body，打印时只留该浮层参与分页） */}
-      <ExportPrintDialog bundle={bundle} open={exportOpen} onClose={() => setExportOpen(false)} />
+      {/* 分享与协作面板（issue #17，portal 挂 body）：只读分享 + 协作链接多链接管理；
+          owner 专属（caps.canManageShare）——同伴不挂载（open 期间的面板轮询也随之不存在） */}
+      {caps.canManageShare && (
+        <ShareCollabDialog
+          tripId={trip.id}
+          tripTitle={trip.title}
+          shareToken={trip.shareToken}
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+        />
+      )}
     </div>
   );
 }

@@ -82,9 +82,27 @@ export function isRailMode(mode: TransportMode): boolean {
 export const TRANSIT_MODES = ["flight", "train", "drive", "bus"] as const;
 export type TransitMode = (typeof TRANSIT_MODES)[number];
 
-/** 变更由谁触发（人类直接编辑 or agent 经 MCP） */
-export const ACTORS = ["human", "agent"] as const;
-export type Actor = (typeof ACTORS)[number];
+/**
+ * 变更由谁触发（人类直接编辑 or agent 经 MCP）。
+ * issue #19 起带标签形态：`{ guest: "小红" }` 表示持协作链接的同伴（昵称来自 join 入口的
+ * displayName）。places.created_by 等 DB 列仍只存 "human" | "agent" 二值（列宽窄、语义稳定），
+ * guest 单独落在 trip_activity.actor_label——本类型只用于服务层入参传递。
+ */
+export type Actor = "human" | "agent" | { guest: string };
+
+/** Actor 的类别（DB/DTO 层形态）：human=本机主人、agent=agent、guest=协作同伴 */
+export const ACTOR_KINDS = ["human", "agent", "guest"] as const;
+export type ActorKind = (typeof ACTOR_KINDS)[number];
+
+/** Actor 归一化：类型 + 展示标签（human→"主人"、agent→"agent"、guest→昵称） */
+export function actorKindOf(actor: Actor): ActorKind {
+  return typeof actor === "string" ? actor : "guest";
+}
+
+/** actor 展示标签（activity/动态流文案用）：guest 用昵称，其余用固定文案 */
+export function actorLabelOf(actor: Actor): string {
+  return typeof actor === "string" ? (actor === "agent" ? "agent" : "主人") : actor.guest;
+}
 
 /**
  * 地点状态机：candidate（候选池，agent 解析攻略/推荐的默认值）
@@ -163,6 +181,16 @@ export const CHAT_SESSION_STATUSES = [
   "error",
 ] as const;
 export type ChatSessionStatus = (typeof CHAT_SESSION_STATUSES)[number];
+
+/**
+ * 行程访问链接角色（v0.4 多人协作，issue #16）：
+ * viewer=只读同伴（行程读端点：bundle/weather/budget/SSE）
+ * editor=可编辑同伴（viewer 之上加全部行程编辑端点：places/entries/notes/legs/hotels/budget 写、
+ * search、analyze/suggest 只读族）。
+ * owner-only 端点（删行程/agents/settings/chat-sessions/access-links/owner-token）对 guest 一律 403。
+ */
+export const ACCESS_LINK_ROLES = ["viewer", "editor"] as const;
+export type AccessLinkRole = (typeof ACCESS_LINK_ROLES)[number];
 
 export const CHAT_MESSAGE_KINDS = [
   "user_text",
@@ -307,7 +335,8 @@ export const PlaceDtoSchema = z.object({
   bookingStatus: z.enum(BOOKING_STATUSES),
   /** 候选（candidate）或已加入行程（joined），见 PLACE_STATUSES */
   status: z.enum(PLACE_STATUSES),
-  createdBy: z.enum(ACTORS),
+  /** 建点者（human | agent；guest 建点在 DB 层归为 human，归属昵称只记在 trip_activity） */
+  createdBy: z.enum(["human", "agent"]),
   createdAt: z.string(),
 });
 export type PlaceDto = z.infer<typeof PlaceDtoSchema>;
@@ -462,6 +491,52 @@ export const TripBundleSchema = z.object({
   notes: z.array(TripNoteDtoSchema),
 });
 export type TripBundle = z.infer<typeof TripBundleSchema>;
+
+// ---------- 行程数据包（issue #34：离线分享，导出加密快照 + 密码导入） ----------
+//
+// 比协作更轻的分享路径：bundle 全量 → JSON → 密码加密的 `.yarnball` 信封文件；
+// 接收方在自己 yarnball 里输密码导入，得到行程完整副本（全新 ID，无协作链接/动态流）。
+// 包内剥离 shareToken（对原行程有效的凭证绝不进文件）；geoProvider 与坐标成对保留
+//（GCJ-02/WGS84 不混用纪律）；legs 直接复制保真（真实路由/公交分段），导入不重算。
+
+/** 密钥派生参数随包携带（versioned，未来可调优而不破坏旧包兼容） */
+export const TRIP_PACKAGE_KDF_SCHEMA = z.object({
+  algo: z.literal("scrypt"),
+  /** 盐（hex） */
+  salt: z.string(),
+  n: z.number().int(),
+  r: z.number().int(),
+  p: z.number().int(),
+});
+
+export const TripPackageEnvelopeSchema = z.object({
+  format: z.literal("yarnball-trip-package"),
+  version: z.literal(1),
+  kdf: TRIP_PACKAGE_KDF_SCHEMA,
+  cipher: z.object({
+    algo: z.literal("aes-256-gcm"),
+    /** 初始向量（hex） */
+    iv: z.string(),
+    /** 认证标签（hex）——错密码在此校验失败 */
+    tag: z.string(),
+  }),
+  /** 密文（bundle JSON 的 base64） */
+  payload: z.string(),
+});
+export type TripPackageEnvelope = z.infer<typeof TripPackageEnvelopeSchema>;
+
+/** 导出请求体：密码 6-128 位（scrypt 派生密钥，包的机密性完全由密码强度决定） */
+export const ExportTripPackageInputSchema = z.object({
+  password: z.string().min(6, "密码至少 6 位").max(128),
+});
+export type ExportTripPackageInput = z.infer<typeof ExportTripPackageInputSchema>;
+
+/** 导入请求体：package = 信封文件全文（JSON 文本） */
+export const ImportTripPackageInputSchema = z.object({
+  package: z.string().min(1),
+  password: z.string().min(1, "请输入密码"),
+});
+export type ImportTripPackageInput = z.infer<typeof ImportTripPackageInputSchema>;
 
 // ---------- REST 请求体 ----------
 
@@ -909,11 +984,212 @@ export const AgentAvailabilitySchema = AgentRegistryDtoSchema.extend({
 });
 export type AgentAvailability = z.infer<typeof AgentAvailabilitySchema>;
 
+// ---------- 访问链接与 owner token（issue #16：多人协作地基） ----------
+
+/**
+ * 行程访问链接（GET /api/trips/:tripId/access-links，owner-only）。
+ * 含 token 明文：该端点仅 owner 可达，owner 需要随时重新复制完整链接发给同伴
+ * （token 在 DB 也是明文存储，见 schema 注释；hash 方案会把「找回」变成「吊销重建」）。
+ */
+export const TripAccessLinkDtoSchema = z.object({
+  id: z.string(),
+  tripId: z.string(),
+  /** 访问令牌（Bearer 或 SSE ?token=）；同伴入口 URL 的组成部分 */
+  token: z.string(),
+  role: z.enum(ACCESS_LINK_ROLES),
+  /** owner 给链接的备注名（如「给小红的」）；null = 未填 */
+  label: z.string().nullable(),
+  /** 同伴打开链接时填的昵称（#18 同伴入口写入）；null = 尚未填写 */
+  displayName: z.string().nullable(),
+  /** 吊销时间；非空 = 已失效（吊销即终态） */
+  revokedAt: z.string().nullable(),
+  createdAt: z.string(),
+  /** 同伴最近一次鉴权成功时间（写入有 60s 节流）；null = 从未使用 */
+  lastSeenAt: z.string().nullable(),
+});
+export type TripAccessLinkDto = z.infer<typeof TripAccessLinkDtoSchema>;
+
+/** 创建访问链接（POST /api/trips/:tripId/access-links，owner-only） */
+export const CreateAccessLinkInputSchema = z.object({
+  role: z.enum(ACCESS_LINK_ROLES),
+  /** 备注名缺省为「只读分享」/「可编辑链接」按角色给默认 */
+  label: z.string().trim().min(1).max(60).nullable().optional(),
+});
+export type CreateAccessLinkInput = z.infer<typeof CreateAccessLinkInputSchema>;
+
+/** 更新访问链接（PATCH /api/access-links/:linkId，owner-only）：目前仅改备注名 */
+export const UpdateAccessLinkInputSchema = z.object({
+  label: z.string().trim().min(1).max(60).nullable().optional(),
+});
+export type UpdateAccessLinkInput = z.infer<typeof UpdateAccessLinkInputSchema>;
+
+/** owner token 状态（GET /api/owner-token，owner-only）：明文永不回显，只报配置态 */
+export const OwnerTokenStatusSchema = z.object({
+  /** true = 已设置（存在有效 owner token） */
+  configured: z.boolean(),
+});
+export type OwnerTokenStatus = z.infer<typeof OwnerTokenStatusSchema>;
+
+/**
+ * 生成/重置 owner token（POST /api/owner-token/reset，owner-only）。
+ * token 明文仅此一次返回（DB 只存 sha256 hash）；重置后旧 token 立即失效。
+ */
+export const OwnerTokenResetResultSchema = z.object({
+  token: z.string(),
+});
+export type OwnerTokenResetResult = z.infer<typeof OwnerTokenResetResultSchema>;
+
+// ---------- 同伴入口（issue #18：/join/:token 打开 → 填昵称 → 进入行程） ----------
+
+/**
+ * join 端点的可区分错误码（HTTP 状态 + code 双保险，前端据此出不同文案）：
+ *   not_found —— token 不存在（链接打错/从未存在）→ 404
+ *   revoked   —— 链接已被行程主人吊销（终态）→ 410
+ */
+export const JOIN_LINK_ERROR_CODES = ["join_link_not_found", "join_link_revoked"] as const;
+export type JoinLinkErrorCode = (typeof JOIN_LINK_ERROR_CODES)[number];
+
+/**
+ * 链接信息（GET /api/join/:token/info，公开端点：token 在 URL 即凭证）。
+ * 刻意只给标题/角色/已填昵称——不泄 bundle、不泄 owner 信息、不泄真实 tripId
+ * （tripId 在 activate 成功后才返回，用于前端重定向）。
+ */
+export const JoinInfoSchema = z.object({
+  /** 行程标题（同伴确认「这是不是那个行程」的唯一线索） */
+  tripTitle: z.string(),
+  /** 链接角色：editor=可编辑同伴 / viewer=只读同伴 */
+  role: z.enum(ACCESS_LINK_ROLES),
+  /** 该链接已填过的昵称（null = 从未激活）；同伴改昵称重进时的预填值 */
+  displayName: z.string().nullable(),
+});
+export type JoinInfo = z.infer<typeof JoinInfoSchema>;
+
+/** 激活链接（POST /api/join/:token/activate）：昵称即可，无密码 */
+export const JoinActivateInputSchema = z.object({
+  displayName: z
+    .string()
+    .trim()
+    .min(1, "昵称不能为空")
+    .max(30, "昵称最长 30 个字符"),
+});
+export type JoinActivateInput = z.infer<typeof JoinActivateInputSchema>;
+
+/**
+ * 激活结果（POST /api/join/:token/activate）。
+ * token 不回传（同伴手里已经有——就在 URL 里）；tripId 此时才下发，用于前端按角色重定向：
+ * editor → /trip/:tripId（guest 模式），viewer → /share/:token（只读页）。
+ */
+export const JoinActivateResultSchema = z.object({
+  tripId: z.string(),
+  role: z.enum(ACCESS_LINK_ROLES),
+  displayName: z.string(),
+});
+export type JoinActivateResult = z.infer<typeof JoinActivateResultSchema>;
+
+// ---------- 动态流与在线名单（issue #19） ----------
+
+/**
+ * 动作枚举（trip_activity.action）：狭义「谁改了什么」只记结构性变更，
+ * 不记字段级编辑（update 系列统一 place_updated/entry_updated 等，防止动态流被高频微调刷屏）。
+ */
+export const TRIP_ACTIVITY_ACTIONS = [
+  // 地点
+  "place_added",
+  "place_removed",
+  "place_joined",
+  "place_unjoined",
+  // 日程
+  "entry_added",
+  "entry_removed",
+  "day_reordered",
+  // 大交通
+  "transit_added",
+  // 酒店
+  "hotel_selected",
+  "hotel_unselected",
+  // 须知/概要/行程字段
+  "note_added",
+  "note_removed",
+  "day_summary_updated",
+  "trip_updated",
+  "budget_updated",
+] as const;
+export type TripActivityAction = (typeof TRIP_ACTIVITY_ACTIONS)[number];
+
+/** 动作中文文案（单一定义点，三端共用；summary 完整句子在服务端生成） */
+export const TRIP_ACTIVITY_ACTION_LABELS: Record<TripActivityAction, string> = {
+  place_added: "添加了地点",
+  place_removed: "删除了地点",
+  place_joined: "加入了行程",
+  place_unjoined: "移出了行程",
+  entry_added: "排了日程",
+  entry_removed: "移除了日程",
+  day_reordered: "重排了日程顺序",
+  transit_added: "添加了大交通",
+  hotel_selected: "选定了酒店",
+  hotel_unselected: "取消了酒店",
+  note_added: "添加了注意事项",
+  note_removed: "删除了注意事项",
+  day_summary_updated: "撰写了每日概要",
+  trip_updated: "更新了行程信息",
+  budget_updated: "更新了预算",
+};
+
+/** 动态流条目（trip_activity 行的 DTO 形态；REST 拉取与 SSE activity 事件共用） */
+export const TripActivityDtoSchema = z.object({
+  id: z.string(),
+  tripId: z.string(),
+  actorKind: z.enum(ACTOR_KINDS),
+  /** 展示标签：guest 昵称 / "agent" / "主人"（三端文案一致，服务端生成） */
+  actorLabel: z.string(),
+  action: z.enum(TRIP_ACTIVITY_ACTIONS),
+  /** 服务端生成的完整句子（如「小红 添加了地点 悉尼歌剧院」），前端直接展示 */
+  summary: z.string(),
+  createdAt: z.string(),
+});
+export type TripActivityDto = z.infer<typeof TripActivityDtoSchema>;
+
+/**
+ * 在线名单条目（presence）：一个正在订阅本行程 SSE 的会话。
+ * key 用连接序号 + 身份标签（同一人开两个标签页算两条连接，名单聚合展示时按 label 去重）。
+ */
+export const PresenceEntrySchema = z.object({
+  /** 名单展示标签："主人" / guest 昵称（脱敏端点下同 GET /share 的角色口径） */
+  label: z.string(),
+  /** 身份类别（前端区分头像/排序用） */
+  kind: z.enum(ACTOR_KINDS),
+});
+export type PresenceEntry = z.infer<typeof PresenceEntrySchema>;
+
+/** presence 事件（行程频道）：join/leave 携带事件后的全量名单，前端整包替换 */
+export const PresenceEventSchema = z.object({
+  kind: z.enum(["join", "leave"]),
+  entry: PresenceEntrySchema,
+  /** 当前全部在线连接（含本次事件的结果），前端直接整体替换名单 */
+  viewers: z.array(PresenceEntrySchema),
+});
+export type PresenceEvent = z.infer<typeof PresenceEventSchema>;
+
 // ---------- SSE 事件 ----------
 
 export const TripEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("bundle"), bundle: TripBundleSchema }),
   z.object({ type: z.literal("deleted"), tripId: z.string() }),
+  // 动态流（issue #19）：tripService 写操作完成后随行程频道广播（summary 文案服务端生成，三端一致）
+  z.object({ type: z.literal("activity"), activity: TripActivityDtoSchema }),
+  // 在线名单（issue #19）：SSE 连接建立/断开时广播（kind=join/leave，viewers 为当前全量名单）
+  z.object({ type: z.literal("presence"), presence: PresenceEventSchema }),
+  // 访问凭证吊销（Codex P1）：access-link 吊销时广播，服务端 SSE handler 据此切断该行程的
+  // 活跃流（否则已连接的 guest 在吊销后仍持续收到 bundle 全量快照，含真实 id）；
+  // 前端 EventSource 自动重连会拿 401 停止。scope 标记吊销范围（access_link=协作链接族）。
+  // linkId/token 标识被吊销的具体链接：SSE handler 比对后只关持有该凭证的流（评审二
+  // P3-1——不比对会把同行程其他链接的无辜流一并切断），无关流不透传该事件。
+  z.object({
+    type: z.literal("revoked"),
+    scope: z.literal("access_link"),
+    linkId: z.string(),
+    token: z.string(),
+  }),
 ]);
 export type TripEvent = z.infer<typeof TripEventSchema>;
 

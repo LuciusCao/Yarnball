@@ -6,6 +6,8 @@ import type {
   HotelCandidateDto,
   PlaceDto,
   TransportLegDto,
+  TripAccessLinkDto,
+  TripActivityDto,
   TripDto,
   TripNoteDto,
   TripStop,
@@ -21,6 +23,8 @@ type HotelRow = typeof t.hotelCandidates.$inferSelect;
 type ChatSessionRow = typeof t.chatSessions.$inferSelect;
 type AgentRow = typeof t.agentRegistry.$inferSelect;
 type TripNoteRow = typeof t.tripNotes.$inferSelect;
+type TripAccessLinkRow = typeof t.tripAccessLinks.$inferSelect;
+type TripActivityRow = typeof t.tripActivity.$inferSelect;
 
 const iso = (d: Date | string): string =>
   d instanceof Date ? d.toISOString() : new Date(d).toISOString();
@@ -191,6 +195,34 @@ export function toAgentDto(row: AgentRow): AgentRegistryDto {
     command: row.command,
     args: (row.args as string[]) ?? [],
     enabled: row.enabled,
+    createdAt: iso(row.createdAt),
+  };
+}
+
+/** 访问链接 DTO（owner-only 端点用，token 明文返回供 owner 复制） */
+export function toAccessLinkDto(row: TripAccessLinkRow): TripAccessLinkDto {
+  return {
+    id: row.id,
+    tripId: row.tripId,
+    token: row.token,
+    role: row.role as TripAccessLinkDto["role"],
+    label: row.label ?? null,
+    displayName: row.displayName ?? null,
+    revokedAt: row.revokedAt ? iso(row.revokedAt) : null,
+    createdAt: iso(row.createdAt),
+    lastSeenAt: row.lastSeenAt ? iso(row.lastSeenAt) : null,
+  };
+}
+
+/** 动态流条目 DTO（REST 拉取与 SSE activity 事件共用） */
+export function toTripActivityDto(row: TripActivityRow): TripActivityDto {
+  return {
+    id: row.id,
+    tripId: row.tripId,
+    actorKind: row.actorKind as TripActivityDto["actorKind"],
+    actorLabel: row.actorLabel,
+    action: row.action as TripActivityDto["action"],
+    summary: row.summary,
     createdAt: iso(row.createdAt),
   };
 }

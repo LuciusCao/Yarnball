@@ -41,7 +41,12 @@ export function installExternalLinkHandler(): void {
   document.addEventListener(
     "click",
     (e) => {
-      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      if (e.defaultPrevented) return;
+      // issue #31：修饰键提前返回只在浏览器环境是对的（Cmd+Click 交给原生「新标签打开」）。
+      // 壳内不存在原生新标签——target=_blank 被 wry 忽略（#15 修的形态），Cmd/Ctrl/Shift/Alt+
+      // 点击外链全是死点击；中键同理无原生语义。shouldInstall 已保证这里只在壳内运行，
+      // 修饰键与中键一并 preventDefault 走 opener（系统浏览器里「新窗口标签」语义无意义，统一普通打开）。
+      if (e.button !== 0 && e.button !== 1) return;
       const target = e.target instanceof Element ? e.target.closest("a[href]") : null;
       if (!(target instanceof HTMLAnchorElement)) return;
       if (!isExternalHttpLink(target)) return;

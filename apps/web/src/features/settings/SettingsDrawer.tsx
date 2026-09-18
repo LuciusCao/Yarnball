@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { Check, KeyRound, Pencil, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
+import { Check, Copy, KeyRound, Link2Off, Pencil, Plus, RefreshCw, TerminalSquare, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import type { AgentAvailability, SettingsDto, UpdateSettingsInput } from "@yarnball/shared";
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api";
+import { useOwnerAuth } from "../../lib/principal";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
@@ -69,6 +70,17 @@ export function SettingsDrawer({
   const [deleteTarget, setDeleteTarget] = useState<AgentAvailability | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // owner token（issue #16）：配置态 + 生成/重置后的一次性明文展示
+  const [ownerTokenConfigured, setOwnerTokenConfigured] = useState<boolean | null>(null);
+  const [ownerToken, setOwnerToken] = useState<string | null>(null);
+  const [ownerTokenBusy, setOwnerTokenBusy] = useState(false);
+  const [confirmResetOwnerToken, setConfirmResetOwnerToken] = useState(false);
+  const [copiedToken, setCopiedToken] = useState(false);
+
+  // 远程主人登录态（issue #32）：本浏览器是否以 owner token 登录（本机 loopback 恒可用，无需登录）
+  const remoteOwnerSignedIn = useOwnerAuth((s) => s.token != null);
+  const signOutOwner = useOwnerAuth((s) => s.signOut);
+
   const amapSectionRef = useRef<HTMLElement>(null);
   const agentsSectionRef = useRef<HTMLElement>(null);
 
@@ -84,14 +96,20 @@ export function SettingsDrawer({
   }, [open, focusSection]);
 
   async function reload() {
-    const [settingsRes, agentsRes] = await Promise.allSettled([
+    const [settingsRes, agentsRes, ownerTokenRes] = await Promise.allSettled([
       api.getSettings(),
       api.detectAgents(),
+      api.getOwnerTokenStatus(),
     ]);
     if (settingsRes.status === "fulfilled") {
       setSettings(settingsRes.value.settings);
     } else {
       toast.error("加载设置失败", { description: (settingsRes.reason as Error).message });
+    }
+    if (ownerTokenRes.status === "fulfilled") {
+      setOwnerTokenConfigured(ownerTokenRes.value.configured);
+    } else {
+      setOwnerTokenConfigured(null);
     }
     if (agentsRes.status === "fulfilled") {
       setAgents(agentsRes.value.agents);
@@ -111,6 +129,8 @@ export function SettingsDrawer({
     setKeyInputs({ amapJsKey: "", amapServerKey: "", amapJsSecret: "" });
     setClearedKeys(new Set());
     setForm(null);
+    setOwnerToken(null);
+    setConfirmResetOwnerToken(false);
     void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -124,6 +144,33 @@ export function SettingsDrawer({
       toast.error("检测失败", { description: (err as Error).message });
     } finally {
       setDetecting(false);
+    }
+  }
+
+  /** 生成/重置 owner token：明文仅此一次展示（DB 只存 hash，之后无法找回，只能再重置） */
+  async function resetOwnerToken() {
+    setOwnerTokenBusy(true);
+    try {
+      const { token } = await api.resetOwnerToken();
+      setOwnerToken(token);
+      setOwnerTokenConfigured(true);
+      setConfirmResetOwnerToken(false);
+      setCopiedToken(false);
+    } catch (err) {
+      toast.error("生成失败", { description: (err as Error).message });
+    } finally {
+      setOwnerTokenBusy(false);
+    }
+  }
+
+  async function copyOwnerToken() {
+    if (!ownerToken) return;
+    try {
+      await navigator.clipboard.writeText(ownerToken);
+      setCopiedToken(true);
+      window.setTimeout(() => setCopiedToken(false), 2000);
+    } catch {
+      toast.error("复制失败，请手动选择复制");
     }
   }
 
@@ -303,6 +350,88 @@ export function SettingsDrawer({
                   {savingKeys ? "保存中…" : "保存密钥"}
                 </Button>
               </div>
+            </section>
+
+            <hr className="my-6 border-slate-100" />
+
+            {/* owner token（issue #16：远程访问凭证；链接管理面板在后续 issue） */}
+            <section>
+              <div className="mb-1 flex items-center gap-2">
+                <Link2Off className="size-4 text-slate-400" />
+                <h2 className="text-sm font-semibold text-slate-800">远程访问凭证</h2>
+              </div>
+              <p className="mb-3 text-xs leading-relaxed text-slate-400">
+                owner token 用于在局域网 / 公网远程访问时证明「行程主人」身份（本机访问无需它）。
+                在其他设备上打开 <code className="rounded bg-slate-100 px-1 py-0.5 font-mono">/login</code> 粘贴
+                token 即可登录获得完整功能（issue #32）；也可凭 API 请求头
+                <code className="rounded bg-slate-100 px-1 py-0.5 font-mono"> Authorization: Bearer &lt;token&gt;</code> 携带。
+                仅在生成时展示一次，之后无法找回，只能重置（旧 token 立即失效，远程已登录设备全部掉线）。
+              </p>
+              {ownerToken ? (
+                <div className="space-y-2.5 rounded-box border border-blue-200/70 bg-blue-50/40 p-3.5">
+                  <p className="text-xs font-medium text-slate-600">
+                    新 token 已生成（仅此一次展示，请立即复制保存）：
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <code className="min-w-0 flex-1 truncate rounded-lg border border-slate-200 bg-white px-2.5 py-2 font-mono text-xs text-slate-700">
+                      {ownerToken}
+                    </code>
+                    <Button variant="outline" size="sm" onClick={copyOwnerToken}>
+                      {copiedToken ? <Check /> : <Copy />}
+                      {copiedToken ? "已复制" : "复制"}
+                    </Button>
+                  </div>
+                </div>
+              ) : confirmResetOwnerToken ? (
+                <div className="space-y-2.5 rounded-box border border-red-200/70 bg-red-50/40 p-3.5">
+                  <p className="text-xs leading-relaxed text-slate-600">
+                    {ownerTokenConfigured
+                      ? "重置会立即使旧 token 失效，正在用它远程访问的设备将全部掉线。确定重置？"
+                      : "确定生成 owner token？"}
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="ghost" size="sm" onClick={() => setConfirmResetOwnerToken(false)}>
+                      取消
+                    </Button>
+                    <Button variant="destructive" size="sm" onClick={resetOwnerToken} disabled={ownerTokenBusy}>
+                      {ownerTokenBusy ? "生成中…" : ownerTokenConfigured ? "确认重置" : "生成"}
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1.5 text-xs text-slate-400">
+                    <span
+                      className={cn(
+                        "size-1.5 rounded-full",
+                        ownerTokenConfigured ? "bg-available" : "bg-slate-300",
+                      )}
+                    />
+                    {ownerTokenConfigured ? "已生成" : "未生成"}
+                    {remoteOwnerSignedIn && (
+                      <span className="ml-1 rounded-full bg-blue-500/12 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+                        本浏览器已登录
+                      </span>
+                    )}
+                  </span>
+                  <span className="flex items-center gap-2">
+                    {remoteOwnerSignedIn && (
+                      <Button variant="ghost" size="sm" onClick={signOutOwner}>
+                        退出远程主人身份
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setConfirmResetOwnerToken(true)}
+                      disabled={ownerTokenBusy}
+                    >
+                      <RefreshCw className={cn("size-3", ownerTokenBusy && "animate-spin")} />
+                      {ownerTokenConfigured ? "重置" : "生成"}
+                    </Button>
+                  </span>
+                </div>
+              )}
             </section>
 
             <hr className="my-6 border-slate-100" />

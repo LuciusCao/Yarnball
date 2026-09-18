@@ -14,6 +14,8 @@ interface HotelStayRangePickerProps {
   /** 其他已选定酒店的区间（冲突检测用，不含自身）；label 用于冲突提示 */
   otherStays: (HotelStayRange & { label?: string })[];
   disabled?: boolean;
+  /** 只读展示（issue #20 viewer 同伴）：不渲染下拉，改一行静态文本 */
+  readOnly?: boolean;
   onChange: (range: HotelStayRange) => void;
 }
 
@@ -23,6 +25,7 @@ export function HotelStayRangePicker({
   checkOutDay,
   otherStays,
   disabled = false,
+  readOnly = false,
   onChange,
 }: HotelStayRangePickerProps) {
   /** 新区间与其他酒店冲突时返回提示文案，否则 null */
@@ -45,6 +48,16 @@ export function HotelStayRangePicker({
 
   const selectClass =
     "rounded border border-slate-300/70 bg-white/70 px-1 py-0.5 text-[11px] text-slate-600 disabled:opacity-50";
+
+  // 只读（viewer 同伴）：静态文本替代下拉，口径与选项文案一致（离店 > totalDays = 行程结束）
+  if (readOnly) {
+    return (
+      <span className="text-[11px] text-slate-500">
+        入住第{checkInDay}天 · 离店{checkOutDay > totalDays ? "行程结束" : `第${checkOutDay}天`} ·{" "}
+        {stayNights({ checkInDay, checkOutDay })} 晚
+      </span>
+    );
+  }
 
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">

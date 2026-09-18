@@ -20,6 +20,7 @@ import {
   type BudgetSummary,
   type PlaceDto,
   type SharePayload,
+  type TripEvent,
 } from "@yarnball/shared";
 import { api } from "../api/client";
 import { Badge } from "../components/ui/badge";
@@ -30,6 +31,9 @@ import {
   bookingStatusOf,
   openingHoursOf,
 } from "../features/candidates/booking";
+// 协作实时体验（issue #19）：在线状态展示。分享页的事件流（/share/:token/events）与行程频道
+// 同源，presence 事件自带全量名单——组件内直接消费（动态数据不进 store），无需独立订阅。
+import type { PresenceEntry } from "@yarnball/shared";
 
 /** 信息卡外链展示：取 URL 的 host，解析失败退回原文（与 TripPage 同款） */
 function urlHost(url: string): string {
@@ -40,7 +44,15 @@ function urlHost(url: string): string {
   }
 }
 
-/** 只读分享页：全屏地图 + 毛玻璃浮层行程面板（无编辑无对话）；地点信息卡与预算条均为只读 */
+/**
+ * 只读分享页：全屏地图 + 毛玻璃浮层行程面板（无编辑无对话）；地点信息卡与预算条均为只读。
+ *
+ * #19 实时化：初始 GET /api/share/:token 拿快照后，订阅 /api/share/:token/events
+ * （token 即凭证，服务端内部解析 tripId；bundle 事件过同一套 aliasShareBundleIds 脱敏），
+ * owner/同伴的修改秒级可见，无需刷新。预算随 bundle 事件到达重算不了（脱敏包不带预算）——
+ * 服务端不向 share 频道推预算，预算条保持打开时的快照（只读页面可接受；刷新页面拿最新）。
+ * 天气走 GET /api/share/:token/weather（公开端点，react-query，不进 bundle）。
+ */
 export function SharePage() {
   const { token } = useParams<{ token: string }>();
   const [payload, setPayload] = useState<SharePayload | null>(null);
@@ -49,6 +61,8 @@ export function SharePage() {
   const [visibleDay, setVisibleDay] = useState<number | null>(null);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
   const [panelMode, setPanelMode] = useState<"expanded" | "collapsed" | "hidden">("expanded");
+  /** 在线名单（issue #19）：SSE presence 事件自带全量 viewers，整包替换 */
+  const [viewers, setViewers] = useState<PresenceEntry[]>([]);
 
   useEffect(() => {
     void fetch(`/api/share/${token}`)
@@ -60,6 +74,30 @@ export function SharePage() {
       .catch((err) => setError((err as Error).message));
     void api.config().then(setConfig);
   }, [token]);
+
+  // 实时刷新（issue #19）：订阅分享专用事件流，bundle 事件整包替换（与 tripStore 同模式——
+  // 服务端全量快照最可靠）。分享页没有 zustand store（单组件快照态够用），直接 setState。
+  useEffect(() => {
+    if (!token || error) return;
+    const es = new EventSource(`/api/share/${token}/events`);
+    es.onmessage = (e) => {
+      if (!e.data) return;
+      const event = JSON.parse(e.data) as TripEvent;
+      if (event.type === "bundle" && event.bundle) {
+        // 保留打开时的预算快照（脱敏 bundle 不含预算，share 频道也不推预算事件）
+        setPayload((prev) => (prev ? { ...prev, bundle: event.bundle! } : prev));
+      } else if (event.type === "presence") {
+        setViewers(event.presence.viewers);
+      } else if (event.type === "deleted") {
+        setError("行程已被删除");
+        es.close();
+      }
+    };
+    es.onerror = () => {
+      // 断线由 EventSource 自动重连；链接被吊销时重连失败静默（页面数据停在最后快照，刷新可见 404）
+    };
+    return () => es.close();
+  }, [token, error]);
 
   if (error) {
     return <div className="flex h-full items-center justify-center text-sm text-red-500">{error}</div>;
@@ -75,6 +113,9 @@ export function SharePage() {
       ? bundle.places.find((p) => p.id === selectedPlaceId) ?? null
       : null;
   const scheduledPlaceIds = new Set(bundle.entries.map((e) => e.placeId));
+  // 在线名单去重（同一人多标签页是多条连接）；owner 显示「主人」，share 订阅者显示「访客」
+  const onlineLabels = [...new Set(viewers.map((v) => v.label))];
+  const onlineCount = onlineLabels.length;
 
   return (
     <div className="relative h-full overflow-hidden">
@@ -93,8 +134,21 @@ export function SharePage() {
       <header className="glass panel-in pointer-events-auto absolute left-4 top-4 z-10 flex items-center gap-2.5 rounded-2xl px-4 py-2">
         <h1 className="glass-text text-sm font-semibold">{bundle.trip.title}</h1>
         <span className="rounded-full bg-slate-900/8 px-2 py-0.5 text-[11px] font-medium text-slate-500">
-          {bundle.trip.destinationCity} · 只读
+          {bundle.trip.destinationCity} · 只读 · 实时
         </span>
+        {/* 在线人数（issue #19）：与 owner/同伴共用行程频道的 presence 事件（脱敏 label） */}
+        {onlineCount > 0 && (
+          <span
+            className="flex items-center gap-1.5 rounded-full bg-emerald-500/12 px-2 py-0.5 text-[11px] font-medium text-emerald-700"
+            title={`当前在线：${onlineLabels.join("、")}（含行程主人与同伴）`}
+          >
+            <span className="relative flex size-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+              <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+            </span>
+            {onlineCount} 人在线
+          </span>
+        )}
       </header>
 
       {/* Day chips：保留 formatDayLabel 完整形态（D1 · 9/23 周三）——分享页行程面板可收起/隐藏，
@@ -178,6 +232,7 @@ export function SharePage() {
               onSelectPlace={setSelectedPlaceId}
               onDataChanged={() => {}}
               readOnly
+              shareToken={token}
             />
           </div>
         </aside>

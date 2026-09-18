@@ -4,12 +4,15 @@ import {
   asc,
   eq,
   inArray,
+  isNull,
   or,
   sql,
 } from "drizzle-orm";
 import type {
+  AccessLinkRole,
   Actor,
   AddEntryInput,
+  CreateAccessLinkInput,
   CreateHotelCandidateInput,
   CreatePlaceInput,
   CreateTripInput,
@@ -19,41 +22,58 @@ import type {
   HotelAreaRecommendation,
   HotelAreaSegment,
   HotelAreaSignalPoint,
+  JoinActivateInput,
+  JoinActivateResult,
+  JoinInfo,
+  JoinLinkErrorCode,
   LngLat,
   PlaceDto,
   PlaceStatus,
   SuggestDayClustersResult,
   TransitSegment,
   TransportMode,
+  TripAccessLinkDto,
+  TripActivityAction,
+  TripActivityDto,
   TripBundle,
   TripNoteDto,
   TripStop,
+  UpdateAccessLinkInput,
   UpdateEntryInput,
   UpdateHotelCandidateInput,
   UpdatePlaceInput,
   UpdateTripInput,
   UpdateTripNoteInput,
 } from "@yarnball/shared";
-import { isDomesticOsmTrip } from "@yarnball/shared";
+import { isDomesticOsmTrip, TRIP_ACTIVITY_ACTION_LABELS, actorKindOf, actorLabelOf } from "@yarnball/shared";
 import { TRIPS_CHANNEL, tripChannel, type EventBus } from "../events.js";
 import type { Db } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import {
+  toAccessLinkDto,
   toDayDto,
   toEntryDto,
   toHotelDto,
   toLegDto,
   toPlaceDto,
+  toTripActivityDto,
   toTripDto,
   toTripNoteDto,
 } from "./mappers.js";
 import { amap, currencyForCountry, drivingMatrixBatched, fallbackRoute, ferryRouteEstimate, getProvider, haversineM, isChinaCountry, osm } from "./geo.js";
 import { insertionIncrements, kMedoids, optimizeLoopOrder, optimizeOrder, optimizePathOrder, orderTotalDuration } from "./routing.js";
 import { amapConfigured } from "./settings.js";
+import { mintAccessToken } from "./auth.js";
 
 const uuid = () => randomUUID();
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+/** 动态流宾语截断（issue #19）：注意事项等长文本只进句子前 20 字，防止动态条刷屏 */
+function truncateSubject(text: string, max = 20): string {
+  const t = text.trim();
+  return t.length <= max ? t : `${t.slice(0, max)}…`;
+}
 
 /**
  * 并发限流器：同一时刻最多 concurrency 个任务在执行，其余排队。
@@ -96,6 +116,21 @@ export class ServiceError extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+/**
+ * join 端点专用错误（issue #18）：状态码 + 可区分 code 双保险——
+ * 前端按 code（join_link_not_found / join_link_revoked）出不同文案，
+ * code 缺失时退回按 HTTP 状态区分（404 无效 / 410 已吊销）。
+ */
+export class JoinLinkError extends ServiceError {
+  constructor(
+    public code: JoinLinkErrorCode,
+    status: 404 | 410,
+    message: string,
+  ) {
+    super(status, message);
   }
 }
 
@@ -422,6 +457,11 @@ export class TripService {
         shareToken,
       })
       .returning();
+    // 访问链接权威数据在 trip_access_links（issue #16）：建行程即落一条 viewer 链接（token 同 shareToken），
+    // shareToken 列保留为该「默认只读分享链接」的兼容镜像（同 destinationCity vs stops 模式）
+    await this.db
+      .insert(schema.tripAccessLinks)
+      .values({ id: uuid(), tripId: id, token: shareToken, role: "viewer", label: "只读分享" });
     const dto = toTripDto(row);
     this.bus.publish(TRIPS_CHANNEL, { type: "created", trip: dto });
     return dto;
@@ -493,7 +533,7 @@ export class TripService {
    * 天数口径（getTripDayCount / getBudgetSummary / selectHotel 上界）要求两者同时非空且区间为正才按日期区间计，
    * 只设一个或区间倒置时自动回退到已建天数兜底，不会产生破坏性的天数变化。
    */
-  async updateTrip(tripId: string, input: UpdateTripInput) {
+  async updateTrip(tripId: string, input: UpdateTripInput, actor: Actor = "human") {
     await this.getTrip(tripId);
     const patch: Partial<typeof schema.trips.$inferInsert> = {};
     if (input.title !== undefined) patch.title = input.title;
@@ -503,6 +543,7 @@ export class TripService {
       patch.updatedAt = new Date();
       await this.db.update(schema.trips).set(patch).where(eq(schema.trips.id, tripId));
       await this.publishBundle(tripId);
+      await this.recordActivity(tripId, actor, "trip_updated", patch.title ?? null);
     }
     return toTripDto(await this.getTrip(tripId));
   }
@@ -513,10 +554,20 @@ export class TripService {
     return row;
   }
 
+  /**
+   * 只读分享链接解析（GET /api/share/:token）。
+   * M114 起权威数据在 trip_access_links（含吊销态），按 token 查未吊销的 viewer 链接；
+   * trips.share_token 是建行程时那条「默认只读分享链接」的兼容镜像。
+   */
   async getTripByShareToken(token: string) {
-    const [row] = await this.db.select().from(schema.trips).where(eq(schema.trips.shareToken, token));
-    if (!row) throw new ServiceError(404, "share link not found");
-    return row;
+    const [link] = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(
+        and(eq(schema.tripAccessLinks.token, token), isNull(schema.tripAccessLinks.revokedAt)),
+      );
+    if (!link) throw new ServiceError(404, "share link not found");
+    return this.getTrip(link.tripId);
   }
 
   async deleteTrip(tripId: string) {
@@ -591,6 +642,77 @@ export class TripService {
     this.bus.publish(tripChannel(tripId), { type: "bundle", bundle });
   }
 
+  // ---------- 动态流（issue #19「谁改了什么」） ----------
+
+  /**
+   * 动态流滚动保留条数：超过即删除最旧行（v1 只做最近 N 条，不做翻页/检索）。
+   * 独立小表 + 低频写，每次插入后顺手清理即可，无需定时任务。
+   */
+  static readonly ACTIVITY_KEEP = 50;
+
+  /**
+   * 记录一条动态：落库 + 滚动清理超旧行 + SSE 推送（行程频道，与 bundle 事件同频道）。
+   * subject 是 summary 里的宾语（如地点名「悉尼歌剧院」、天标签「Day 2」）。
+   * 错误不传播：动态流是旁路可观测性数据，落库失败不应让写操作本身变红——
+   * 真正的数据变更已经提交，activity 只是它的记录（console.warn 留排查线索）。
+   */
+  private async recordActivity(
+    tripId: string,
+    actor: Actor,
+    action: TripActivityAction,
+    subject?: string | null,
+  ): Promise<void> {
+    try {
+      const label = actorLabelOf(actor);
+      const verb = TRIP_ACTIVITY_ACTION_LABELS[action];
+      const summary = subject ? `${label} ${verb} ${subject}` : `${label} ${verb}`;
+      const [row] = await this.db
+        .insert(schema.tripActivity)
+        .values({
+          id: uuid(),
+          tripId,
+          actorKind: actorKindOf(actor),
+          actorLabel: label,
+          action,
+          summary,
+        })
+        .returning();
+      // 滚动清理：createdAt 秒级精度有并列，按 createdAt 再按插入顺序（SQLite rowid）稳定排序
+      const stale = await this.db
+        .select({ id: schema.tripActivity.id })
+        .from(schema.tripActivity)
+        .where(eq(schema.tripActivity.tripId, tripId))
+        .orderBy(asc(schema.tripActivity.createdAt), asc(sql`rowid`))
+        .all();
+      if (stale.length > TripService.ACTIVITY_KEEP) {
+        await this.db.delete(schema.tripActivity).where(
+          inArray(
+            schema.tripActivity.id,
+            stale.slice(0, stale.length - TripService.ACTIVITY_KEEP).map((r) => r.id),
+          ),
+        );
+      }
+      this.bus.publish(tripChannel(tripId), {
+        type: "activity",
+        activity: toTripActivityDto(row),
+      });
+    } catch (err) {
+      console.warn(`[activity] 记录失败（${action}，不影响写操作）:`, (err as Error).message);
+    }
+  }
+
+  /** 最近动态（REST 拉取端点用；新的在前） */
+  async listActivity(tripId: string): Promise<TripActivityDto[]> {
+    await this.getTrip(tripId);
+    const rows = await this.db
+      .select()
+      .from(schema.tripActivity)
+      .where(eq(schema.tripActivity.tripId, tripId))
+      .orderBy(asc(schema.tripActivity.createdAt), asc(sql`rowid`))
+      .all();
+    return rows.map(toTripActivityDto).reverse();
+  }
+
   private async touchTrip(tripId: string) {
     await this.db.update(schema.trips).set({ updatedAt: new Date() }).where(eq(schema.trips.id, tripId));
   }
@@ -631,6 +753,8 @@ export class TripService {
         );
       }
     }
+    // DB 列 createdBy 仍是 human|agent 二值：guest 建点归 human（归属昵称记在 trip_activity）
+    const createdBy = typeof actor === "string" ? actor : "human";
     const cityName = input.cityName ?? (nearest && nearest.distKm <= PLACE_CITY_ASSIGN_MAX_DIST_KM ? nearest.name : null);
     const existingPlaces = await this.db.select().from(schema.places).where(eq(schema.places.tripId, tripId));
     // amapPoiId 精确匹配 → 幂等返回已有 place 并补齐缺失字段（不插新行、不报疑似重复）
@@ -672,12 +796,13 @@ export class TripService {
         bookingInfo: input.bookingInfo ?? null,
         openingHours: input.openingHours ?? null,
         bookingStatus: input.bookingStatus ?? "none",
-        createdBy: actor,
-        status: input.status ?? (actor === "human" ? "joined" : "candidate"),
+        createdBy,
+        status: input.status ?? (createdBy === "human" ? "joined" : "candidate"),
       })
       .returning();
     await this.touchTrip(tripId);
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "place_added", row.name);
     return toPlaceDto(row);
   }
 
@@ -750,7 +875,7 @@ export class TripService {
   }
 
   /** 加入/移出行程（用户确认候选 → joined=已加入行程；退回候选池 → candidate）。UI 话术为「加入行程/移出行程」 */
-  async setPlaceStatus(placeId: string, status: PlaceStatus) {
+  async setPlaceStatus(placeId: string, status: PlaceStatus, actor: Actor = "human") {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
     const [row] = await this.db
@@ -760,11 +885,17 @@ export class TripService {
       .returning();
     await this.touchTrip(existing.tripId);
     await this.publishBundle(existing.tripId);
+    await this.recordActivity(
+      existing.tripId,
+      actor,
+      status === "joined" ? "place_joined" : "place_unjoined",
+      existing.name,
+    );
     return toPlaceDto(row);
   }
 
   /** M54 状态简化：agent 可改任何地点（含已加入行程的）的信息字段——补官网/改备注/调价等，不再有状态拦截 */
-  async updatePlace(placeId: string, input: UpdatePlaceInput) {
+  async updatePlace(placeId: string, input: UpdatePlaceInput, actor: Actor = "human") {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
     const patch: Partial<typeof schema.places.$inferInsert> = {};
@@ -793,6 +924,8 @@ export class TripService {
     const [row] = await this.db.update(schema.places).set(patch).where(eq(schema.places.id, placeId)).returning();
     await this.touchTrip(existing.tripId);
     await this.publishBundle(existing.tripId);
+    // 信息字段编辑不进动态流（结构性变更才记，防高频微调刷屏）；actor 参数留给后续字段级动态扩展
+    void actor;
     return toPlaceDto(row);
   }
 
@@ -827,6 +960,7 @@ export class TripService {
       await Promise.all(affectedDays.map(({ dayId }) => this.recalcDayLegs(tripId, dayId)));
     }
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "place_removed", existing.name);
   }
 
   /**
@@ -834,7 +968,7 @@ export class TripService {
    * （place 退回候选态，不删 place 本身，transit 起讫点对其的引用保留）。
    * 受影响天 normalizePositions 填洞 + 重算 legs（首尾锚定/交通段按 recalcDayLegs 现有不变式重算）。
    */
-  async unschedulePlace(placeId: string) {
+  async unschedulePlace(placeId: string, actor: Actor = "human") {
     const [existing] = await this.db.select().from(schema.places).where(eq(schema.places.id, placeId));
     if (!existing) throw new ServiceError(404, `place ${placeId} not found`);
     const entryRows = await this.db
@@ -859,6 +993,9 @@ export class TripService {
       await this.recalcDayLegs(existing.tripId, dayId);
     }
     await this.publishBundle(existing.tripId);
+    if (entryRows.length > 0) {
+      await this.recordActivity(existing.tripId, actor, "place_unjoined", existing.name);
+    }
     return { removedEntries: entryRows.length };
   }
 
@@ -885,12 +1022,15 @@ export class TripService {
   }
 
   /** 撰写/更新每日概要（REST 与 MCP set_day_summary 共用）；null = 清除撰写值，恢复 bundle 层自动兜底 */
-  async updateDaySummary(dayId: string, summary: string | null) {
+  async updateDaySummary(dayId: string, summary: string | null, actor: Actor = "human") {
     const [day] = await this.db.select().from(schema.days).where(eq(schema.days.id, dayId));
     if (!day) throw new ServiceError(404, `day ${dayId} not found`);
     await this.db.update(schema.days).set({ summary }).where(eq(schema.days.id, dayId));
     await this.touchTrip(day.tripId);
     await this.publishBundle(day.tripId);
+    if (summary != null) {
+      await this.recordActivity(day.tripId, actor, "day_summary_updated", `Day ${day.dayIndex}`);
+    }
     const [updated] = await this.db.select().from(schema.days).where(eq(schema.days.id, dayId));
     const dto = toDayDto(updated);
     // 即时响应与 bundle 口径一致：清除撰写值（summary=null）后按兜底重算，
@@ -908,7 +1048,7 @@ export class TripService {
 
   // ---------- 行程级注意事项（trip_notes） ----------
 
-  async createTripNote(tripId: string, input: CreateTripNoteInput): Promise<TripNoteDto> {
+  async createTripNote(tripId: string, input: CreateTripNoteInput, actor: Actor = "human"): Promise<TripNoteDto> {
     await this.getTrip(tripId);
     let position = input.position;
     if (position == null) {
@@ -924,6 +1064,7 @@ export class TripService {
       .returning();
     await this.touchTrip(tripId);
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "note_added", truncateSubject(row.content));
     return toTripNoteDto(row);
   }
 
@@ -944,12 +1085,138 @@ export class TripService {
     return toTripNoteDto(updated);
   }
 
-  async removeTripNote(noteId: string) {
+  async removeTripNote(noteId: string, actor: Actor = "human") {
     const [existing] = await this.db.select().from(schema.tripNotes).where(eq(schema.tripNotes.id, noteId));
     if (!existing) throw new ServiceError(404, `note ${noteId} not found`);
     await this.db.delete(schema.tripNotes).where(eq(schema.tripNotes.id, noteId));
     await this.touchTrip(existing.tripId);
     await this.publishBundle(existing.tripId);
+    await this.recordActivity(existing.tripId, actor, "note_removed", truncateSubject(existing.content));
+  }
+
+  // ---------- 访问链接（trip_access_links，issue #16：owner-only 管理） ----------
+
+  /** 行程的全部访问链接（含已吊销，管理面板展示用；token 明文供 owner 复制） */
+  async listAccessLinks(tripId: string): Promise<TripAccessLinkDto[]> {
+    await this.getTrip(tripId);
+    const rows = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(eq(schema.tripAccessLinks.tripId, tripId))
+      .orderBy(asc(schema.tripAccessLinks.createdAt));
+    return rows.map(toAccessLinkDto);
+  }
+
+  /**
+   * 创建访问链接。缺省 label 按角色给默认（「只读分享」/「可编辑链接」）。
+   * 刻意不与 trips.shareToken 联动：镜像列只对应建行程时的那条默认 viewer 链接
+   * （迁移回填同口径），后续新建链接是独立凭证，不写回镜像列。
+   */
+  async createAccessLink(tripId: string, input: CreateAccessLinkInput): Promise<TripAccessLinkDto> {
+    await this.getTrip(tripId);
+    const [row] = await this.db
+      .insert(schema.tripAccessLinks)
+      .values({
+        id: uuid(),
+        tripId,
+        token: mintAccessToken(),
+        role: input.role,
+        label: input.label ?? (input.role === "viewer" ? "只读分享" : "可编辑链接"),
+      })
+      .returning();
+    return toAccessLinkDto(row);
+  }
+
+  /** 更新链接（目前仅改备注名；role 不可改——角色变化 = 新建链接 + 吊销旧的，语义更清晰） */
+  async updateAccessLink(linkId: string, input: UpdateAccessLinkInput): Promise<TripAccessLinkDto> {
+    const [existing] = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(eq(schema.tripAccessLinks.id, linkId));
+    if (!existing) throw new ServiceError(404, `access link ${linkId} not found`);
+    const patch: Partial<typeof schema.tripAccessLinks.$inferInsert> = {};
+    if (input.label !== undefined) patch.label = input.label ?? null;
+    if (Object.keys(patch).length > 0) {
+      await this.db.update(schema.tripAccessLinks).set(patch).where(eq(schema.tripAccessLinks.id, linkId));
+    }
+    const [updated] = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(eq(schema.tripAccessLinks.id, linkId));
+    return toAccessLinkDto(updated);
+  }
+
+  /**
+   * 吊销链接（软删：置 revoked_at，行保留作审计记录；吊销即终态）。
+   * 吊销的是「默认只读分享链接」（token == trips.shareToken）时不改镜像列——
+   * 镜像列只承载 token 值本身，吊销态的权威判定在表。
+   */
+  async revokeAccessLink(linkId: string): Promise<void> {
+    const [existing] = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(eq(schema.tripAccessLinks.id, linkId));
+    if (!existing) throw new ServiceError(404, `access link ${linkId} not found`);
+    if (existing.revokedAt) return; // 幂等：重复吊销安全
+    await this.db
+      .update(schema.tripAccessLinks)
+      .set({ revokedAt: new Date() })
+      .where(eq(schema.tripAccessLinks.id, linkId));
+    // 切断持有该链接的活跃 SSE 流（Codex P1）：吊销只挡新请求，已建立的流若不主动断开，
+    // 被吊销的 guest 会继续收到 bundle 全量快照（含真实 id）直到自己断线。
+    // 事件带 linkId/token 供流端比对（评审二 P3-1）：只关持有被吊销凭证的流，
+    // 不误伤同行程其他链接的无辜连接；无关流不下发该事件（handler 拦截）。
+    this.bus.publish(tripChannel(existing.tripId), {
+      type: "revoked",
+      scope: "access_link",
+      linkId: existing.id,
+      token: existing.token,
+    });
+  }
+
+  // ---------- 同伴入口（issue #18：公开端点，token 在 URL 即凭证，不走 principal 鉴权） ----------
+
+  /** 按 token 查访问链接（含已吊销行——join 端点要区分「无效」与「已撤销」） */
+  private async getAccessLinkByToken(token: string) {
+    const [link] = await this.db
+      .select()
+      .from(schema.tripAccessLinks)
+      .where(eq(schema.tripAccessLinks.token, token));
+    if (!link) throw new JoinLinkError("join_link_not_found", 404, "链接无效或已被删除");
+    if (link.revokedAt) throw new JoinLinkError("join_link_revoked", 410, "链接已被行程主人撤销");
+    return link;
+  }
+
+  /**
+   * 链接信息（GET /api/join/:token/info）。只给标题/角色/已填昵称——
+   * 不泄 bundle、不泄 owner 信息、不泄真实 tripId（tripId 在 activate 成功后才下发）。
+   */
+  async getJoinInfo(token: string): Promise<JoinInfo> {
+    const link = await this.getAccessLinkByToken(token);
+    const trip = await this.getTrip(link.tripId);
+    return {
+      tripTitle: trip.title,
+      role: link.role as AccessLinkRole,
+      displayName: link.displayName ?? null,
+    };
+  }
+
+  /**
+   * 激活链接（POST /api/join/:token/activate）：写昵称 + last_seen_at，返回 tripId/role。
+   * 重复激活（改昵称重进）直接覆盖 displayName——链接即身份，昵称是可变展示名。
+   * last_seen_at 在此显式写（本端点在公开区，不走 principalMiddleware 的节流触达）。
+   */
+  async activateJoinLink(token: string, input: JoinActivateInput): Promise<JoinActivateResult> {
+    const link = await this.getAccessLinkByToken(token);
+    await this.db
+      .update(schema.tripAccessLinks)
+      .set({ displayName: input.displayName, lastSeenAt: new Date() })
+      .where(eq(schema.tripAccessLinks.id, link.id));
+    return {
+      tripId: link.tripId,
+      role: link.role as AccessLinkRole,
+      displayName: input.displayName,
+    };
   }
 
   /**
@@ -958,7 +1225,7 @@ export class TripService {
    * 起讫引用 place 时 recalcDayLegs 走真实坐标参与锚定（到达日起点 / 离开日收口），纯文本则不产生交通段。
    * transit 的 startTime 缺省取 departTime（时间轴排序用）。
    */
-  async addEntry(tripId: string, input: AddEntryInput) {
+  async addEntry(tripId: string, input: AddEntryInput, actor: Actor = "human") {
     await this.getTrip(tripId);
     const entryType = input.entryType ?? "place";
     if (entryType === "place") {
@@ -1040,6 +1307,30 @@ export class TripService {
     await this.touchTrip(tripId);
     await this.recalcDayLegs(tripId, day.id);
     await this.publishBundle(tripId);
+    // 动态流：place entry 记「排了日程 地点名」；transit 记「添加了大交通 起 → 讫」
+    if (entryType === "place") {
+      const [place] = await this.db
+        .select({ name: schema.places.name })
+        .from(schema.places)
+        .where(eq(schema.places.id, input.placeId!));
+      await this.recordActivity(tripId, actor, "entry_added", place?.name ?? null);
+    } else {
+      const fromPlace = input.fromPlaceId
+        ? (await this.db
+            .select({ name: schema.places.name })
+            .from(schema.places)
+            .where(eq(schema.places.id, input.fromPlaceId)))[0]
+        : undefined;
+      const toPlace = input.toPlaceId
+        ? (await this.db
+            .select({ name: schema.places.name })
+            .from(schema.places)
+            .where(eq(schema.places.id, input.toPlaceId)))[0]
+        : undefined;
+      const fromText = fromPlace?.name ?? input.fromName ?? "起点";
+      const toText = toPlace?.name ?? input.toName ?? "讫点";
+      await this.recordActivity(tripId, actor, "transit_added", `${fromText} → ${toText}`);
+    }
     return { entryId, dayId: day.id, position: pos };
   }
 
@@ -1113,17 +1404,36 @@ export class TripService {
     return toEntryDto(row);
   }
 
-  async removeEntry(entryId: string) {
+  async removeEntry(entryId: string, actor: Actor = "human") {
     const [entry] = await this.db.select().from(schema.entries).where(eq(schema.entries.id, entryId));
     if (!entry) throw new ServiceError(404, `entry ${entryId} not found`);
+    // 主体在删除前取（行删了就查不到名字/天序）
+    const subject =
+      entry.entryType === "place"
+        ? (await this.db
+            .select({ name: schema.places.name })
+            .from(schema.places)
+            .where(eq(schema.places.id, entry.placeId!)))[0]?.name ?? null
+        : null;
+    const [dayRow] = await this.db
+      .select({ dayIndex: schema.days.dayIndex })
+      .from(schema.days)
+      .where(eq(schema.days.id, entry.dayId));
     await this.db.delete(schema.entries).where(eq(schema.entries.id, entryId));
     await this.normalizePositions(entry.dayId);
     await this.touchTrip(entry.tripId);
     await this.recalcDayLegs(entry.tripId, entry.dayId);
     await this.publishBundle(entry.tripId);
+    const dayLabel = dayRow ? `Day ${dayRow.dayIndex}` : null;
+    await this.recordActivity(
+      entry.tripId,
+      actor,
+      "entry_removed",
+      [dayLabel, subject].filter(Boolean).join(" · ") || null,
+    );
   }
 
-  async moveEntry(entryId: string, dayIndex: number, position: number) {
+  async moveEntry(entryId: string, dayIndex: number, position: number, actor: Actor = "human") {
     const [entry] = await this.db.select().from(schema.entries).where(eq(schema.entries.id, entryId));
     if (!entry) throw new ServiceError(404, `entry ${entryId} not found`);
     const day = await this.ensureDay(entry.tripId, dayIndex);
@@ -1184,7 +1494,7 @@ export class TripService {
   }
 
   /** 整天重排（人拖拽 or agent reorder_day） */
-  async reorderDay(tripId: string, dayIndex: number, entryIds: string[]) {
+  async reorderDay(tripId: string, dayIndex: number, entryIds: string[], actor: Actor = "human") {
     const day = await this.ensureDay(tripId, dayIndex);
     const entries = await this.db.select().from(schema.entries).where(eq(schema.entries.dayId, day.id));
     const currentIds = new Set(entries.map((e) => e.id));
@@ -1206,6 +1516,9 @@ export class TripService {
     await this.touchTrip(tripId);
     await this.recalcDayLegs(tripId, day.id);
     await this.publishBundle(tripId);
+    if (entryIds.length >= 2) {
+      await this.recordActivity(tripId, actor, "day_reordered", `Day ${dayIndex}`);
+    }
   }
 
   private normalizePositions(dayId: string) {
@@ -1539,7 +1852,7 @@ export class TripService {
    * 手动覆盖某段交通方式（mode=null 清除覆盖恢复自动）。
    * 覆盖存在 leg.modeOverride 上，recalcDayLegs 按端点配对保留。
    */
-  async setLegMode(legId: string, mode: TransportMode | null) {
+  async setLegMode(legId: string, mode: TransportMode | null, actor: Actor = "human") {
     const [leg] = await this.db.select().from(schema.transportLegs).where(eq(schema.transportLegs.id, legId));
     if (!leg) throw new ServiceError(404, `leg ${legId} not found`);
     await this.db
@@ -1549,6 +1862,8 @@ export class TripService {
     await this.touchTrip(leg.tripId);
     await this.recalcDayLegs(leg.tripId, leg.dayId);
     await this.publishBundle(leg.tripId);
+    // 交通方式手动覆盖不进动态流：微调频次高且非结构性，与地点信息字段编辑同口径
+    void actor;
   }
 
   /** 行程全部天的 legs 重算（换酒店/删除酒店地点用）。多天并行，外部路由并发由 routeLimits 全局收口 */
@@ -2112,6 +2427,7 @@ export class TripService {
     tripId: string,
     candidateId: string | null,
     days?: { checkInDay?: number; checkOutDay?: number },
+    actor: Actor = "human",
   ) {
     const trip = await this.getTrip(tripId);
     // candidateId=null：取消全部选定（兼容旧单选契约）
@@ -2222,11 +2538,12 @@ export class TripService {
     // 酒店是每天往返交通的锚点：选定/取消后全量重算各天 legs
     await this.recalcAllDayLegs(tripId);
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "hotel_selected", await this.hotelPlaceName(tripId, candidateId));
     return { checkInDay, checkOutDay };
   }
 
   /** 取消单个酒店的选定 */
-  async unselectHotel(tripId: string, candidateId: string) {
+  async unselectHotel(tripId: string, candidateId: string, actor: Actor = "human") {
     await this.getTrip(tripId);
     const [cand] = await this.db
       .select()
@@ -2240,6 +2557,17 @@ export class TripService {
     await this.syncSelectedHotelMirror(tripId);
     await this.recalcAllDayLegs(tripId);
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "hotel_unselected", await this.hotelPlaceName(tripId, candidateId));
+  }
+
+  /** 酒店候选对应地点名（activity 宾语用） */
+  private async hotelPlaceName(tripId: string, candidateId: string): Promise<string | null> {
+    const [row] = await this.db
+      .select({ name: schema.places.name })
+      .from(schema.hotelCandidates)
+      .innerJoin(schema.places, eq(schema.places.id, schema.hotelCandidates.placeId))
+      .where(and(eq(schema.hotelCandidates.id, candidateId), eq(schema.hotelCandidates.tripId, tripId)));
+    return row?.name ?? null;
   }
 
   /**
@@ -2280,6 +2608,7 @@ export class TripService {
   async updateBudget(
     tripId: string,
     input: { budgetCny?: number | null; travelerCount?: number; currency?: string },
+    actor: Actor = "human",
   ) {
     await this.getTrip(tripId);
     const patch: Partial<typeof schema.trips.$inferInsert> = { updatedAt: new Date() };
@@ -2294,6 +2623,7 @@ export class TripService {
     }
     await this.db.update(schema.trips).set(patch).where(eq(schema.trips.id, tripId));
     await this.publishBundle(tripId);
+    await this.recordActivity(tripId, actor, "budget_updated");
   }
 
   /**
@@ -2625,5 +2955,193 @@ export class TripService {
       signals,
       ...(notes.length > 0 ? { note: notes.join("；") } : {}),
     };
+  }
+
+  // ---------- 行程数据包（issue #34：离线分享，导出加密快照 + 密码导入） ----------
+
+  /**
+   * 导出数据包：bundle 全量。凭证剥离只针对 shareToken（对原行程有效的唯一凭证）与
+   * trip.id（空串占位，导入时新造）；实体 id **保留**——它们是 UUID、跨库无语义、
+   * 不构成凭证，且是导入 ID 重映射的锚点（抹掉会让全部实体共享同一映射撞主键，
+   * api.package.test 实测教训）。
+   */
+  async exportTripPackage(tripId: string, password: string) {
+    const bundle = await this.getBundle(tripId);
+    const stripped: TripBundle = {
+      ...bundle,
+      trip: { ...bundle.trip, id: "", shareToken: "", selectedHotelCandidateId: null },
+      // 实体自身 id 保留（导入重映射的锚点），但 tripId 引用抹掉——原库 trip UUID 不进包
+      places: bundle.places.map((p) => ({ ...p, tripId: "" })),
+      days: bundle.days.map((d) => ({ ...d, tripId: "" })),
+      entries: bundle.entries.map((e) => ({ ...e, tripId: "" })),
+      legs: bundle.legs.map((l) => ({ ...l, tripId: "" })),
+      hotelCandidates: bundle.hotelCandidates.map((h) => ({ ...h, tripId: "" })),
+      notes: bundle.notes.map((n) => ({ ...n, tripId: "" })),
+    };
+    const { encryptTripBundle } = await import("./tripPackage.js");
+    return encryptTripBundle(stripped, password);
+  }
+
+  /**
+   * 导入数据包：解密 → 全量 ID 重映射（新 UUID，实体间引用一并对齐）→ 落库为新行程。
+   * 引擎成对保留（geoProvider + 坐标原样复制，GCJ-02/WGS84 不混用）；legs 直接复制
+   * 保真（真实路由/公交分段），不重算不依赖上游；新行程自动落默认只读分享链接
+   * （createTrip 同款），无协作链接、无动态流历史。
+   */
+  async importTripPackage(packageText: string, password: string): Promise<TripBundle> {
+    const { decryptTripPackage } = await import("./tripPackage.js");
+    const pkg = decryptTripPackage(packageText, password);
+    const t = pkg.trip;
+    const newTripId = uuid();
+    const newShareToken = randomBytes(16).toString("hex");
+    // ID 重映射表：placeId/dayId/entryId/hotelId/noteId → 新 UUID
+    const placeMap = new Map<string, string>();
+    for (const p of pkg.places) placeMap.set(p.id, uuid());
+    const dayMap = new Map<string, string>();
+    for (const d of pkg.days) dayMap.set(d.id, uuid());
+    const entryMap = new Map<string, string>();
+    for (const e of pkg.entries) entryMap.set(e.id, uuid());
+    const hotelMap = new Map<string, string>();
+    for (const h of pkg.hotelCandidates) hotelMap.set(h.id, uuid());
+    const noteMap = new Map<string, string>();
+    for (const n of pkg.notes) noteMap.set(n.id, uuid());
+    const mapPlace = (id: string | null) => (id != null && placeMap.has(id) ? placeMap.get(id)! : null);
+
+    const [tripRow] = await this.db
+      .insert(schema.trips)
+      .values({
+        id: newTripId,
+        title: t.title,
+        destinationCity: t.destinationCity,
+        cityAdcode: t.cityAdcode,
+        geoProvider: t.geoProvider,
+        country: t.country,
+        cityCenterLng: t.location ? t.location.lng : null,
+        cityCenterLat: t.location ? t.location.lat : null,
+        stops: t.stops,
+        startDate: t.startDate,
+        endDate: t.endDate,
+        budgetCny: t.budgetCny,
+        travelerCount: t.travelerCount,
+        currency: t.currency,
+        shareToken: newShareToken,
+      })
+      .returning();
+    await this.db
+      .insert(schema.tripAccessLinks)
+      .values({ id: uuid(), tripId: newTripId, token: newShareToken, role: "viewer", label: "只读分享" });
+
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.places.length > 0)
+      await this.db.insert(schema.places).values(
+      pkg.places.map((p) => ({
+        id: placeMap.get(p.id)!,
+        tripId: newTripId,
+        name: p.name,
+        category: p.category,
+        lng: p.location.lng,
+        lat: p.location.lat,
+        address: p.address,
+        website: p.website,
+        bookingUrl: p.bookingUrl,
+        phone: p.phone,
+        cityName: p.cityName,
+        amapPoiId: p.amapPoiId,
+        sourceType: p.sourceType,
+        sourceUrl: p.sourceUrl,
+        notes: p.notes,
+        durationMin: p.durationMin ?? p.visitDurationMin ?? null,
+        visitDurationMin: p.visitDurationMin ?? p.durationMin ?? null,
+        priceCny: p.priceCny,
+        bookingInfo: p.bookingInfo,
+        openingHours: p.openingHours,
+        bookingStatus: p.bookingStatus,
+        createdBy: p.createdBy,
+        status: p.status,
+      })),
+    );
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.days.length > 0)
+      await this.db.insert(schema.days).values(
+      pkg.days.map((d) => ({
+        id: dayMap.get(d.id)!,
+        tripId: newTripId,
+        dayIndex: d.dayIndex,
+        date: d.date,
+        // 自动兜底概要不落库（summaryAuto 的口径），只导入人工/agent 撰写值
+        summary: d.summaryAuto ? null : d.summary,
+      })),
+    );
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.entries.length > 0)
+      await this.db.insert(schema.entries).values(
+      pkg.entries.map((e) => ({
+        id: entryMap.get(e.id)!,
+        tripId: newTripId,
+        dayId: dayMap.get(e.dayId)!,
+        placeId: mapPlace(e.placeId),
+        entryType: e.entryType,
+        position: e.position,
+        startTime: e.startTime,
+        durationMin: e.durationMin,
+        note: e.note,
+        departTime: e.departTime,
+        arriveTime: e.arriveTime,
+        fromPlaceId: mapPlace(e.fromPlaceId),
+        toPlaceId: mapPlace(e.toPlaceId),
+        fromName: e.fromName,
+        toName: e.toName,
+        transitMode: e.transitMode,
+        priceCny: e.priceCny,
+      })),
+    );
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.legs.length > 0)
+      await this.db.insert(schema.transportLegs).values(
+      pkg.legs.map((l) => ({
+        id: uuid(),
+        tripId: newTripId,
+        dayId: dayMap.get(l.dayId)!,
+        fromEntryId: l.fromEntryId != null && entryMap.has(l.fromEntryId) ? entryMap.get(l.fromEntryId)! : null,
+        toEntryId: l.toEntryId != null && entryMap.has(l.toEntryId) ? entryMap.get(l.toEntryId)! : null,
+        fromPlaceId: mapPlace(l.fromPlaceId),
+        toPlaceId: mapPlace(l.toPlaceId),
+        seq: l.seq,
+        mode: l.mode,
+        modeOverride: l.modeOverride,
+        distanceM: l.distanceM,
+        durationS: l.durationS,
+        polyline: l.polyline,
+        transitDetail: l.transitDetail,
+      })),
+    );
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.hotelCandidates.length > 0)
+      await this.db.insert(schema.hotelCandidates).values(
+      pkg.hotelCandidates.map((h) => ({
+        id: hotelMap.get(h.id)!,
+        tripId: newTripId,
+        placeId: placeMap.get(h.placeId)!,
+        pricePerNight: h.pricePerNight,
+        notes: h.notes,
+        selected: h.selected,
+        checkInDay: h.checkInDay,
+        checkOutDay: h.checkOutDay,
+      })),
+    );
+    // 空数组跳过 insert（drizzle values([]) 抛错；无该类实体是常态）
+    if (pkg.notes.length > 0)
+      await this.db.insert(schema.tripNotes).values(
+      pkg.notes.map((n) => ({
+        id: noteMap.get(n.id)!,
+        tripId: newTripId,
+        category: n.category,
+        content: n.content,
+        position: n.position,
+      })),
+    );
+    const dto = toTripDto(tripRow);
+    this.bus.publish(TRIPS_CHANNEL, { type: "created", trip: dto });
+    return this.getBundle(newTripId);
   }
 }

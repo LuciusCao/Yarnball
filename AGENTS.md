@@ -32,6 +32,11 @@ Hono Server (apps/server, :18788)               │
   - 每日概要（#9）：`days.summary` 列 + `PATCH /api/days/:dayId/summary` + MCP `set_day_summary`；未撰写时 bundle 层自动生成兜底（`summaryAuto=true`，当日区域/多数派城市 + 主景点 3-4 个，不落库实时重算）
   - 行程级注意事项（#11）：`trip_notes` 表（独立表不挂 trips json 列——逐条 CRUD 有稳定 id，与 places/entries 同构），分类 7 值 communication/climate/power/visa/currency/transport/other（`TRIP_NOTE_CATEGORIES`），REST CRUD `/api/trips/:tripId/notes` + `/api/notes/:noteId` + MCP `add_trip_note/update_trip_note/remove_trip_note`，随 bundle 全量下发
   - title 收敛：`UpdateTripInputSchema` 加 `title`（通用 PATCH 端点），独立 `PATCH /trips/:tripId/title` 保留兼容（前端 renameTrip 未动），内部同走 `tripService.updateTrip`
+- **协作实时体验**（#19，issue #19）：
+  - SharePage 实时化：订阅公开端点 `GET /api/share/:token/events`（token 即凭证、服务端内部解析 tripId，与 GET /share/:token 同模式；bundle/activity 事件过 `aliasShareBundleIds` 同套脱敏——访客拿不到真实 tripId 无法直连 trips/:id/events，故必须 share 专用端点）；天气走 `GET /api/share/:token/weather`（react-query，`useShareWeather`，响应无 id 可泄）
+  - 在线名单（presence）：SSE 连接建立/断开（`stream.onAbort`）→ `PresenceRegistry`（events.ts）→ 行程频道广播 presence 事件（join/leave 携带全量 viewers，前端整包替换）。owner=「主人」、guest=昵称（displayName ?? label，60s 缓存）、share 订阅者=「访客」（脱敏）；同一页面多组件（PresenceBar/ActivityFeed/协作面板）经 `subscribeTripEvents` 多路复用共享一条 EventSource，避免重复连接把名单算重。`GET /trips/:id/presence` 快照端点供首屏；#17 面板的 90s 近似保留为 presence 不可用时兜底
+  - 动态流（谁改了什么）：`trip_activity` 表（id/trip_id cascade/actor_kind/actor_label/action/summary/created_at），`TripService.recordActivity` 在写操作完成后落库 + 滚动保留最近 50 条（超删旧）+ SSE 推 activity 事件；summary 完整句子服务端生成（三端一致），`Actor` 扩展为 `"human" | "agent" | { guest: 昵称 }`（DB 列 createdBy 等仍是二值，guest 归属只记在 trip_activity）；只记结构性变更（增删地点/排程/酒店/须知/概要/行程/预算），字段级微调（update_place/set_leg_mode）刻意不记防刷屏。REST 拉取 `GET /trips/:id/activity`（owner+guest 可读）
+  - 编辑防冲突：SSE 整包替换 vs 编辑中表单——`useSyncedInput`（web lib）受控草稿在 focus/IME 组合期间跳过外部同化，失焦后照常对齐；DaySummaryRow/NoteRow/TransitRow 的 React key 去掉可变内容（旧 key 含 summary/时刻文本，bundle 刷新即重挂载卸掉编辑中的 input）
 
 ## 代码组织
 
@@ -52,28 +57,38 @@ apps/server
                   set_day_summary（排天时撰写每日概要）、add_trip_note/update_trip_note/remove_trip_note
                   （行程级注意事项，按目的地/日期预填与维护）、get_weather（按天天气预报））、
                   app.ts（HTTP 端点）
-  src/services/   tripService.ts（编排/顺路算法核心；含每日概要兜底生成、trip_notes CRUD）、
+  src/services/   tripService.ts（编排/顺路算法核心；含每日概要兜底生成、trip_notes CRUD、
+                  trip_activity 动态流记录与滚动清理 #19）、
                   geo.ts（provider 抽象；overseasFetch 为全部零 key 海外上游的统一出口）、
                   weather.ts（Open-Meteo 按天预报，内存短缓存 30min）、settings.ts（全局设置：
                   高德 key 的 DB 覆盖 + env 兜底，/api/settings 响应掩码 amapServerKey）、
                   routing.ts、mappers.ts（DB 行 → DTO）、chatStore.ts
-  src/routes/     api.ts（REST + SSE 全部端点）
-  src/db/         schema.ts（drizzle 表定义）、client.ts、migrate.ts
+  src/routes/     api.ts（REST + SSE 全部端点；含 #19 的 /share/:token/events|weather 公开端点、
+                  /trips/:id/activity|presence 读端点、SSE presence 上报与 actor 注入）、
+                  api.collab.test.ts（#19 协作实时体验测试）
+  src/db/         schema.ts（drizzle 表定义；含 #19 的 trip_activity 表）、client.ts、migrate.ts
+  src/events.ts   EventBus（发布-订阅）+ PresenceRegistry（#19 在线名单注册表：SSE 连接
+                  join/leave → 行程频道广播 presence 事件）
   drizzle/        迁移 SQL（随库提交；注意被 .gitignore 的是根 /drizzle/，apps/server/drizzle/ 正常跟踪）
   scripts/        fake-acp-agent.mjs（可脚本化假 agent）、smoke.ts（端到端冒烟）
 apps/web
   src/features/   map（amapRenderer + maplibreRenderer 双渲染器 + 途经地标记层）、chat、
                   itinerary（时间轴；stops.ts 多城市 day→stop 推导/环线闭合；
-                  intensity.ts 每日强度标签推导；weather.tsx 天气徽章 + useTripWeather）、
+                  intensity.ts 每日强度标签推导；weather.tsx 天气徽章 + useTripWeather/useShareWeather）、
                   candidates（候选池：candidate/joined 状态机；多城市按 cityName 分桶）、
                   settings（设置抽屉：密钥 + agent CLI）、
                   notes（行程级注意事项面板，7 类结构化增删改）、
+                  presence（#19 在线名单：usePresence + SSE 多路复用 subscribeTripEvents）、
+                  activity（#19 动态流「谁改了什么」：react-query + SSE 增量）、
                   budget —— 按领域划分
-  src/pages/      TripListPage / TripPage / SharePage（/share/:token 只读分享）
+  src/pages/      TripListPage / TripPage / SharePage（/share/:token 只读分享；#19 起订阅
+                  /api/share/:token/events 实时刷新 + share 天气）
   src/components/ui/  Radix + CVA 的 shadcn 风格基础组件
   src/stores/     tripStore.ts（zustand：bundle 全量快照 + SSE 增量合并）
-  src/lib/api.ts  新端点客户端契约单点（设置 / agent 注册 / 候选状态机 / 时间轴），
-                  既有端点在 src/api/client.ts，新代码不要往那里加
+  src/lib/api.ts  新端点客户端契约单点（设置 / agent 注册 / 候选状态机 / 时间轴 /
+                  #19 activity/presence/share-weather），既有端点在 src/api/client.ts，新代码不要往那里加
+  src/lib/useSyncedInput.ts  #19 编辑防冲突：受控输入草稿在 focus/IME 组合期间跳过外部同化
+                              （SSE 全量刷新不冲掉正在编辑的表单）
 packages/shared/src/domain.ts   枚举 / DTO / 请求体 / SSE 事件 / 格式化工具（zod schema）
 ```
 
@@ -163,7 +178,7 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 ## 环境变量与安全
 
 - 见 `.env.example`；无必填项（`DATABASE_URL` 为 SQLite 文件路径，可选，默认 `~/.yarnball/yarnball.db`；M80 起 `postgres://` 等无法识别的 scheme 会直接报错退出，不再被当成文件路径），其余有默认值（`SERVER_PORT=18788`、`WEB_ORIGIN=http://localhost:15173`、`SERVER_BASE_URL` 默认 loopback）
-- `SERVER_HOST` 默认 `127.0.0.1`：`/api` 无鉴权（`POST /api/agents` 可 spawn agent 子进程），绑 `0.0.0.0` 会暴露 LAN 构成同网段 RCE 链路；LAN 调试需显式设置。Tauri 桌面壳场景保持默认即可
+- `SERVER_HOST` 默认 `127.0.0.1`（推荐保持）。v0.4 起 `/api` 已按 principal 鉴权（loopback 无 token=owner、Bearer owner token=owner、access-link token=guest、远程匿名 401），绑 `0.0.0.0` 不再是无条件 RCE——但 agents（spawn agent 子进程）/ settings / chat-sessions 等敏感端点仍仅 owner 可达，最小暴露原则不变。绑定非 loopback 地址需 `YARNBALL_ALLOW_REMOTE=1` 显式确认（#21），未设置时启动打显著警告并指向 README「让同伴访问」部署指南（局域网 / tailscale / cloudflared / frp；纯 HTTP 明文公网会泄露 token，必须走 TLS）。Tauri 桌面壳场景保持默认即可
 - 生产态 server 直接托管 web 静态产物：探测到 `apps/web/dist/index.html`（或 `YARNBALL_WEB_DIST_DIR` 指定目录，Tauri 打包后由壳注入）即挂载 serve-static + SPA 回退，`/api` `/mcp` `/healthz` 优先不受影响；dev（vite :15173）无 dist 时行为不变（`apps/server/src/services/staticWeb.ts`）
 - `/healthz` 返回 `{ ok, app:"yarnball", version, webStatic }`：Tauri 壳靠 `app`/`webStatic` 判定 18788 占用者身份——同包且托管 web 产物才复用，否则换端口，避免窗口被指向旧版孤儿 sidecar 的 404（`apps/tauri/src-tauri/src/sidecar.rs`）
 - 高德三个 key（`AMAP_JS_KEY` / `AMAP_SERVER_KEY` / `AMAP_JS_SECRET`）是**国内行程的可选增强**（M113 起不再是国内必需）：配齐后新建国内行程走高德（POI 搜索/真实公交数据更准）；未配 key 时新建国内行程自动走 OSM 开源栈（与海外同代码路径，零配置可用，公交为估算），海外行程始终零配置。仅存的降级路径：M113 前创建的存量 amap 行程在无 key 环境仍是高德引擎——POI 搜索不可用、路线降级直线距离 × 1.3 估算（配 key 即恢复）
@@ -171,9 +186,10 @@ pnpm db:generate        # 改完 schema.ts 后生成迁移 SQL（drizzle-kit gen
 - `.env` 不入库；MCP token 只存 hash；agent 经 `session/new` 注入的 URL+header 直连 `/mcp`，不经浏览器
 - 前端渲染 agent 文本用 marked + sanitize-html，不要绕过 sanitize 直接 `dangerouslySetInnerHTML`
 
-## 已知边界（v1）
+## 已知边界（v0.4）
 
-- 单人编辑 + 只读分享链接（`/share/:token`）；多人实时协同（CRDT）留待 v2
+- 多人协作已支持（v0.4 里程碑 #16-#21）：owner 本机编辑 + 协作链接同伴（viewer 只读 / editor 可编辑）+ 只读分享链接（`/share/:token`），实时体验含 SSE 同步 / 在线名单 / 动态流；并发编辑语义为 last-write-wins，无 CRDT（留待 v2）
+- 远程访问（局域网 / 公网隧道）的部署形态与安全口径见 README「让同伴访问」；主人远程用 UI 走 `/login` 粘贴 owner token（#32），本机 loopback 免登录；同机代理回源（cloudflared 等）部署须改绑非 loopback 或设 YARNBALL_TRUST_LOOPBACK，防远程流量被误判为本机主人
 - 海外公交走 transitous（MOTIS 2）真实换乘：覆盖城市命中真实线路/方式/分段；未覆盖（如部分小城返回空 itineraries）、超时或错误时降级为估算（真实驾车路由时长 × 1.25 + 换乘惩罚），transitous 为社区 best-effort 服务无 SLA。国内公交：高德引擎行程走高德真实数据，开源引擎回退行程（M113）为估算（transitous 国内 GTFS 无覆盖）；transitous 未命中时的渡轮仍按直线水域航线估算（含候船缓冲）
 - Photon / OSRM / transitous 是社区免费服务，高频使用应自托管（代码里换 base URL 即可）；transitous usage policy 要求 UA 带联系方式 + UI 署名 transitous.org（已在设置抽屉底部，改动时不得删除）
 - ACP `session/load` 直连与 `session/cancel` 通知通道待 SDK（ActiveSession 封装）暴露后补

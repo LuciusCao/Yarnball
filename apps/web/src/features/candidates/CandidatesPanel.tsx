@@ -60,6 +60,8 @@ interface CandidatesPanelProps {
   selectedPlaceId: string | null;
   onSelectPlace: (placeId: string) => void;
   onDataChanged: () => void;
+  /** 只读模式（issue #20 viewer 同伴）：隐藏加入/移出/删除/住宿区间编辑，保留全部查看 */
+  readOnly?: boolean;
 }
 
 type GroupKey = "hotel" | "attraction" | "dining" | "other";
@@ -89,6 +91,7 @@ export function CandidatesPanel({
   selectedPlaceId,
   onSelectPlace,
   onDataChanged,
+  readOnly = false,
 }: CandidatesPanelProps) {
   const [busy, setBusy] = useState(false);
   /** M25：分类 tab 状态仅存组件本地，面板收起/重开后回到「全部」 */
@@ -263,7 +266,9 @@ export function CandidatesPanel({
       {pendingJoinedCount > 0 && (
         <div className="mb-3 flex items-center gap-1.5 rounded-xl border border-orange-300/70 bg-orange-100/60 px-3 py-2 text-xs text-orange-700">
           <CalendarCheck className="size-3.5 shrink-0" />
-          有 {pendingJoinedCount} 个已加入行程的地点待预订，出行前记得完成预订（点徽章可标记已预订）。
+          {readOnly
+            ? `有 ${pendingJoinedCount} 个已加入行程的地点待预订，出行前记得完成预订。`
+            : `有 ${pendingJoinedCount} 个已加入行程的地点待预订，出行前记得完成预订（点徽章可标记已预订）。`}
         </div>
       )}
       {totalCount === 0 && (
@@ -389,7 +394,7 @@ export function CandidatesPanel({
                               .join(" · ")}
                           </p>
                         )}
-                        {/* 徽章行（消费 M13 令牌变体）；预订状态徽章 joined 时可点选流转，候选态仅展示 */}
+                        {/* 徽章行（消费 M13 令牌变体）；预订状态徽章 joined 且可编辑时点选流转，只读/候选态仅展示 */}
                         {showBadges && (
                           <div className="mt-1 flex flex-wrap items-center gap-1">
                             {place.createdBy === "agent" && (
@@ -403,7 +408,7 @@ export function CandidatesPanel({
                             ) : (
                               joined && !isHotel && <Badge variant="joined">已加入</Badge>
                             )}
-                            {joined ? (
+                            {joined && !readOnly ? (
                               <button
                                 title="点击切换预订状态（无需预订 → 待预订 → 已预订）"
                                 disabled={busy}
@@ -424,6 +429,7 @@ export function CandidatesPanel({
                             ) : (
                               booking !== "none" && (
                                 <Badge variant={BOOKING_STATUS_META[booking].badgeVariant}>
+                                  <CalendarCheck className="size-3" />
                                   {BOOKING_STATUS_META[booking].label}
                                 </Badge>
                               )
@@ -434,7 +440,8 @@ export function CandidatesPanel({
                           <p className="mt-1 text-xs text-slate-500">{hotelCand.notes}</p>
                         )}
                         {isSelectedHotel && stay && (
-                          // 已加入酒店的入离店天（M10 多酒店）；阻止冒泡避免触发卡片选中
+                          // 已加入酒店的入离店天（M10 多酒店）；阻止冒泡避免触发卡片选中；
+                          // viewer 只读态降级为静态文本（HotelStayRangePicker readOnly）
                           <div className="mt-1.5" onClick={(e) => e.stopPropagation()}>
                             <HotelStayRangePicker
                               totalDays={totalDays}
@@ -444,6 +451,7 @@ export function CandidatesPanel({
                                 .filter((s) => s.candidateId !== stay.candidateId)
                                 .map((s) => ({ ...s, label: placeNameById.get(s.placeId) }))}
                               disabled={busy}
+                              readOnly={readOnly}
                               onChange={(range) => void updateStay(stay.candidateId, range)}
                             />
                           </div>
@@ -461,7 +469,8 @@ export function CandidatesPanel({
                         )}
                       </div>
                       <div className="flex shrink-0 flex-col items-end gap-1.5">
-                        {hotelCand && (
+                        {/* 只读（viewer 同伴）：整列操作不渲染，卡片只剩查看 */}
+                        {hotelCand && !readOnly && (
                           <button
                             title={
                               isSelectedHotel
@@ -484,6 +493,7 @@ export function CandidatesPanel({
                             {isSelectedHotel ? "✓ 已加入" : "加入住宿"}
                           </button>
                         )}
+                        {!readOnly && (
                         <div className="flex gap-1">
                           {/* POI 的加入/移出开关（M20 话术）；酒店不走这里——主按钮「加入住宿」已涵盖（已排期酒店除外：给移出出口） */}
                           {(!isHotel || scheduled) && (
@@ -525,6 +535,7 @@ export function CandidatesPanel({
                             <Trash2 className="size-3.5" />
                           </button>
                         </div>
+                        )}
                       </div>
                     </div>
                   </div>
