@@ -117,7 +117,11 @@ pnpm dev:web            # vite
 pnpm tauri:dev          # 透传 apps/tauri（Tauri 桌面壳 dev，前置 pnpm dev 起 vite+server）
 pnpm tauri:package      # 透传 apps/tauri 打 dmg（sidecar + web 产物）
 pnpm build              # pnpm -r build（server: tsc --noEmit；web: tsc -b && vite build；shared: tsc --noEmit）
-pnpm test               # vitest run（server；目前无测试文件，测试主要靠 smoke）
+pnpm test               # vitest run（server；4 个套件 84 用例：权限矩阵 api.access / 同伴入口
+                        # api.join / 协作实时 api.collab / 行程数据包 api.package，均内存库 +
+                        # 真实迁移 SQL 直驱 Hono app）。vitest.config.ts 把 hook/test 超时放宽到
+                        # 60s：beforeAll/部分用例建行程走真实地理编码（Nominatim/Photon 外网），
+                        # 上游慢或限流时默认 10s/5s 会卡死套件——断言不含网络超时预期，不影响质量
 pnpm smoke              # fake-acp-agent 端到端冒烟：prompt 流 / permission 停泊 / MCP 真实调用
                         # 前置：pnpm dev 已运行、DB 已迁移
 pnpm verify             # 提交前质量门：build + smoke 串行，任一失败即红；前置同 smoke
